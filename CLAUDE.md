@@ -74,18 +74,6 @@ python util/update_model_commit.py
 uv run python -m src.research.download_data --use-latest
 ```
 
-**Data Triaging:**
-```bash
-# Triage newest PyPI packages for suspicious content
-uv run python util/triage_pypi.py --count 50
-
-# Dry run to see what packages would be scanned
-uv run python util/triage_pypi.py --count 10 --dry-run
-
-# Custom timeout and move directory
-uv run python util/triage_pypi.py --timeout 180 --move-dir ./findings
-```
-
 **Usage:**
 ```bash
 # Scan local files/directories
@@ -111,7 +99,7 @@ python util/build_helpers.py restore
 
 # The wheel will only contain files needed for scanning:
 # - malwi_object.py, predict_distilbert.py, ast_to_malwicode.py
-# - mapping.py, pypi.py, triage.py, syntax_mapping/
+# - mapping.py, pypi.py, syntax_mapping/
 # Training files are excluded: train_*.py, preprocess.py, etc.
 ```
 
@@ -279,5 +267,4 @@ malwi uses pinned repository commits to ensure reproducible training data:
 
 - **Language Support**: Supports both Python and JavaScript files through language-independent AST compilation
 - **Output Formats**: Supports demo, markdown, json, yaml formats via `--format` flag
-- **Triage Options**: Manual (`--triage`) or automated with Ollama (`--triage-ollama`)
 - **Performance**: F1=0.96, Recall=0.95, Precision≥0.95 for DistilBERT model

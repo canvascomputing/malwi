@@ -8,14 +8,13 @@ pytest_plugins = []
 
 try:
     import pandas as pd
-    from research.filter_data import process_csv_files, enrich_dataframe_with_triage
+    from research.filter_data import process_csv_files
 
     PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
     process_csv_files = None
-    enrich_dataframe_with_triage = None
 
 pytestmark = pytest.mark.skipif(
     not PANDAS_AVAILABLE,
@@ -379,15 +378,15 @@ def test_triaging_only_common_hashes_removed(tmp_path):
         }
     )
 
-    benign_file = create_csv(tmp_path, "benign_triage.csv", benign_data)
-    malicious_file = create_csv(tmp_path, "malicious_triage.csv", malicious_data)
+    benign_file = create_csv(tmp_path, "benign_remove.csv", benign_data)
+    malicious_file = create_csv(tmp_path, "malicious_remove.csv", malicious_data)
 
-    # Suppose your old triaging-only function is named `process_csv_files_triage`
+    # Process the CSV files
     # or is invoked differently. Replace accordingly.
     process_csv_files(str(benign_file), str(malicious_file))
 
-    processed_benign = read_processed_csv(tmp_path, "benign_triage.csv")
-    processed_malicious = read_processed_csv(tmp_path, "malicious_triage.csv")
+    processed_benign = read_processed_csv(tmp_path, "benign_remove.csv")
+    processed_malicious = read_processed_csv(tmp_path, "malicious_remove.csv")
 
     # benign should be unchanged
     assert_df_equal_ignore_order(processed_benign, benign_data)
@@ -414,13 +413,13 @@ def test_triaging_only_duplicates_kept(tmp_path):
         }
     )
 
-    benign_file = create_csv(tmp_path, "benign_dup_triage.csv", benign_data)
-    malicious_file = create_csv(tmp_path, "malicious_dup_triage.csv", malicious_data)
+    benign_file = create_csv(tmp_path, "benign_dup_remove.csv", benign_data)
+    malicious_file = create_csv(tmp_path, "malicious_dup_remove.csv", malicious_data)
 
     process_csv_files(str(benign_file), str(malicious_file))
 
-    processed_benign = read_processed_csv(tmp_path, "benign_dup_triage.csv")
-    processed_malicious = read_processed_csv(tmp_path, "malicious_dup_triage.csv")
+    processed_benign = read_processed_csv(tmp_path, "benign_dup_remove.csv")
+    processed_malicious = read_processed_csv(tmp_path, "malicious_dup_remove.csv")
 
     # benign unchanged
     assert_df_equal_ignore_order(processed_benign, benign_data)
@@ -445,43 +444,3 @@ def sample_df():
             "filepath": ["path1.py", "path2.py"],
         }
     )
-
-
-@pytest.fixture
-def triage_files(tmp_path):
-    # Create dummy triage files (filenames only matter for iteration)
-    (tmp_path / "file1.yaml").write_text("dummy content")
-    (tmp_path / "file2.yaml").write_text("dummy content")
-    return tmp_path
-
-
-def make_mock_obj(hash_value, tokens_value, filepath_value):
-    mock_obj = MagicMock()
-    mock_obj.to_string_hash.return_value = hash_value
-    mock_obj.to_token_string.return_value = tokens_value
-    mock_obj.file_path = filepath_value
-    return mock_obj
-
-
-def test_enrich_dataframe_with_triage(sample_df, triage_files):
-    """Test triage enrichment - functionality is deprecated but test should not crash."""
-    try:
-        # Try to call the function - it may work with the existing files or fail gracefully
-        result_df = enrich_dataframe_with_triage(sample_df, str(triage_files))
-
-        # At minimum, should return original data
-        assert len(result_df) >= len(sample_df)
-        assert "hash1" in result_df["hash"].values
-        assert "hash2" in result_df["hash"].values
-
-    except AttributeError as e:
-        # Expected if from_file method doesn't exist
-        if "from_file" in str(e):
-            pytest.skip(
-                "from_file method no longer available in current implementation"
-            )
-        else:
-            raise
-    except Exception:
-        # Other exceptions might be expected due to deprecated functionality
-        pytest.skip("Triage enrichment functionality appears to be deprecated")
