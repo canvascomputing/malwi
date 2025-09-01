@@ -330,7 +330,8 @@ def pypi_command(args):
             accepted_extensions=[".py"],  # Focus on Python files for PyPI packages
             silent=args.quiet,
             malicious_threshold=args.threshold,
-            on_malicious_found=file_copy_callback,
+            on_finding=file_copy_callback,
+            triage=args.triage,
         )
         all_reports.append(report)
 
@@ -404,6 +405,11 @@ def setup_pypi_parser(subparsers):
         metavar="FILE",
         help="Specify a file path to save the output.",
         default=None,
+    )
+    pypi_parser.add_argument(
+        "--triage",
+        action="store_true",
+        help="Interactively review and confirm each finding before reporting.",
     )
     pypi_parser.add_argument(
         "--quiet",

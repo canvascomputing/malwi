@@ -67,6 +67,190 @@ def process_single_file(
         return [], []
 
 
+def format_object_for_display(obj: MalwiObject, comment_prefix: str = "#") -> str:
+    """
+    Format a MalwiObject for display, reusing the logic from to_code_text.
+
+    Args:
+        obj: The MalwiObject to format
+        comment_prefix: Comment prefix for the language (default "#")
+
+    Returns:
+        Formatted string representation of the object
+    """
+    output_parts = []
+
+    # Format maliciousness score
+    if obj.maliciousness is not None:
+        score_text = f"Maliciousness: {obj.maliciousness:.3f}"
+    else:
+        score_text = "Maliciousness: not analyzed"
+
+    # Add file path comment with embedding count info and maliciousness score
+    output_parts.append(f"{comment_prefix} {'=' * 70}")
+    output_parts.append(f"{comment_prefix} File: {obj.file_path}")
+    output_parts.append(f"{comment_prefix} Object: {obj.name}")
+    output_parts.append(f"{comment_prefix} {score_text}")
+    output_parts.append(
+        f"{comment_prefix} Embedding count: {obj.embedding_count} tokens"
+    )
+
+    # Add warning if it exceeds DistilBERT window
+    if obj.embedding_count > 512:
+        output_parts.append(
+            f"{comment_prefix} ⚠️  WOULD TRIGGER DISTILBERT WINDOWING (>512 tokens)"
+        )
+
+    output_parts.append(f"{comment_prefix} {'=' * 70}")
+    output_parts.append("")
+
+    # Add the source code
+    if (
+        obj.source_code
+        and obj.source_code.strip()
+        and obj.source_code != "<source not available>"
+    ):
+        output_parts.append(obj.source_code)
+    else:
+        output_parts.append(f"{comment_prefix} <source code not available>")
+
+    return "\n".join(output_parts)
+
+
+class TriageQuitException(Exception):
+    """Exception raised when user quits during triage."""
+
+    pass
+
+
+def comment_out_benign_objects(
+    file_path: Path, benign_objects: List[MalwiObject]
+) -> bool:
+    """
+    Comment out benign objects in a file using their source_code property to find matching lines.
+
+    Args:
+        file_path: Path to the file to modify
+        benign_objects: Objects classified as benign that should be commented out
+
+    Returns:
+        True if successfully commented, False otherwise
+    """
+    if not benign_objects:
+        return True
+
+    try:
+        # Read the current file content
+        file_content = file_path.read_text(encoding="utf-8", errors="replace")
+        lines = file_content.split("\n")
+        total_lines = len(lines)
+
+        # Get comment prefix for this file type
+        file_extension = file_path.suffix.lower()
+        comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
+
+        # Track which lines to comment out
+        lines_to_comment = set()
+
+        for obj in benign_objects:
+            # Use source_code to find matching lines to comment
+            source_code = obj.source_code or obj.file_source_code
+            if source_code and source_code.strip():
+                # Split the source code into individual lines to match
+                source_lines = [
+                    line.strip() for line in source_code.split("\n") if line.strip()
+                ]
+
+                # Find lines in the file that match the source code
+                for i, file_line in enumerate(lines):
+                    file_line_stripped = file_line.strip()
+                    if file_line_stripped and any(
+                        source_line in file_line_stripped
+                        or file_line_stripped in source_line
+                        for source_line in source_lines
+                    ):
+                        lines_to_comment.add(i)
+
+        # Apply comments to the marked lines
+        if lines_to_comment:
+            for i in lines_to_comment:
+                if not lines[i].strip().startswith(comment_prefix):
+                    lines[i] = f"{comment_prefix} {lines[i]}"
+
+            # Write back to file
+            modified_content = "\n".join(lines)
+            file_path.write_text(modified_content, encoding="utf-8")
+            return True
+
+        return True
+
+    except Exception:
+        return False
+
+
+def triage_malicious_objects(
+    file_path: Path,
+    malicious_objects: List[MalwiObject],
+    all_objects: List[MalwiObject] = None,
+) -> List[MalwiObject]:
+    """
+    Interactively review malicious objects and let user classify them.
+    Files are modified based on classification: benign findings are commented out.
+
+    Args:
+        file_path: Path to the file containing the objects
+        malicious_objects: List of MalwiObject instances flagged as malicious
+
+    Returns:
+        List of MalwiObject instances confirmed as malicious by the user
+
+    Raises:
+        TriageQuitException: When user selects quit option
+    """
+    import questionary
+
+    triaged_objects = []
+    benign_objects = []  # Track objects classified as benign for file modification
+
+    for obj in malicious_objects:
+        # Get appropriate comment prefix for the file extension
+        file_extension = Path(obj.file_path).suffix.lower()
+        comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
+
+        # Display formatted object using the same format as --format code
+        print()
+        print(format_object_for_display(obj, comment_prefix))
+        print()
+
+        # Ask user to classify
+        maliciousness_str = (
+            f"{obj.maliciousness:.2f}" if obj.maliciousness is not None else "N/A"
+        )
+        classification = questionary.select(
+            f"How would you classify this code (AI score: {maliciousness_str})?",
+            choices=[
+                "Suspicious (keep as malicious)",
+                "Benign (false positive)",
+                "Skip (unsure)",
+                "Quit (stop triaging)",
+            ],
+        ).ask()
+
+        if classification == "Suspicious (keep as malicious)":
+            triaged_objects.append(obj)
+        elif classification == "Benign (false positive)":
+            benign_objects.append(obj)
+        elif classification == "Quit (stop triaging)":
+            raise TriageQuitException("User quit triage")
+        # For 'Skip', we don't add to either list
+
+    # Comment out benign findings in the file
+    if benign_objects:
+        comment_out_benign_objects(file_path, benign_objects)
+
+    return triaged_objects
+
+
 @dataclass
 class MalwiReport:
     """Result of processing files from a path."""
@@ -340,32 +524,8 @@ class MalwiReport:
                     and obj.source_code.strip()
                     and obj.source_code != "<source not available>"
                 ):
-                    # Format maliciousness score
-                    if obj.maliciousness is not None:
-                        score_text = f"Maliciousness: {obj.maliciousness:.3f}"
-                    else:
-                        score_text = "Maliciousness: not analyzed"
-
-                    # Add file path comment with embedding count info and maliciousness score
-                    output_parts.append(f"{comment_prefix} {'=' * 70}")
-                    output_parts.append(f"{comment_prefix} File: {obj.file_path}")
-                    output_parts.append(f"{comment_prefix} Object: {obj.name}")
-                    output_parts.append(f"{comment_prefix} {score_text}")
-                    output_parts.append(
-                        f"{comment_prefix} Embedding count: {obj.embedding_count} tokens"
-                    )
-
-                    # Add warning if it exceeds DistilBERT window
-                    if obj.embedding_count > 512:
-                        output_parts.append(
-                            f"{comment_prefix} ⚠️  WOULD TRIGGER DISTILBERT WINDOWING (>{512} tokens)"
-                        )
-
-                    output_parts.append(f"{comment_prefix} {'=' * 70}")
-                    output_parts.append("")
-
-                    # Add the source code
-                    output_parts.append(obj.source_code)
+                    # Use the helper function to format the object
+                    output_parts.append(format_object_for_display(obj, comment_prefix))
                     output_parts.append("")
 
                     # Add tokens if requested
@@ -447,6 +607,7 @@ class MalwiReport:
         silent: bool = False,
         malicious_threshold: float = 0.7,
         on_finding: Optional[callable] = None,
+        triage: bool = False,
     ) -> "MalwiReport":
         """
         Create a MalwiReport by processing files from the given input path.
@@ -458,6 +619,7 @@ class MalwiReport:
             malicious_threshold: Threshold for classifying objects as malicious
             on_finding: Optional callback function called when malicious objects are found
                         Function signature: callback(file_path: Path, malicious_objects: List[MalwiObject])
+            triage: If True, interactively review each finding before reporting
 
         Returns:
             MalwiReport containing analysis results
@@ -544,12 +706,25 @@ class MalwiReport:
                     maliciousness_threshold=malicious_threshold,
                 )
                 all_objects.extend(file_all_objects)
-                malicious_objects.extend(file_malicious_objects)
+
+                # Triage malicious findings if enabled
+                if file_malicious_objects and triage:
+                    try:
+                        triaged_malicious_objects = triage_malicious_objects(
+                            file_path, file_malicious_objects, file_all_objects
+                        )
+                    except TriageQuitException:
+                        # User quit triage - stop processing entirely
+                        break
+                else:
+                    triaged_malicious_objects = file_malicious_objects
+
+                malicious_objects.extend(triaged_malicious_objects)
                 files_processed_count += 1
 
                 # Call callback if malicious objects found and callback provided
-                if file_malicious_objects and on_finding:
-                    on_finding(file_path, file_malicious_objects)
+                if triaged_malicious_objects and on_finding:
+                    on_finding(file_path, triaged_malicious_objects)
 
             except Exception as e:
                 if not silent:

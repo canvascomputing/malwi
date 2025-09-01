@@ -91,6 +91,7 @@ def run_batch_scan(child_folder: Path, args) -> dict:
             accepted_extensions=args.extensions,
             silent=True,  # Silent for individual folder processing in batch mode
             malicious_threshold=args.threshold,
+            triage=args.triage,
         )
 
         # Generate output based on format
@@ -278,6 +279,7 @@ def scan_command(args):
         silent=args.quiet,
         malicious_threshold=args.threshold,
         on_finding=combined_callback,
+        triage=args.triage,
     )
 
     # Clean up the real-time display
@@ -362,6 +364,11 @@ def setup_scan_parser(subparsers):
         "-q",
         action="store_true",
         help="Suppress logging output and progress bar.",
+    )
+    scan_parser.add_argument(
+        "--triage",
+        action="store_true",
+        help="Interactively review and confirm each finding before reporting.",
     )
     scan_parser.add_argument(
         "--move",

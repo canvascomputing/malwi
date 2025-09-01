@@ -361,6 +361,7 @@ class TestBatchMode:
         args.quiet = True
         args.model_path = None
         args.tokenizer_path = None
+        args.triage = False
 
         # Mock the process_files function and report
         mock_report = MagicMock()
@@ -378,6 +379,7 @@ class TestBatchMode:
                     accepted_extensions=["py"],
                     silent=True,
                     malicious_threshold=0.7,
+                    triage=args.triage,
                 )
 
                 # Verify result
@@ -635,7 +637,8 @@ class TestPyPICommand:
                     accepted_extensions=[".py"],
                     silent=True,
                     malicious_threshold=0.7,
-                    on_malicious_found=None,
+                    on_finding=None,
+                    triage=False,
                 )
 
                 # Verify result output
@@ -797,7 +800,8 @@ class TestPyPICommand:
                     accepted_extensions=[".py"],
                     silent=True,
                     malicious_threshold=0.9,
-                    on_malicious_found=None,
+                    on_finding=None,
+                    triage=False,
                 )
 
     @patch("cli.pypi.scan_pypi_package")
