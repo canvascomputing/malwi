@@ -247,6 +247,8 @@ class TestBatchMode:
         args.quiet = True
         args.model_path = None
         args.tokenizer_path = None
+        args.triage = False
+        args.triage_mcp = False
 
         with patch("cli.scan.path_error") as mock_path_error:
             process_batch_mode(test_file, args)
@@ -362,6 +364,7 @@ class TestBatchMode:
         args.model_path = None
         args.tokenizer_path = None
         args.triage = False
+        args.triage_mcp = False
 
         # Mock the process_files function and report
         mock_report = MagicMock()
@@ -380,6 +383,7 @@ class TestBatchMode:
                     silent=True,
                     malicious_threshold=0.7,
                     triage=args.triage,
+                    triage_provider=None,
                 )
 
                 # Verify result
@@ -404,6 +408,8 @@ class TestBatchMode:
         args.quiet = True
         args.model_path = None
         args.tokenizer_path = None
+        args.triage = False
+        args.triage_mcp = False
 
         # Mock MalwiReport.create to raise exception
         with patch("cli.scan.MalwiReport.create", side_effect=Exception("Test error")):
@@ -440,6 +446,8 @@ class TestBatchMode:
             args.quiet = True
             args.model_path = None
             args.tokenizer_path = None
+            args.triage = False
+            args.triage_mcp = False
 
             # Mock report with the appropriate method
             mock_report = MagicMock()
@@ -525,6 +533,8 @@ class TestBatchMode:
         args.quiet = True
         args.model_path = None
         args.tokenizer_path = None
+        args.triage = False
+        args.triage_mcp = False
 
         with patch("cli.scan.Path.cwd", return_value=tmp_path):
             result = run_batch_scan(test_folder, args)
@@ -639,6 +649,7 @@ class TestPyPICommand:
                     malicious_threshold=0.7,
                     on_finding=None,
                     triage=False,
+                    triage_provider=None,
                 )
 
                 # Verify result output
@@ -802,6 +813,7 @@ class TestPyPICommand:
                     malicious_threshold=0.9,
                     on_finding=None,
                     triage=False,
+                    triage_provider=None,
                 )
 
     @patch("cli.pypi.scan_pypi_package")

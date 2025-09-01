@@ -63,6 +63,57 @@ malwi scan examples/malicious
 => 👹 malicious 0.98
 ```
 
+## Commands and Options
+
+### Scan Command
+```bash
+malwi scan <path> [options]
+```
+
+**Common Options:**
+- `--format {demo,markdown,json,yaml,tokens,code}` - Output format (default: demo)
+  - `demo` - Human-readable terminal output with emojis and tree structure
+  - `markdown` - Structured markdown report for documentation
+  - `json` - Machine-readable JSON for integration with other tools
+  - `yaml` - YAML format for configuration management
+  - `tokens` - Raw token analysis with embedding counts
+  - `code` - Extracted code snippets from suspicious objects
+- `--save FILE` - Save output to file
+- `--threshold FLOAT` - Maliciousness threshold (default: 0.7)
+- `--extensions EXT [EXT ...]` - File extensions to scan (default: .py, .js)
+- `--quiet` - Suppress progress output
+- `--batch` - Process child directories independently
+
+**Triage Options:**
+- `--triage` - Interactive review of findings with manual classification
+- `--triage-mcp` - AI-powered automatic false positive detection
+
+**File Management:**
+- `--move [DIR]` - Copy suspicious files to directory (default: findings)
+
+### Examples
+```bash
+# Basic scan
+malwi scan examples/malicious
+
+# Interactive triage
+malwi scan examples --triage
+
+# AI-powered triage (requires API key)
+export MISTRAL_API_KEY="your-api-key"
+malwi scan examples --triage-mcp
+
+# Custom output
+malwi scan examples --format json --save report.json --threshold 0.8
+
+# Batch processing
+malwi scan parent_directory --batch --format yaml
+```
+
+**Environment Variables:**
+- `MISTRAL_API_KEY` - For Mistral AI triage
+- `GEMINI_API_KEY` - For Gemini AI triage
+
 ## PyPI Package Scanning
 
 malwi can directly scan PyPI packages without executing malicious logic, typically placed in `setup.py` or `__init__.py` files:

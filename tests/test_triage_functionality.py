@@ -51,32 +51,42 @@ class TestTriageMaliciousObjects:
         test_file = tmp_path / "test.py"
         test_file.write_text("exec('test')\nprint('normal')")
 
-        # Create mock MalwiObject
-        obj = MalwiObject(
-            name="test_module",
+        # Create mock MalwiObjects for all code sections
+        exec_obj = MalwiObject(
+            name="exec_call",
             language="python",
             file_path=str(test_file),
-            file_source_code="exec('test')",
+            file_source_code="exec('test')\nprint('normal')",
+            source_code="exec('test')",
             location=(1, 1),
         )
-        obj.maliciousness = 0.95
+        exec_obj.maliciousness = 0.95
+
+        print_obj = MalwiObject(
+            name="print_call",
+            language="python",
+            file_path=str(test_file),
+            file_source_code="exec('test')\nprint('normal')",
+            source_code="print('normal')",
+            location=(2, 2),
+        )
 
         # Mock user selecting "Benign"
         mock_questionary_select.return_value.ask.return_value = (
             "Benign (false positive)"
         )
 
-        # Run triage (passing obj as both malicious and all_objects for test)
-        result = triage_malicious_objects(test_file, [obj], [obj])
+        # Run triage with all objects, only exec_obj is malicious
+        result = triage_malicious_objects(test_file, [exec_obj], [exec_obj, print_obj])
 
         # Object should not be kept as malicious
         assert len(result) == 0
 
-        # File should be modified (line 1 commented out)
+        # The exec line should be commented, print line should not be
         modified_content = test_file.read_text()
         lines = modified_content.split("\n")
-        assert lines[0] == "# exec('test')"
-        assert lines[1] == "print('normal')"  # Unchanged
+        assert lines[0] == "# exec('test')"  # Commented (benign)
+        assert lines[2] == "print('normal')"  # Not commented
 
     @patch("questionary.select")
     def test_triage_skip_classification(self, mock_questionary_select, tmp_path):
@@ -143,12 +153,13 @@ class TestTriageMaliciousObjects:
         test_file = tmp_path / "test.py"
         test_file.write_text("exec('test1')\nexec('test2')\nprint('normal')")
 
-        # Create mock MalwiObjects
+        # Create mock MalwiObjects for all code sections
         obj1 = MalwiObject(
             name="obj1",
             language="python",
             file_path=str(test_file),
-            file_source_code="exec('test1')",
+            file_source_code="exec('test1')\nexec('test2')\nprint('normal')",
+            source_code="exec('test1')",
             location=(1, 1),
         )
 
@@ -156,8 +167,18 @@ class TestTriageMaliciousObjects:
             name="obj2",
             language="python",
             file_path=str(test_file),
-            file_source_code="exec('test2')",
+            file_source_code="exec('test1')\nexec('test2')\nprint('normal')",
+            source_code="exec('test2')",
             location=(2, 2),
+        )
+
+        print_obj = MalwiObject(
+            name="print_call",
+            language="python",
+            file_path=str(test_file),
+            file_source_code="exec('test1')\nexec('test2')\nprint('normal')",
+            source_code="print('normal')",
+            location=(3, 3),
         )
 
         # Mock user selecting "Suspicious" for first, "Benign" for second
@@ -166,19 +187,21 @@ class TestTriageMaliciousObjects:
             "Benign (false positive)",
         ]
 
-        # Run triage
-        result = triage_malicious_objects(test_file, [obj1, obj2], [obj1, obj2])
+        # Run triage with all objects
+        result = triage_malicious_objects(
+            test_file, [obj1, obj2], [obj1, obj2, print_obj]
+        )
 
         # Only first object should be kept as malicious
         assert len(result) == 1
         assert result[0] == obj1
 
-        # File should have second line commented out
+        # Only the benign object's source_code should be commented
         modified_content = test_file.read_text()
         lines = modified_content.split("\n")
-        assert lines[0] == "exec('test1')"  # Unchanged (suspicious)
-        assert lines[1] == "# exec('test2')"  # Commented out (benign)
-        assert lines[2] == "print('normal')"  # Unchanged
+        assert lines[0] == "exec('test1')"  # Not commented (suspicious, kept)
+        assert lines[2] == "# exec('test2')"  # Commented (benign finding)
+        assert lines[4] == "print('normal')"  # Not commented
 
     @patch("questionary.select")
     def test_triage_empty_list(self, mock_questionary_select, tmp_path):
@@ -265,6 +288,7 @@ setuptools.setup(
             language="python",
             file_path=str(test_file),
             file_source_code=test_content,
+            source_code=test_content,  # Module contains entire file
             location=(1, len(test_content.split("\n"))),  # Spans entire file
         )
         module_obj.maliciousness = 0.998  # High maliciousness like in the real case

@@ -18,6 +18,7 @@ from common.messaging import (
     path_error,
     info,
     result,
+    error,
 )
 
 
@@ -86,12 +87,31 @@ def run_batch_scan(child_folder: Path, args) -> dict:
         return {"folder": child_folder.name, "success": True, "skipped": True}
 
     try:
+        # Create triage provider for batch processing if needed
+        triage_provider = None
+        use_triage = args.triage or args.triage_mcp
+        if use_triage:
+            from common.triage import create_triage_provider
+
+            try:
+                triage_provider = create_triage_provider(use_mcp=args.triage_mcp)
+            except ValueError as e:
+                if args.triage_mcp:
+                    return {
+                        "folder": child_folder.name,
+                        "success": False,
+                        "error": f"MCP triage failed: {e}",
+                    }
+                else:
+                    triage_provider = create_triage_provider(use_mcp=False)
+
         report: MalwiReport = MalwiReport.create(
             input_path=child_folder,
             accepted_extensions=args.extensions,
             silent=True,  # Silent for individual folder processing in batch mode
             malicious_threshold=args.threshold,
-            triage=args.triage,
+            triage=use_triage,
+            triage_provider=triage_provider,
         )
 
         # Generate output based on format
@@ -273,13 +293,30 @@ def scan_command(args):
     elif file_copy_callback:
         combined_callback = file_copy_callback
 
+    # Create triage provider if needed
+    triage_provider = None
+    use_triage = args.triage or args.triage_mcp
+    if use_triage:
+        from common.triage import create_triage_provider
+
+        try:
+            triage_provider = create_triage_provider(use_mcp=args.triage_mcp)
+        except ValueError as e:
+            if args.triage_mcp:
+                error(f"MCP triage failed: {e}")
+                return
+            else:
+                # Fallback to interactive for --triage
+                triage_provider = create_triage_provider(use_mcp=False)
+
     report: MalwiReport = MalwiReport.create(
         input_path=input_path,
         accepted_extensions=args.extensions,
         silent=args.quiet,
         malicious_threshold=args.threshold,
         on_finding=combined_callback,
-        triage=args.triage,
+        triage=use_triage,
+        triage_provider=triage_provider,
     )
 
     # Clean up the real-time display
@@ -368,7 +405,12 @@ def setup_scan_parser(subparsers):
     scan_parser.add_argument(
         "--triage",
         action="store_true",
-        help="Interactively review and confirm each finding before reporting.",
+        help="Interactively review and confirm each malicious finding. Prompts user to classify each finding as 'Suspicious', 'Benign (false positive)', 'Skip', or 'Quit'. Benign findings are automatically commented out in source files.",
+    )
+    scan_parser.add_argument(
+        "--triage-mcp",
+        action="store_true",
+        help="Use AI-powered triage for automatic malicious finding classification. Requires MISTRAL_API_KEY or GEMINI_API_KEY environment variable. AI analyzes each finding and automatically comments out benign false positives while preserving genuine threats.",
     )
     scan_parser.add_argument(
         "--move",

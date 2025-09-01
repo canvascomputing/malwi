@@ -86,6 +86,17 @@ uv run python -m src.cli.entry pypi numpy 1.24.0 --format json --folder download
 # Different output formats
 uv run python -m src.cli.entry scan examples --format yaml
 uv run python -m src.cli.entry pypi django --format markdown --save output.md
+
+# Interactive triage (manually review findings)
+uv run python -m src.cli.entry scan examples --triage
+
+# AI-powered triage (automatic false positive detection)
+export MISTRAL_API_KEY="your-mistral-api-key"
+uv run python -m src.cli.entry scan examples --triage-mcp
+
+# Alternative: Gemini AI triage
+export GEMINI_API_KEY="your-gemini-api-key" 
+uv run python -m src.cli.entry scan examples --triage-mcp
 ```
 
 ## Building Package
@@ -194,6 +205,63 @@ This ensures that:
 - **Mapping System**: JSON configs in `src/common/syntax_mapping/` define bytecode-to-token mappings
 - **Models**: Pre-trained DistilBERT model stored in `malwi-models/`
 - **Training Data**: Requires `malwi-samples` repository cloned in parent directory
+
+## Triage Functionality
+
+malwi provides two triage modes to help reduce false positives and validate malicious findings:
+
+### Interactive Triage (`--triage`)
+- **Purpose**: Manually review each malicious finding before reporting
+- **Workflow**: Prompts user for each finding with options:
+  - `Suspicious (keep as malicious)` - Preserves the finding in the report
+  - `Benign (false positive)` - Automatically comments out the code in source files
+  - `Skip (unsure)` - Leaves finding in report without modification
+  - `Quit (stop triaging)` - Stops triage process and generates report
+- **Use case**: When you want human oversight of AI classification decisions
+
+### AI-Powered Triage (`--triage-mcp`)
+- **Purpose**: Automatic false positive detection using AI analysis
+- **Providers**: Supports both Mistral and Gemini AI services
+- **Workflow**: 
+  1. AI analyzes each malicious finding with context (file path, code, maliciousness score)
+  2. AI classifies findings as suspicious, benign, or unsure
+  3. Benign findings are automatically commented out in source files
+  4. Suspicious findings are preserved in the final report
+- **Configuration**: Requires API key environment variable
+
+### Environment Variables
+
+**Mistral AI (prioritized if both are set):**
+```bash
+export MISTRAL_API_KEY="your-mistral-api-key"
+```
+
+**Gemini AI:**
+```bash  
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+### File Modification Behavior
+
+When triage identifies benign findings, malwi automatically comments out the **specific code lines** from the `source_code` attribute of benign objects:
+
+**Before triage:**
+```python
+import subprocess
+def legitimate_func():
+    return "hello"
+os.system('rm -rf /')  # Flagged as malicious but is benign
+```
+
+**After benign classification:**
+```python
+import subprocess
+def legitimate_func():
+    return "hello"
+# os.system('rm -rf /')  # Commented out (flagged but benign)
+```
+
+This targeted approach neutralizes only the specific code sections that were incorrectly flagged as malicious, preserving legitimate functionality while eliminating false positive threats.
 
 ## CLI Subcommand Structure
 

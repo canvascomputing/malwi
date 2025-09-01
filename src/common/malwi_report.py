@@ -54,7 +54,7 @@ def process_single_file(
             all_objects.append(obj)
             obj.predict()
             if (
-                maliciousness_threshold
+                maliciousness_threshold is not None
                 and obj.maliciousness
                 and obj.maliciousness > maliciousness_threshold
             ):
@@ -123,65 +123,71 @@ class TriageQuitException(Exception):
     pass
 
 
-def comment_out_benign_objects(
-    file_path: Path, benign_objects: List[MalwiObject]
+def comment_out_code_sections(
+    file_path: Path,
+    all_objects: List[MalwiObject],
+    objects_to_comment: List[MalwiObject] = None,
 ) -> bool:
     """
-    Comment out benign objects in a file using their source_code property to find matching lines.
+    Rewrite file by iterating through all objects and commenting out specified ones.
 
     Args:
         file_path: Path to the file to modify
-        benign_objects: Objects classified as benign that should be commented out
+        all_objects: All MalwiObject instances for this file
+        objects_to_comment: Objects that should be commented out (defaults to all_objects for backward compatibility)
 
     Returns:
-        True if successfully commented, False otherwise
+        True if successfully written, False otherwise
     """
-    if not benign_objects:
-        return True
+    if not all_objects:
+        # Write empty file if no objects provided
+        try:
+            file_path.write_text("", encoding="utf-8")
+            return True
+        except Exception:
+            return False
+
+    # For backward compatibility - if objects_to_comment not provided, use all_objects
+    if objects_to_comment is None:
+        objects_to_comment = all_objects
 
     try:
-        # Read the current file content
-        file_content = file_path.read_text(encoding="utf-8", errors="replace")
-        lines = file_content.split("\n")
-        total_lines = len(lines)
-
         # Get comment prefix for this file type
         file_extension = file_path.suffix.lower()
         comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
 
-        # Track which lines to comment out
-        lines_to_comment = set()
+        # Create set of objects to comment for fast lookup
+        objects_to_comment_set = set(id(obj) for obj in objects_to_comment)
 
-        for obj in benign_objects:
-            # Use source_code to find matching lines to comment
-            source_code = obj.source_code or obj.file_source_code
-            if source_code and source_code.strip():
-                # Split the source code into individual lines to match
-                source_lines = [
-                    line.strip() for line in source_code.split("\n") if line.strip()
-                ]
+        # Rewrite file by iterating through all objects
+        new_content_parts = []
 
-                # Find lines in the file that match the source code
-                for i, file_line in enumerate(lines):
-                    file_line_stripped = file_line.strip()
-                    if file_line_stripped and any(
-                        source_line in file_line_stripped
-                        or file_line_stripped in source_line
-                        for source_line in source_lines
-                    ):
-                        lines_to_comment.add(i)
+        for obj in all_objects:
+            source_code = obj.source_code
+            if not source_code:
+                continue
 
-        # Apply comments to the marked lines
-        if lines_to_comment:
-            for i in lines_to_comment:
-                if not lines[i].strip().startswith(comment_prefix):
-                    lines[i] = f"{comment_prefix} {lines[i]}"
+            should_comment = id(obj) in objects_to_comment_set
 
-            # Write back to file
-            modified_content = "\n".join(lines)
-            file_path.write_text(modified_content, encoding="utf-8")
-            return True
+            if should_comment:
+                # Comment out each line
+                commented_lines = []
+                for line in source_code.split("\n"):
+                    if line.strip():  # Non-empty line
+                        if not line.strip().startswith(comment_prefix):
+                            commented_lines.append(f"{comment_prefix} {line}")
+                        else:
+                            commented_lines.append(line)
+                    else:  # Empty line
+                        commented_lines.append(f"{comment_prefix}")
+                new_content_parts.append("\n".join(commented_lines))
+            else:
+                # Keep as-is
+                new_content_parts.append(source_code)
 
+        # Write the new file content
+        new_content = "\n\n".join(new_content_parts)
+        file_path.write_text(new_content, encoding="utf-8")
         return True
 
     except Exception:
@@ -192,49 +198,60 @@ def triage_malicious_objects(
     file_path: Path,
     malicious_objects: List[MalwiObject],
     all_objects: List[MalwiObject] = None,
+    triage_provider=None,
 ) -> List[MalwiObject]:
     """
-    Interactively review malicious objects and let user classify them.
+    Review malicious objects and let user or AI classify them.
     Files are modified based on classification: benign findings are commented out.
 
     Args:
         file_path: Path to the file containing the objects
         malicious_objects: List of MalwiObject instances flagged as malicious
+        all_objects: List of all objects (unused, kept for compatibility)
+        triage_provider: TriageProvider instance (defaults to interactive)
 
     Returns:
-        List of MalwiObject instances confirmed as malicious by the user
+        List of MalwiObject instances confirmed as malicious by the user/AI
 
     Raises:
         TriageQuitException: When user selects quit option
     """
-    import questionary
+    # Import here to avoid circular imports
+    if triage_provider is None:
+        from common.triage import create_triage_provider
+
+        triage_provider = create_triage_provider(use_mcp=False)
 
     triaged_objects = []
     benign_objects = []  # Track objects classified as benign for file modification
+
+    # Read file content once for all objects
+    try:
+        file_content = file_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"Warning: Could not read file content: {e}")
+        file_content = ""
 
     for obj in malicious_objects:
         # Get appropriate comment prefix for the file extension
         file_extension = Path(obj.file_path).suffix.lower()
         comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
 
-        # Display formatted object using the same format as --format code
-        print()
-        print(format_object_for_display(obj, comment_prefix))
-        print()
+        # Display formatted object using the same format as --format code (only for interactive)
+        if (
+            hasattr(triage_provider, "__class__")
+            and "Interactive" in triage_provider.__class__.__name__
+        ):
+            print()
+            print(format_object_for_display(obj, comment_prefix))
+            print()
 
-        # Ask user to classify
-        maliciousness_str = (
-            f"{obj.maliciousness:.2f}" if obj.maliciousness is not None else "N/A"
-        )
-        classification = questionary.select(
-            f"How would you classify this code (AI score: {maliciousness_str})?",
-            choices=[
-                "Suspicious (keep as malicious)",
-                "Benign (false positive)",
-                "Skip (unsure)",
-                "Quit (stop triaging)",
-            ],
-        ).ask()
+        # Get classification from triage provider
+        try:
+            classification = triage_provider.classify_object(obj, file_content)
+        except Exception as e:
+            print(f"Error during triage classification: {e}")
+            classification = "Skip (unsure)"
 
         if classification == "Suspicious (keep as malicious)":
             triaged_objects.append(obj)
@@ -246,7 +263,9 @@ def triage_malicious_objects(
 
     # Comment out benign findings in the file
     if benign_objects:
-        comment_out_benign_objects(file_path, benign_objects)
+        comment_out_code_sections(
+            file_path, all_objects or malicious_objects, benign_objects
+        )
 
     return triaged_objects
 
@@ -608,6 +627,7 @@ class MalwiReport:
         malicious_threshold: float = 0.7,
         on_finding: Optional[callable] = None,
         triage: bool = False,
+        triage_provider=None,
     ) -> "MalwiReport":
         """
         Create a MalwiReport by processing files from the given input path.
@@ -620,6 +640,7 @@ class MalwiReport:
             on_finding: Optional callback function called when malicious objects are found
                         Function signature: callback(file_path: Path, malicious_objects: List[MalwiObject])
             triage: If True, interactively review each finding before reporting
+            triage_provider: TriageProvider instance for classification decisions
 
         Returns:
             MalwiReport containing analysis results
@@ -711,7 +732,10 @@ class MalwiReport:
                 if file_malicious_objects and triage:
                     try:
                         triaged_malicious_objects = triage_malicious_objects(
-                            file_path, file_malicious_objects, file_all_objects
+                            file_path,
+                            file_malicious_objects,
+                            file_all_objects,
+                            triage_provider,
                         )
                     except TriageQuitException:
                         # User quit triage - stop processing entirely

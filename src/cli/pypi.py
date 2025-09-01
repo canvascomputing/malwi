@@ -309,6 +309,22 @@ def pypi_command(args):
     except Exception as e:
         model_warning("ML", e)
 
+    # Create triage provider if needed
+    triage_provider = None
+    use_triage = args.triage or args.triage_mcp
+    if use_triage:
+        from common.triage import create_triage_provider
+
+        try:
+            triage_provider = create_triage_provider(use_mcp=args.triage_mcp)
+        except ValueError as e:
+            if args.triage_mcp:
+                error(f"MCP triage failed: {e}")
+                return
+            else:
+                # Fallback to interactive for --triage
+                triage_provider = create_triage_provider(use_mcp=False)
+
     # Set up move directory if specified
     move_dir = None
     file_copy_callback = None
@@ -331,7 +347,8 @@ def pypi_command(args):
             silent=args.quiet,
             malicious_threshold=args.threshold,
             on_finding=file_copy_callback,
-            triage=args.triage,
+            triage=use_triage,
+            triage_provider=triage_provider,
         )
         all_reports.append(report)
 
@@ -409,7 +426,12 @@ def setup_pypi_parser(subparsers):
     pypi_parser.add_argument(
         "--triage",
         action="store_true",
-        help="Interactively review and confirm each finding before reporting.",
+        help="Interactively review and confirm each malicious finding. Prompts user to classify each finding as 'Suspicious', 'Benign (false positive)', 'Skip', or 'Quit'. Benign findings are automatically commented out in source files.",
+    )
+    pypi_parser.add_argument(
+        "--triage-mcp",
+        action="store_true",
+        help="Use AI-powered triage for automatic malicious finding classification. Requires MISTRAL_API_KEY or GEMINI_API_KEY environment variable. AI analyzes each finding and automatically comments out benign false positives while preserving genuine threats.",
     )
     pypi_parser.add_argument(
         "--quiet",
