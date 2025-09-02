@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from common.malwi_report import MalwiReport
 from common.files import copy_file
 from common.config import SUPPORTED_EXTENSIONS
+from common.cache import MalwiCache
 from common.messaging import (
     configure_messaging,
     banner,
@@ -69,7 +70,7 @@ def create_real_time_findings_display(silent: bool = False):
     return display_malicious_finding, cleanup_display
 
 
-def run_batch_scan(child_folder: Path, args) -> dict:
+def run_batch_scan(child_folder: Path, args, cache=None) -> dict:
     """Run a single scan on a child folder and return results."""
     # Check if output file already exists
     format_ext = {
@@ -117,6 +118,7 @@ def run_batch_scan(child_folder: Path, args) -> dict:
             malicious_threshold=args.threshold,
             triage=use_triage,
             triage_provider=triage_provider,
+            cache=cache,
         )
 
         # Generate output based on format
@@ -148,7 +150,7 @@ def run_batch_scan(child_folder: Path, args) -> dict:
         }
 
 
-def process_batch_mode(input_path: Path, args) -> None:
+def process_batch_mode(input_path: Path, args, cache=None) -> None:
     """Process multiple child folders in batch mode."""
     if not input_path.is_dir():
         path_error("Batch mode requires a directory path")
@@ -190,7 +192,7 @@ def process_batch_mode(input_path: Path, args) -> None:
             try:
                 # Submit all jobs
                 future_to_folder = {
-                    executor.submit(run_batch_scan, folder, args): folder
+                    executor.submit(run_batch_scan, folder, args, cache): folder
                     for folder in child_folders
                 }
 
@@ -252,9 +254,14 @@ def scan_command(args):
         path_error(input_path)
         return
 
+    # Create cache if specified
+    cache = None
+    if args.cache:
+        cache = MalwiCache(Path(args.cache))
+
     # Handle batch mode - run independent scans on child folders
     if args.batch:
-        process_batch_mode(input_path, args)
+        process_batch_mode(input_path, args, cache)
         return
 
     # Load ML models (only for non-batch mode)
@@ -327,6 +334,7 @@ def scan_command(args):
         on_finding=combined_callback,
         triage=use_triage,
         triage_provider=triage_provider,
+        cache=cache,
     )
 
     # Clean up the real-time display
@@ -451,6 +459,13 @@ def setup_scan_parser(subparsers):
         "-m",
         metavar="PATH",
         help="Specify the DistilBert model path",
+        default=None,
+    )
+    developer_group.add_argument(
+        "--cache",
+        "-c",
+        metavar="FILE",
+        help="Enable caching of prediction results to specified CSV file. Results are looked up by SHA512 hash of source code.",
         default=None,
     )
 

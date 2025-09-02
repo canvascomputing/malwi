@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from common.malwi_report import MalwiReport
 from common.files import copy_file
+from common.cache import MalwiCache
 from common.messaging import (
     configure_messaging,
     banner,
@@ -288,6 +289,11 @@ def pypi_command(args):
 
     banner()
 
+    # Create cache if specified
+    cache = None
+    if args.cache:
+        cache = MalwiCache(Path(args.cache))
+
     # Use specified download folder
     download_path = Path(args.folder)
 
@@ -354,6 +360,7 @@ def pypi_command(args):
             on_finding=file_copy_callback,
             triage=use_triage,
             triage_provider=triage_provider,
+            cache=cache,
         )
         all_reports.append(report)
 
@@ -473,6 +480,13 @@ def setup_pypi_parser(subparsers):
         "-m",
         metavar="PATH",
         help="Specify the DistilBert model path",
+        default=None,
+    )
+    pypi_developer_group.add_argument(
+        "--cache",
+        "-c",
+        metavar="FILE",
+        help="Enable caching of prediction results to specified CSV file. Results are looked up by SHA512 hash of source code.",
         default=None,
     )
 

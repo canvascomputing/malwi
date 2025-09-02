@@ -23,6 +23,8 @@ from malwi._version import __version__
 def process_single_file(
     file_path: Path,
     maliciousness_threshold: Optional[float] = None,
+    cache=None,
+    triage_mode: bool = False,
 ) -> tuple[List[MalwiObject], List[MalwiObject]]:
     """
     Process a single file and return all objects and malicious objects.
@@ -30,6 +32,8 @@ def process_single_file(
     Args:
         file_path: Path to the file to process
         maliciousness_threshold: Threshold for classifying objects as malicious
+        cache: Cache instance for storing/retrieving prediction results
+        triage_mode: If True, don't write to cache yet (wait for triage decision)
 
     Returns:
         Tuple of (all_objects, malicious_objects)
@@ -52,12 +56,20 @@ def process_single_file(
 
         for obj in objects:
             all_objects.append(obj)
-            obj.predict()
+            # In triage mode, don't write to cache yet
+            obj.predict(cache=cache, write_to_cache=not triage_mode)
             if (
                 maliciousness_threshold is not None
                 and obj.maliciousness
                 and obj.maliciousness > maliciousness_threshold
             ):
+                # Check if this object was previously triaged as benign
+                if cache is not None:
+                    cached_triage_decision = cache.get_cached_triage_decision(obj)
+                    if cached_triage_decision == "benign":
+                        # Skip objects that were previously triaged as benign (false positives)
+                        continue
+
                 malicious_objects.append(obj)
 
         return all_objects, malicious_objects
@@ -199,6 +211,7 @@ def triage_malicious_objects(
     malicious_objects: List[MalwiObject],
     all_objects: List[MalwiObject] = None,
     triage_provider=None,
+    cache=None,
 ) -> List[MalwiObject]:
     """
     Review malicious objects and let user or AI classify them.
@@ -209,6 +222,7 @@ def triage_malicious_objects(
         malicious_objects: List of MalwiObject instances flagged as malicious
         all_objects: List of all objects (unused, kept for compatibility)
         triage_provider: TriageProvider instance (defaults to interactive)
+        cache: Cache instance for storing triaged results
 
     Returns:
         List of MalwiObject instances confirmed as malicious by the user/AI
@@ -233,27 +247,7 @@ def triage_malicious_objects(
         file_content = ""
 
     for obj in malicious_objects:
-        # Get appropriate comment prefix for the file extension
-        file_extension = Path(obj.file_path).suffix.lower()
-        comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
-
-        # Display formatted object using the same format as --format code (only for interactive)
-        if (
-            hasattr(triage_provider, "__class__")
-            and "Interactive" in triage_provider.__class__.__name__
-        ):
-            print()
-            print(format_object_for_display(obj, comment_prefix))
-            print()
-
-        # Get classification from triage provider
-        try:
-            classification = triage_provider.classify_object(obj, file_content)
-        except Exception as e:
-            print(f"Error during triage classification: {e}")
-            classification = "Skip (unsure)"
-
-        # Import triage constants
+        # Import triage constants at top of loop
         from common.triage import (
             TRIAGE_SUSPICIOUS,
             TRIAGE_BENIGN,
@@ -261,10 +255,56 @@ def triage_malicious_objects(
             TRIAGE_QUIT,
         )
 
+        # Check if we already have a triage decision cached for this object
+        cached_decision = None
+        if cache is not None:
+            cached_decision = cache.get_cached_triage_decision(obj)
+
+        if cached_decision:
+            # Use cached triage decision
+            classification = cached_decision
+            print(f"Using cached triage decision for {obj.name}: {classification}")
+        else:
+            # Get appropriate comment prefix for the file extension
+            file_extension = Path(obj.file_path).suffix.lower()
+            comment_prefix = EXTENSION_COMMENT_PREFIX.get(file_extension, "#")
+
+            # Display formatted object using the same format as --format code (only for interactive)
+            if (
+                hasattr(triage_provider, "__class__")
+                and "Interactive" in triage_provider.__class__.__name__
+            ):
+                print()
+                print(format_object_for_display(obj, comment_prefix))
+                print()
+
+            # Get classification from triage provider
+            classification_successful = False
+            try:
+                classification = triage_provider.classify_object(obj, file_content)
+                classification_successful = True
+            except Exception as e:
+                print(f"Error during triage classification: {e}")
+                classification = TRIAGE_SKIP
+
+            # Only cache decisions from successful user interactions (not errors or quits)
+            if (
+                cache is not None
+                and classification_successful
+                and classification != TRIAGE_QUIT
+            ):
+                cache.cache_triage_decision(obj, classification)
+
         if classification == TRIAGE_SUSPICIOUS:
             triaged_objects.append(obj)
+            # Cache the confirmed malicious object score
+            if cache is not None and obj.maliciousness is not None:
+                cache.cache_score(obj, obj.maliciousness)
         elif classification == TRIAGE_BENIGN:
             benign_objects.append(obj)
+            # Cache the confirmed benign object score
+            if cache is not None and obj.maliciousness is not None:
+                cache.cache_score(obj, obj.maliciousness)
         elif classification == TRIAGE_QUIT:
             raise TriageQuitException("User quit triage")
         # For 'Skip', we don't add to either list
@@ -636,6 +676,7 @@ class MalwiReport:
         on_finding: Optional[callable] = None,
         triage: bool = False,
         triage_provider=None,
+        cache=None,
     ) -> "MalwiReport":
         """
         Create a MalwiReport by processing files from the given input path.
@@ -649,6 +690,7 @@ class MalwiReport:
                         Function signature: callback(file_path: Path, malicious_objects: List[MalwiObject])
             triage: If True, interactively review each finding before reporting
             triage_provider: TriageProvider instance for classification decisions
+            cache: Cache instance for storing/retrieving prediction results
 
         Returns:
             MalwiReport containing analysis results
@@ -733,6 +775,8 @@ class MalwiReport:
                 file_all_objects, file_malicious_objects = process_single_file(
                     file_path,
                     maliciousness_threshold=malicious_threshold,
+                    cache=cache,
+                    triage_mode=triage,
                 )
                 all_objects.extend(file_all_objects)
 
@@ -744,6 +788,7 @@ class MalwiReport:
                             file_malicious_objects,
                             file_all_objects,
                             triage_provider,
+                            cache,
                         )
                     except TriageQuitException:
                         # User quit triage - stop processing entirely

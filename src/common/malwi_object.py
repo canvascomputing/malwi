@@ -272,7 +272,15 @@ class MalwiObject:
             # Tokenizer not available or other error - return 0
             return 0
 
-    def predict(self) -> Optional[dict]:
+    def predict(self, cache=None, write_to_cache=True) -> Optional[dict]:
+        # Check cache first if available
+        if cache is not None:
+            cached_score = cache.get_cached_score(self)
+            if cached_score is not None:
+                self.maliciousness = cached_score
+                # Return a mock prediction dict for compatibility
+                return {"probabilities": [1.0 - cached_score, cached_score]}
+
         # Use the merged to_token_string method which includes warnings and handles all cases
         token_string = self.to_token_string(map_special_tokens=True)
         prediction = None
@@ -283,8 +291,14 @@ class MalwiObject:
             prediction = get_node_text_prediction(token_string)
         else:
             self.maliciousness = None
+
         if prediction and "probabilities" in prediction:
             self.maliciousness = prediction["probabilities"][1]
+
+            # Cache the result if cache is available and write_to_cache is True
+            if cache is not None and self.maliciousness is not None and write_to_cache:
+                cache.cache_score(self, self.maliciousness)
+
         return prediction
 
     def to_dict(self) -> dict:

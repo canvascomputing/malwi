@@ -386,6 +386,7 @@ class TestBatchMode:
                     malicious_threshold=0.7,
                     triage=args.triage,
                     triage_provider=None,
+                    cache=None,
                 )
 
                 # Verify result
@@ -655,6 +656,7 @@ class TestPyPICommand:
                     on_finding=None,
                     triage=False,
                     triage_provider=None,
+                    cache=None,
                 )
 
                 # Verify result output
@@ -819,6 +821,7 @@ class TestPyPICommand:
                     on_finding=None,
                     triage=False,
                     triage_provider=None,
+                    cache=None,
                 )
 
     @patch("cli.pypi.scan_pypi_package")

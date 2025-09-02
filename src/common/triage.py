@@ -229,7 +229,7 @@ class UITriageProvider:
         self.widgets["file_label"] = tk.Label(
             info_frame,
             text="📄 File: ",
-            font=("Arial", 10),
+            font=("Arial", 14),
             bg="#2b2b2b",
             fg="#cccccc",
             anchor="w",
@@ -240,7 +240,7 @@ class UITriageProvider:
         self.widgets["name_label"] = tk.Label(
             info_frame,
             text="🎯 Object: ",
-            font=("Arial", 10),
+            font=("Arial", 14),
             bg="#2b2b2b",
             fg="#cccccc",
             anchor="w",
@@ -251,7 +251,7 @@ class UITriageProvider:
         self.widgets["score_label"] = tk.Label(
             info_frame,
             text="⚠️  AI Maliciousness Score: ",
-            font=("Arial", 10, "bold"),
+            font=("Arial", 14, "bold"),
             bg="#2b2b2b",
             fg="#ffa500",
             anchor="w",
@@ -262,21 +262,11 @@ class UITriageProvider:
         code_frame = tk.Frame(self.root, bg="#2b2b2b")
         code_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        code_label = tk.Label(
-            code_frame,
-            text="📝 Code to Review:",
-            font=("Arial", 12, "bold"),
-            bg="#2b2b2b",
-            fg="#ffffff",
-            anchor="w",
-        )
-        code_label.pack(fill=tk.X, pady=(0, 5))
-
         # Code text area
         self.widgets["code_text"] = scrolledtext.ScrolledText(
             code_frame,
             wrap=tk.NONE,  # Don't wrap lines to preserve code formatting
-            font=("Courier New", 12),
+            font=("Courier New", 14),
             bg="#1e1e1e",
             fg="#ffffff",
             insertbackground="white",
@@ -300,7 +290,7 @@ class UITriageProvider:
         question_label = tk.Label(
             question_frame,
             text="🤔 How would you classify this code?",
-            font=("Arial", 12, "bold"),
+            font=("Arial", 14, "bold"),
             bg="#2b2b2b",
             fg="#ffffff",
         )
@@ -312,7 +302,7 @@ class UITriageProvider:
 
         # Button style configuration
         button_config = {
-            "font": ("Arial", 11, "bold"),
+            "font": ("Arial", 14, "bold"),
             "width": 20,
             "height": 2,
             "relief": tk.RAISED,
