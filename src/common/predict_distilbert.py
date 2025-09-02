@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from typing import Dict, Any, Optional, List
 import threading
@@ -6,6 +7,9 @@ import threading
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, DistilBertForSequenceClassification
+
+# Disable tokenizers parallelism to avoid warnings in multiprocessing contexts
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Version-specific model repositories
 from malwi._version import __version__

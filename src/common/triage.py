@@ -6,9 +6,8 @@ import os
 from typing import Protocol
 
 from mistralai import Mistral
+from openai import OpenAI
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from google import genai
 
 from .malwi_object import MalwiObject
@@ -42,7 +41,7 @@ Based on your analysis, respond with exactly one of these options:
 - "{TRIAGE_SUSPICIOUS}" - if this appears to be suspicious code
 - "{TRIAGE_BENIGN}" - if this appears to be legitimate code
 
-Your final decision:"""
+Respond with one word: {TRIAGE_SUSPICIOUS} or {TRIAGE_BENIGN}"""
 
 
 class TriageProvider(Protocol):
@@ -116,7 +115,6 @@ class MistralTriageProvider:
             response = self.client.chat.complete(
                 model="mistral-medium-latest",
                 messages=[{"role": "user", "content": query}],
-                max_tokens=100,
                 temperature=0.1,
             )
 
@@ -152,82 +150,190 @@ class MistralTriageProvider:
             return TRIAGE_SKIP
 
 
-class GeminiMCPTriageProvider:
-    """Triage provider using Gemini MCP for decisions."""
+class GeminiTriageProvider:
+    """Triage provider using Gemini API for decisions."""
 
     def __init__(self):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is required")
         genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
 
-    async def triage_with_gemini_mcp(self, obj: MalwiObject, file_content: str) -> str:
-        """Use Gemini MCP to make triage decisions."""
-        server_params = StdioServerParameters(
-            command="uvx",
-            args=["--from", "google-mcp", "google_mcp"],
-        )
+    def triage_with_gemini(self, obj: MalwiObject, file_content: str) -> str:
+        """Use Gemini API to make triage decisions."""
+        try:
+            # Prepare the triage query
+            query = create_triage_prompt(obj, file_content)
 
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
+            # Call the Gemini model
+            response = self.model.generate_content(
+                query,
+                generation_config=genai.GenerationConfig(
+                    max_output_tokens=100,
+                    temperature=0.1,
+                ),
+            )
 
-                # Prepare the triage query
-                query = create_triage_prompt(obj, file_content)
-
-                # Call the Gemini model
-                result = await session.call_tool(
-                    "generate_text",
-                    {
-                        "prompt": query,
-                        "model": "gemini-2.5-flash",
-                        "max_tokens": 100,
-                        "temperature": 0.1,
-                    },
+            # Extract response text
+            content = response.text
+            if content is None:
+                logger.warning(
+                    f"Gemini returned None content for {obj.name}, defaulting to suspicious"
                 )
+                return TRIAGE_SUSPICIOUS
+            response_text = content.lower().strip()
 
-                # Extract response text
-                response_text = result.content[0].text
+            # Parse the decision
+            if TRIAGE_BENIGN in response_text:
+                return TRIAGE_BENIGN
+            elif TRIAGE_SUSPICIOUS in response_text:
+                return TRIAGE_SUSPICIOUS
+            elif TRIAGE_SKIP in response_text:
+                return TRIAGE_SKIP
+            else:
+                # Default to suspicious if unclear
+                logger.warning(
+                    f"Unclear response from Gemini: {response_text}, defaulting to suspicious"
+                )
+                return TRIAGE_SUSPICIOUS
 
-                # Parse the decision
-                if TRIAGE_BENIGN in response_text:
-                    return TRIAGE_BENIGN
-                elif TRIAGE_SUSPICIOUS in response_text:
-                    return TRIAGE_SUSPICIOUS
-                elif TRIAGE_SKIP in response_text:
-                    return TRIAGE_SKIP
-                else:
-                    # Default to suspicious if unclear
-                    return TRIAGE_SUSPICIOUS
+        except Exception as e:
+            logger.error(f"Gemini triage failed for {obj.name}: {e}")
+            return TRIAGE_SKIP
 
     def classify_object(self, obj: MalwiObject, file_content: str) -> str:
-        """Classify object using Gemini MCP."""
+        """Classify object using Gemini API."""
         try:
-            decision = asyncio.run(self.triage_with_gemini_mcp(obj, file_content))
+            decision = self.triage_with_gemini(obj, file_content)
 
-            logger.info(f"Gemini MCP triage decision for {obj.name}: {decision}")
+            logger.info(f"Gemini triage decision for {obj.name}: {decision}")
 
             return decision
 
         except Exception as e:
-            logger.error(f"Gemini MCP triage failed for {obj.name}: {e}")
+            logger.error(f"Triage failed for {obj.name}: {e}")
             return TRIAGE_SKIP
 
 
-def create_triage_provider(use_mcp: bool = False, **mcp_kwargs) -> TriageProvider:
+class OpenAITriageProvider:
+    """Triage provider using OpenAI-compatible APIs (OpenAI, Gemini, etc.)."""
+
+    def __init__(self):
+        # Get API key and base URL from environment variables
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY environment variable is required for OpenAI triage"
+            )
+
+        # Default to OpenAI's API if no base URL is provided
+        if not base_url:
+            base_url = "https://api.openai.com/v1/"
+
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+        # Get model from environment or use default
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+        logger.info(
+            f"OpenAI provider initialized with base_url: {base_url}, model: {self.model}"
+        )
+
+    def triage_with_openai(self, obj: MalwiObject, file_content: str) -> str:
+        """Use OpenAI-compatible API to make triage decisions."""
+        try:
+            # Prepare the triage query
+            query = create_triage_prompt(obj, file_content)
+
+            # Call OpenAI-compatible API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a security analyst. Respond with one word: suspicious, benign, or skip.",
+                    },
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.1,
+            )
+
+            # Extract response text
+            logger.debug(f"OpenAI API response for {obj.name}: {response}")
+
+            if not response.choices or len(response.choices) == 0:
+                logger.warning(
+                    f"OpenAI returned no choices for {obj.name}, defaulting to suspicious"
+                )
+                return TRIAGE_SUSPICIOUS
+
+            choice = response.choices[0]
+            if not hasattr(choice, "message") or not choice.message:
+                logger.warning(
+                    f"OpenAI returned no message for {obj.name}, defaulting to suspicious"
+                )
+                return TRIAGE_SUSPICIOUS
+
+            content = choice.message.content
+            if content is None:
+                logger.warning(
+                    f"OpenAI returned None content for {obj.name}, defaulting to suspicious. Full response: {response}"
+                )
+                return TRIAGE_SUSPICIOUS
+            response_text = content.lower().strip()
+
+            # Parse the decision
+            if TRIAGE_BENIGN in response_text:
+                return TRIAGE_BENIGN
+            elif TRIAGE_SUSPICIOUS in response_text:
+                return TRIAGE_SUSPICIOUS
+            elif TRIAGE_SKIP in response_text:
+                return TRIAGE_SKIP
+            else:
+                # Default to suspicious if unclear
+                logger.warning(
+                    f"Unclear response from OpenAI: {response_text}, defaulting to suspicious"
+                )
+                return TRIAGE_SUSPICIOUS
+
+        except Exception as e:
+            logger.error(f"OpenAI triage failed for {obj.name}: {e}")
+            return TRIAGE_SKIP
+
+    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+        """Classify object using OpenAI-compatible API."""
+        try:
+            decision = self.triage_with_openai(obj, file_content)
+
+            logger.info(f"OpenAI triage decision for {obj.name}: {decision}")
+
+            return decision
+
+        except Exception as e:
+            logger.error(f"Triage failed for {obj.name}: {e}")
+            return TRIAGE_SKIP
+
+
+def create_triage_provider(use_llm: bool = False, **llm_kwargs) -> TriageProvider:
     """Create appropriate triage provider."""
-    if use_mcp:
+    if use_llm:
         # Check which API keys are available and prioritize accordingly
+        openai_key = os.getenv("OPENAI_API_KEY")
         mistral_key = os.getenv("MISTRAL_API_KEY")
         gemini_key = os.getenv("GEMINI_API_KEY")
 
-        if mistral_key:
-            return MistralTriageProvider(**mcp_kwargs)
+        if openai_key:
+            return OpenAITriageProvider(**llm_kwargs)
+        elif mistral_key:
+            return MistralTriageProvider(**llm_kwargs)
         elif gemini_key:
-            return GeminiMCPTriageProvider(**mcp_kwargs)
+            return GeminiTriageProvider(**llm_kwargs)
         else:
             raise ValueError(
-                "Either MISTRAL_API_KEY or GEMINI_API_KEY environment variable is required for MCP triage"
+                "Either OPENAI_API_KEY, MISTRAL_API_KEY or GEMINI_API_KEY environment variable is required for LLM triage"
             )
     else:
         return InteractiveTriageProvider()

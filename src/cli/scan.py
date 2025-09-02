@@ -89,14 +89,14 @@ def run_batch_scan(child_folder: Path, args) -> dict:
     try:
         # Create triage provider for batch processing if needed
         triage_provider = None
-        use_triage = args.triage or args.triage_mcp
+        use_triage = args.triage or args.triage_llm
         if use_triage:
             from common.triage import create_triage_provider
 
             try:
-                triage_provider = create_triage_provider(use_mcp=args.triage_mcp)
+                triage_provider = create_triage_provider(use_llm=args.triage_llm)
             except ValueError as e:
-                if args.triage_mcp:
+                if args.triage_llm:
                     return {
                         "folder": child_folder.name,
                         "success": False,
@@ -295,14 +295,14 @@ def scan_command(args):
 
     # Create triage provider if needed
     triage_provider = None
-    use_triage = args.triage or args.triage_mcp
+    use_triage = args.triage or args.triage_llm
     if use_triage:
         from common.triage import create_triage_provider
 
         try:
-            triage_provider = create_triage_provider(use_mcp=args.triage_mcp)
+            triage_provider = create_triage_provider(use_llm=args.triage_llm)
         except ValueError as e:
-            if args.triage_mcp:
+            if args.triage_llm:
                 error(f"MCP triage failed: {e}")
                 return
             else:
@@ -402,15 +402,17 @@ def setup_scan_parser(subparsers):
         action="store_true",
         help="Suppress logging output and progress bar.",
     )
-    scan_parser.add_argument(
+    # Create mutually exclusive group for triage options
+    triage_group = scan_parser.add_mutually_exclusive_group()
+    triage_group.add_argument(
         "--triage",
         action="store_true",
         help="Interactively review and confirm each malicious finding. Prompts user to classify each finding as 'Suspicious', 'Benign (false positive)', 'Skip', or 'Quit'. Benign findings are automatically commented out in source files.",
     )
-    scan_parser.add_argument(
-        "--triage-mcp",
+    triage_group.add_argument(
+        "--triage-llm",
         action="store_true",
-        help="Use AI-powered triage for automatic malicious finding classification. Requires MISTRAL_API_KEY or GEMINI_API_KEY environment variable. AI analyzes each finding and automatically comments out benign false positives while preserving genuine threats.",
+        help="Use AI-powered triage for automatic malicious finding classification. Requires OPENAI_API_KEY, MISTRAL_API_KEY or GEMINI_API_KEY environment variable. AI analyzes each finding and automatically comments out benign false positives while preserving genuine threats.",
     )
     scan_parser.add_argument(
         "--move",
