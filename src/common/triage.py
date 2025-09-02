@@ -102,8 +102,15 @@ class MistralTriageProvider:
     def __init__(self):
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
-            raise ValueError("MISTRAL_API_KEY environment variable is required")
-        self.client = Mistral(api_key=api_key)
+            raise ValueError(
+                "MISTRAL_API_KEY environment variable is required for Mistral triage"
+            )
+
+        try:
+            self.client = Mistral(api_key=api_key)
+            logger.info("Mistral triage provider initialized successfully")
+        except Exception as e:
+            raise ValueError(f"Failed to initialize Mistral client: {e}")
 
     def triage_with_mistral(self, obj: MalwiObject, file_content: str) -> str:
         """Use Mistral to make triage decisions."""
@@ -156,9 +163,16 @@ class GeminiTriageProvider:
     def __init__(self):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is required")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            raise ValueError(
+                "GEMINI_API_KEY environment variable is required for Gemini triage"
+            )
+
+        try:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            logger.info("Gemini triage provider initialized successfully")
+        except Exception as e:
+            raise ValueError(f"Failed to initialize Gemini client: {e}")
 
     def triage_with_gemini(self, obj: MalwiObject, file_content: str) -> str:
         """Use Gemini API to make triage decisions."""
@@ -325,15 +339,46 @@ def create_triage_provider(use_llm: bool = False, **llm_kwargs) -> TriageProvide
         mistral_key = os.getenv("MISTRAL_API_KEY")
         gemini_key = os.getenv("GEMINI_API_KEY")
 
+        errors = []
+
+        # Try OpenAI first
         if openai_key:
-            return OpenAITriageProvider(**llm_kwargs)
-        elif mistral_key:
-            return MistralTriageProvider(**llm_kwargs)
-        elif gemini_key:
-            return GeminiTriageProvider(**llm_kwargs)
-        else:
+            try:
+                return OpenAITriageProvider(**llm_kwargs)
+            except Exception as e:
+                errors.append(f"OpenAI: {e}")
+                logger.warning(f"Failed to initialize OpenAI provider: {e}")
+
+        # Try Mistral second
+        if mistral_key:
+            try:
+                return MistralTriageProvider(**llm_kwargs)
+            except Exception as e:
+                errors.append(f"Mistral: {e}")
+                logger.warning(f"Failed to initialize Mistral provider: {e}")
+
+        # Try Gemini third
+        if gemini_key:
+            try:
+                return GeminiTriageProvider(**llm_kwargs)
+            except Exception as e:
+                errors.append(f"Gemini: {e}")
+                logger.warning(f"Failed to initialize Gemini provider: {e}")
+
+        # If no keys are available, provide helpful error message
+        if not any([openai_key, mistral_key, gemini_key]):
             raise ValueError(
-                "Either OPENAI_API_KEY, MISTRAL_API_KEY or GEMINI_API_KEY environment variable is required for LLM triage"
+                "No LLM triage provider API keys found. Please set one of the following environment variables:\n"
+                "- OPENAI_API_KEY (for OpenAI, or OpenAI-compatible APIs like Gemini)\n"
+                "- MISTRAL_API_KEY (for Mistral AI)\n"
+                "- GEMINI_API_KEY (for Google Gemini direct API)\n\n"
+                "Example: export OPENAI_API_KEY=your_api_key_here"
             )
+
+        # If keys were found but all providers failed to initialize
+        error_summary = "; ".join(errors)
+        raise ValueError(
+            f"All available LLM providers failed to initialize: {error_summary}"
+        )
     else:
         return InteractiveTriageProvider()

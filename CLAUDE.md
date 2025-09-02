@@ -91,12 +91,15 @@ uv run python -m src.cli.entry pypi django --format markdown --save output.md
 uv run python -m src.cli.entry scan examples --triage
 
 # AI-powered triage (automatic false positive detection)
-export MISTRAL_API_KEY="your-mistral-api-key"
-uv run python -m src.cli.entry scan examples --triage-mcp
+export OPENAI_API_KEY="your-openai-api-key"
+uv run python -m src.cli.entry scan examples --triage-llm
 
-# Alternative: Gemini AI triage
+# Alternative providers:
+export MISTRAL_API_KEY="your-mistral-api-key"
+uv run python -m src.cli.entry scan examples --triage-llm
+
 export GEMINI_API_KEY="your-gemini-api-key" 
-uv run python -m src.cli.entry scan examples --triage-mcp
+uv run python -m src.cli.entry scan examples --triage-llm
 ```
 
 ## Building Package
@@ -219,27 +222,42 @@ malwi provides two triage modes to help reduce false positives and validate mali
   - `Quit (stop triaging)` - Stops triage process and generates report
 - **Use case**: When you want human oversight of AI classification decisions
 
-### AI-Powered Triage (`--triage-mcp`)
-- **Purpose**: Automatic false positive detection using AI analysis
-- **Providers**: Supports both Mistral and Gemini AI services
+### AI-Powered Triage (`--triage-llm`)
+- **Purpose**: Automatic false positive detection using Large Language Model analysis
+- **Providers**: Supports OpenAI, Mistral, and Gemini AI services (tries in that order)
 - **Workflow**: 
   1. AI analyzes each malicious finding with context (file path, code, maliciousness score)
-  2. AI classifies findings as suspicious, benign, or unsure
+  2. AI classifies findings as suspicious, benign, or skip
   3. Benign findings are automatically commented out in source files
   4. Suspicious findings are preserved in the final report
-- **Configuration**: Requires API key environment variable
+- **Environment Variables**: Requires at least one of `OPENAI_API_KEY`, `MISTRAL_API_KEY`, or `GEMINI_API_KEY`
+- **Mutual Exclusion**: Cannot be used together with `--triage` (interactive mode)
 
 ### Environment Variables
 
-**Mistral AI (prioritized if both are set):**
+**OpenAI (prioritized first, supports OpenAI-compatible APIs):**
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+# Optional: for custom endpoints like Gemini via OpenAI API
+export OPENAI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export OPENAI_MODEL="gemini-2.5-flash"
+```
+
+**Mistral AI (tried second):**
 ```bash
 export MISTRAL_API_KEY="your-mistral-api-key"
 ```
 
-**Gemini AI:**
+**Gemini AI Direct (tried third):**
 ```bash  
 export GEMINI_API_KEY="your-gemini-api-key"
 ```
+
+**Notes:**
+- Only one API key is required - malwi will use the first available provider
+- If multiple keys are set, OpenAI is prioritized, then Mistral, then Gemini
+- OpenAI provider supports custom base URLs for OpenAI-compatible APIs
+- Graceful error handling provides helpful setup instructions if no keys are found
 
 ### File Modification Behavior
 

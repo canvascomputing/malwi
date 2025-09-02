@@ -86,7 +86,7 @@ malwi scan <path> [options]
 
 **Triage Options:**
 - `--triage` - Interactive review of findings with manual classification
-- `--triage-mcp` - AI-powered automatic false positive detection
+- `--triage-llm` - AI-powered automatic false positive detection using LLMs (requires `OPENAI_API_KEY`, `MISTRAL_API_KEY`, or `GEMINI_API_KEY`)
 
 **File Management:**
 - `--move [DIR]` - Copy suspicious files to directory (default: findings)
@@ -100,8 +100,8 @@ malwi scan examples/malicious
 malwi scan examples --triage
 
 # AI-powered triage (requires API key)
-export MISTRAL_API_KEY="your-api-key"
-malwi scan examples --triage-mcp
+export OPENAI_API_KEY="your-api-key"
+malwi scan examples --triage-llm
 
 # Custom output
 malwi scan examples --format json --save report.json --threshold 0.8
@@ -109,10 +109,6 @@ malwi scan examples --format json --save report.json --threshold 0.8
 # Batch processing
 malwi scan parent_directory --batch --format yaml
 ```
-
-**Environment Variables:**
-- `MISTRAL_API_KEY` - For Mistral AI triage
-- `GEMINI_API_KEY` - For Gemini AI triage
 
 ## PyPI Package Scanning
 
