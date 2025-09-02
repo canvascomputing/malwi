@@ -27,9 +27,7 @@ class MalwiCache:
 
         if self.enabled:
             self._load_cache()
-            # Set up triage cache file (same directory, different extension)
-            self.triage_cache_file = cache_file.with_suffix(".triage.csv")
-            self._load_triage_cache()
+            # Triage cache will be set up lazily when first needed
 
     def _load_cache(self):
         """Load existing cache data from file."""
@@ -48,6 +46,13 @@ class MalwiCache:
         except Exception:
             # If cache file is corrupted or has issues, start with empty cache
             self.cache_data = {}
+
+    def _ensure_triage_cache_initialized(self):
+        """Initialize triage cache if not already done (lazy initialization)."""
+        if self.triage_cache_file is None and self.enabled:
+            # Set up triage cache file (same directory, different extension)
+            self.triage_cache_file = self.cache_file.with_suffix(".triage.csv")
+            self._load_triage_cache()
 
     def _load_triage_cache(self):
         """Load existing triage cache data from file."""
@@ -144,6 +149,7 @@ class MalwiCache:
         if not self.enabled:
             return None
 
+        self._ensure_triage_cache_initialized()
         hash_key = self._get_object_hash(obj)
         if hash_key in self.triage_data:
             return self.triage_data[hash_key][2]  # Return decision
@@ -161,6 +167,7 @@ class MalwiCache:
         if not self.enabled:
             return
 
+        self._ensure_triage_cache_initialized()
         hash_key = self._get_object_hash(obj)
         filename = Path(obj.file_path).name
 
