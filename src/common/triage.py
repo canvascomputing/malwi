@@ -305,18 +305,21 @@ class UITriageProvider:
             "font": ("Arial", 14, "bold"),
             "width": 20,
             "height": 2,
-            "relief": tk.RAISED,
-            "bd": 2,
+            "relief": tk.SOLID,
+            "bd": 3,
+            "highlightthickness": 0,
+            "borderwidth": 3,
         }
 
         # Suspicious button
         suspicious_btn = tk.Button(
             buttons_frame,
-            text="🚨 Suspicious\n(Keep as malicious)",
-            bg="#ff4757",
+            text="👹 Suspicious\n(Keep as malicious)",
+            bg="#8B0000",
             fg="#ffffff",
-            activebackground="#ff3838",
+            activebackground="#660000",
             activeforeground="#ffffff",
+            disabledforeground="#ffffff",
             command=lambda: self._set_result(TRIAGE_SUSPICIOUS),
             **button_config,
         )
@@ -325,11 +328,12 @@ class UITriageProvider:
         # Benign button
         benign_btn = tk.Button(
             buttons_frame,
-            text="✅ Benign\n(False positive)",
-            bg="#2ed573",
+            text="❌ Benign\n(False positive)",
+            bg="#006400",
             fg="#ffffff",
-            activebackground="#26d063",
+            activebackground="#004000",
             activeforeground="#ffffff",
+            disabledforeground="#ffffff",
             command=lambda: self._set_result(TRIAGE_BENIGN),
             **button_config,
         )
@@ -339,10 +343,11 @@ class UITriageProvider:
         skip_btn = tk.Button(
             buttons_frame,
             text="⏭️ Skip\n(Unsure)",
-            bg="#ffa502",
+            bg="#B8860B",
             fg="#ffffff",
-            activebackground="#ff9500",
+            activebackground="#996600",
             activeforeground="#ffffff",
+            disabledforeground="#ffffff",
             command=lambda: self._set_result(TRIAGE_SKIP),
             **button_config,
         )
@@ -352,10 +357,11 @@ class UITriageProvider:
         quit_btn = tk.Button(
             buttons_frame,
             text="🛑 Quit\n(Stop triaging)",
-            bg="#747d8c",
+            bg="#2F4F4F",
             fg="#ffffff",
-            activebackground="#57606f",
+            activebackground="#1C3A3A",
             activeforeground="#ffffff",
+            disabledforeground="#ffffff",
             command=lambda: self._set_result(TRIAGE_QUIT),
             **button_config,
         )
