@@ -311,19 +311,24 @@ def pypi_command(args):
 
     # Create triage provider if needed
     triage_provider = None
-    use_triage = args.triage or args.triage_llm
+    use_triage = args.triage or args.triage_llm or args.triage_ui
     if use_triage:
         from common.triage import create_triage_provider
 
         try:
-            triage_provider = create_triage_provider(use_llm=args.triage_llm)
+            if args.triage_ui:
+                from common.triage import UITriageProvider
+
+                triage_provider = UITriageProvider()
+            else:
+                triage_provider = create_triage_provider(use_llm=args.triage_llm)
         except ValueError as e:
-            if args.triage_llm:
-                error(f"MCP triage failed: {e}")
+            if args.triage_llm or args.triage_ui:
+                error(f"Triage failed: {e}")
                 return
             else:
                 # Fallback to interactive for --triage
-                triage_provider = create_triage_provider(use_mcp=False)
+                triage_provider = create_triage_provider(use_llm=False)
 
     # Set up move directory if specified
     move_dir = None
@@ -434,6 +439,11 @@ def setup_pypi_parser(subparsers):
         "--triage-llm",
         action="store_true",
         help="Use AI-powered triage for automatic malicious finding classification. Requires OPENAI_API_KEY, MISTRAL_API_KEY or GEMINI_API_KEY environment variable. AI analyzes each finding and automatically comments out benign false positives while preserving genuine threats.",
+    )
+    triage_group.add_argument(
+        "--triage-ui",
+        action="store_true",
+        help="Interactive triage using a graphical user interface. Opens a window showing code with buttons for classification decisions. Similar to --triage but with a visual interface.",
     )
     pypi_parser.add_argument(
         "--quiet",

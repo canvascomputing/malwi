@@ -90,6 +90,9 @@ uv run python -m src.cli.entry pypi django --format markdown --save output.md
 # Interactive triage (manually review findings)
 uv run python -m src.cli.entry scan examples --triage
 
+# GUI triage (visual interface)  
+uv run python -m src.cli.entry scan examples --triage-ui
+
 # AI-powered triage (automatic false positive detection)
 export OPENAI_API_KEY="your-openai-api-key"
 uv run python -m src.cli.entry scan examples --triage-llm
@@ -211,7 +214,7 @@ This ensures that:
 
 ## Triage Functionality
 
-malwi provides two triage modes to help reduce false positives and validate malicious findings:
+malwi provides three triage modes to help reduce false positives and validate malicious findings:
 
 ### Interactive Triage (`--triage`)
 - **Purpose**: Manually review each malicious finding before reporting
@@ -221,6 +224,17 @@ malwi provides two triage modes to help reduce false positives and validate mali
   - `Skip (unsure)` - Leaves finding in report without modification
   - `Quit (stop triaging)` - Stops triage process and generates report
 - **Use case**: When you want human oversight of AI classification decisions
+
+### GUI Triage (`--triage-ui`)
+- **Purpose**: Visual interface for manually reviewing malicious findings
+- **Interface**: Opens a graphical window with:
+  - Code display with syntax highlighting
+  - File path, object name, and AI maliciousness score
+  - Large colored buttons for classification decisions
+  - Keyboard shortcuts for quick navigation
+- **Workflow**: Same options as interactive triage but in a visual interface
+- **Use case**: When you prefer a graphical interface over command-line interaction
+- **Requirements**: Requires tkinter (included with most Python installations)
 
 ### AI-Powered Triage (`--triage-llm`)
 - **Purpose**: Automatic false positive detection using Large Language Model analysis

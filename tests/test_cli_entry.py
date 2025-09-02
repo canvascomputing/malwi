@@ -249,6 +249,7 @@ class TestBatchMode:
         args.tokenizer_path = None
         args.triage = False
         args.triage_llm = False
+        args.triage_ui = False
 
         with patch("cli.scan.path_error") as mock_path_error:
             process_batch_mode(test_file, args)
@@ -365,6 +366,7 @@ class TestBatchMode:
         args.tokenizer_path = None
         args.triage = False
         args.triage_llm = False
+        args.triage_ui = False
 
         # Mock the process_files function and report
         mock_report = MagicMock()
@@ -410,6 +412,7 @@ class TestBatchMode:
         args.tokenizer_path = None
         args.triage = False
         args.triage_llm = False
+        args.triage_ui = False
 
         # Mock MalwiReport.create to raise exception
         with patch("cli.scan.MalwiReport.create", side_effect=Exception("Test error")):
@@ -448,6 +451,7 @@ class TestBatchMode:
             args.tokenizer_path = None
             args.triage = False
             args.triage_llm = False
+            args.triage_ui = False
 
             # Mock report with the appropriate method
             mock_report = MagicMock()
@@ -535,6 +539,7 @@ class TestBatchMode:
         args.tokenizer_path = None
         args.triage = False
         args.triage_llm = False
+        args.triage_ui = False
 
         with patch("cli.scan.Path.cwd", return_value=tmp_path):
             result = run_batch_scan(test_folder, args)

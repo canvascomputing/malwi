@@ -1,8 +1,13 @@
 """MCP-based triage functionality for malwi."""
 
 import asyncio
+import io
 import logging
 import os
+import sys
+import threading
+import tkinter as tk
+from tkinter import messagebox, scrolledtext
 from typing import Protocol
 
 from mistralai import Mistral
@@ -94,6 +99,365 @@ class InteractiveTriageProvider:
                 TRIAGE_QUIT,
             ],
         ).ask()
+
+
+class UITriageProvider:
+    """GUI-based triage using tkinter."""
+
+    def __init__(self):
+        # Suppress macOS IMK logs and other tkinter-related logs
+        self._suppress_ui_logs()
+
+        self.result = None
+        self.root = None
+        self.widgets = {}  # Store widget references for updates
+        self._window_initialized = False
+
+    def _suppress_ui_logs(self):
+        """Suppress various UI-related logs that can clutter output."""
+        # Suppress macOS IMK (Input Method Kit) logs
+        os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+
+        # Redirect stderr temporarily to suppress IMK logs during tkinter import
+        if sys.platform == "darwin":  # macOS
+            # Suppress specific loggers that generate noise
+            imk_logger = logging.getLogger("IMKClient")
+            imk_logger.setLevel(logging.CRITICAL)
+
+            input_session_logger = logging.getLogger("IMKInputSession")
+            input_session_logger.setLevel(logging.CRITICAL)
+
+            # Suppress console output for macOS UI frameworks
+            console_logger = logging.getLogger("console")
+            console_logger.setLevel(logging.CRITICAL)
+
+    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+        """Show GUI dialog for object classification."""
+        self.result = None
+
+        try:
+            # Create window on first use, reuse afterwards
+            if (
+                not self._window_initialized
+                or not self.root
+                or not self.root.winfo_exists()
+            ):
+                self._create_window()
+                self._window_initialized = True
+
+            # Update the window content with new object data
+            self._update_content(obj, file_content)
+
+            # Bring window to front and focus
+            self.root.deiconify()  # Show if minimized
+            self.root.lift()  # Bring to front
+            self.root.focus_force()  # Give focus
+
+            # Start the event loop and wait for user decision
+            self.root.mainloop()
+
+            # Return the result (set by button clicks)
+            result = self.result if self.result else TRIAGE_SKIP
+
+            # Keep window open for next use (only minimize to reduce screen clutter)
+            if self.root and self.root.winfo_exists():
+                self.root.withdraw()  # Hide window but keep it alive
+
+            return result
+
+        except Exception as e:
+            logger.error(f"GUI triage failed for {obj.name}: {e}")
+            return TRIAGE_SKIP
+
+    def _create_window(self):
+        """Create the main window and GUI structure (called once)."""
+        if self.root:
+            self.root.destroy()
+
+        # Temporarily suppress stderr to hide IMK logs on macOS
+        original_stderr = None
+        if sys.platform == "darwin":
+            try:
+                original_stderr = sys.stderr
+                sys.stderr = io.StringIO()  # Capture stderr temporarily
+            except:
+                pass
+
+        try:
+            self.root = tk.Tk()
+            self.root.title("malwi Triage - Code Review")
+            self.root.geometry("1100x800")  # Larger default size
+            self.root.configure(bg="#2b2b2b")
+            self.root.minsize(800, 600)  # Set minimum size
+
+            # Create the GUI structure
+            self._create_gui_structure()
+
+            # Center the window initially
+            self._center_window()
+
+            # Handle window close button
+            self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+        finally:
+            # Restore stderr
+            if original_stderr:
+                sys.stderr = original_stderr
+
+    def _create_gui_structure(self):
+        """Create the GUI structure (called once)."""
+
+        # Header frame
+        header_frame = tk.Frame(self.root, bg="#2b2b2b")
+        header_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Title
+        title_label = tk.Label(
+            header_frame,
+            text="🛡️ malwi Code Triage",
+            font=("Arial", 16, "bold"),
+            bg="#2b2b2b",
+            fg="#ffffff",
+        )
+        title_label.pack()
+
+        # Object info frame
+        info_frame = tk.Frame(self.root, bg="#2b2b2b")
+        info_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # File path label (will be updated)
+        self.widgets["file_label"] = tk.Label(
+            info_frame,
+            text="📄 File: ",
+            font=("Arial", 10),
+            bg="#2b2b2b",
+            fg="#cccccc",
+            anchor="w",
+        )
+        self.widgets["file_label"].pack(fill=tk.X)
+
+        # Object name label (will be updated)
+        self.widgets["name_label"] = tk.Label(
+            info_frame,
+            text="🎯 Object: ",
+            font=("Arial", 10),
+            bg="#2b2b2b",
+            fg="#cccccc",
+            anchor="w",
+        )
+        self.widgets["name_label"].pack(fill=tk.X)
+
+        # Maliciousness score label (will be updated)
+        self.widgets["score_label"] = tk.Label(
+            info_frame,
+            text="⚠️  AI Maliciousness Score: ",
+            font=("Arial", 10, "bold"),
+            bg="#2b2b2b",
+            fg="#ffa500",
+            anchor="w",
+        )
+        self.widgets["score_label"].pack(fill=tk.X)
+
+        # Code display
+        code_frame = tk.Frame(self.root, bg="#2b2b2b")
+        code_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        code_label = tk.Label(
+            code_frame,
+            text="📝 Code to Review:",
+            font=("Arial", 12, "bold"),
+            bg="#2b2b2b",
+            fg="#ffffff",
+            anchor="w",
+        )
+        code_label.pack(fill=tk.X, pady=(0, 5))
+
+        # Code text area
+        self.widgets["code_text"] = scrolledtext.ScrolledText(
+            code_frame,
+            wrap=tk.NONE,  # Don't wrap lines to preserve code formatting
+            font=("Courier New", 12),
+            bg="#1e1e1e",
+            fg="#ffffff",
+            insertbackground="white",
+            selectbackground="#404040",
+            height=20,
+            tabs=(
+                "1c",
+                "2c",
+                "3c",
+                "4c",
+                "5c",
+                "6c",
+            ),  # Set tab stops for better code display
+        )
+        self.widgets["code_text"].pack(fill=tk.BOTH, expand=True)
+
+        # Question frame
+        question_frame = tk.Frame(self.root, bg="#2b2b2b")
+        question_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        question_label = tk.Label(
+            question_frame,
+            text="🤔 How would you classify this code?",
+            font=("Arial", 12, "bold"),
+            bg="#2b2b2b",
+            fg="#ffffff",
+        )
+        question_label.pack()
+
+        # Buttons frame
+        buttons_frame = tk.Frame(self.root, bg="#2b2b2b")
+        buttons_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        # Button style configuration
+        button_config = {
+            "font": ("Arial", 11, "bold"),
+            "width": 20,
+            "height": 2,
+            "relief": tk.RAISED,
+            "bd": 2,
+        }
+
+        # Suspicious button
+        suspicious_btn = tk.Button(
+            buttons_frame,
+            text="🚨 Suspicious\n(Keep as malicious)",
+            bg="#ff4757",
+            fg="#ffffff",
+            activebackground="#ff3838",
+            activeforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_SUSPICIOUS),
+            **button_config,
+        )
+        suspicious_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Benign button
+        benign_btn = tk.Button(
+            buttons_frame,
+            text="✅ Benign\n(False positive)",
+            bg="#2ed573",
+            fg="#ffffff",
+            activebackground="#26d063",
+            activeforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_BENIGN),
+            **button_config,
+        )
+        benign_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Skip button
+        skip_btn = tk.Button(
+            buttons_frame,
+            text="⏭️ Skip\n(Unsure)",
+            bg="#ffa502",
+            fg="#ffffff",
+            activebackground="#ff9500",
+            activeforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_SKIP),
+            **button_config,
+        )
+        skip_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Quit button
+        quit_btn = tk.Button(
+            buttons_frame,
+            text="🛑 Quit\n(Stop triaging)",
+            bg="#747d8c",
+            fg="#ffffff",
+            activebackground="#57606f",
+            activeforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_QUIT),
+            **button_config,
+        )
+        quit_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Keyboard shortcuts
+        self.root.bind("<Return>", lambda e: self._set_result(TRIAGE_SUSPICIOUS))
+        self.root.bind("<Escape>", lambda e: self._set_result(TRIAGE_SKIP))
+        self.root.bind("1", lambda e: self._set_result(TRIAGE_SUSPICIOUS))
+        self.root.bind("2", lambda e: self._set_result(TRIAGE_BENIGN))
+        self.root.bind("3", lambda e: self._set_result(TRIAGE_SKIP))
+        self.root.bind("q", lambda e: self._set_result(TRIAGE_QUIT))
+
+        # Instructions label
+        instructions_label = tk.Label(
+            self.root,
+            text="💡 Keyboard shortcuts: 1=Suspicious, 2=Benign, 3=Skip, Q=Quit, Enter=Suspicious, Esc=Skip",
+            font=("Arial", 9),
+            bg="#2b2b2b",
+            fg="#888888",
+        )
+        instructions_label.pack(pady=5)
+
+    def _set_result(self, result: str):
+        """Set the triage result and exit mainloop (but keep window open for reuse)."""
+        self.result = result
+        if self.root:
+            self.root.quit()  # Exit mainloop but don't destroy window
+
+    def _center_window(self):
+        """Center the window on screen."""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _update_content(self, obj: MalwiObject, file_content: str):
+        """Update the window content for a new triage decision."""
+        # Update file path
+        self.widgets["file_label"].config(text=f"📄 File: {obj.file_path}")
+
+        # Update object name
+        self.widgets["name_label"].config(text=f"🎯 Object: {obj.name}")
+
+        # Update maliciousness score
+        score_text = (
+            f"⚠️  AI Maliciousness Score: {obj.maliciousness:.3f}"
+            if obj.maliciousness
+            else "⚠️  AI Maliciousness Score: N/A"
+        )
+        self.widgets["score_label"].config(text=score_text)
+
+        # Update code display
+        self.widgets["code_text"].config(state=tk.NORMAL)
+        self.widgets["code_text"].delete(1.0, tk.END)
+
+        # Use object's source code if available, otherwise use file content
+        display_content = obj.source_code if obj.source_code else file_content
+
+        # Normalize line endings and handle encoding issues
+        try:
+            # Try to ensure proper encoding
+            if isinstance(display_content, bytes):
+                try:
+                    display_content = display_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    display_content = display_content.decode("latin-1")
+
+            # Normalize line endings
+            display_content = display_content.replace("\r\n", "\n").replace("\r", "\n")
+
+        except Exception as e:
+            logger.warning(f"Encoding issue with content: {e}")
+            display_content = str(display_content)
+
+        self.widgets["code_text"].insert(tk.END, display_content)
+        self.widgets["code_text"].config(state=tk.DISABLED)
+
+        # Scroll to top
+        self.widgets["code_text"].see(1.0)
+
+        # Reset result for new decision
+        self.result = None
+
+    def _on_window_close(self):
+        """Handle window close event by setting result to quit."""
+        self.result = TRIAGE_QUIT
+        if self.root:
+            self.root.quit()  # Exit mainloop
+            # Don't destroy - window will be reused
 
 
 class MistralTriageProvider:

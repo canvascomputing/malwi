@@ -86,6 +86,7 @@ malwi scan <path> [options]
 
 **Triage Options:**
 - `--triage` - Interactive review of findings with manual classification
+- `--triage-ui` - GUI-based review with visual interface and buttons
 - `--triage-llm` - AI-powered automatic false positive detection using LLMs (requires `OPENAI_API_KEY`, `MISTRAL_API_KEY`, or `GEMINI_API_KEY`)
 
 **File Management:**
@@ -98,6 +99,9 @@ malwi scan examples/malicious
 
 # Interactive triage
 malwi scan examples --triage
+
+# GUI triage
+malwi scan examples --triage-ui
 
 # AI-powered triage (requires API key)
 export OPENAI_API_KEY="your-api-key"
