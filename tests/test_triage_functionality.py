@@ -30,9 +30,7 @@ class TestTriageMaliciousObjects:
         obj.maliciousness = 0.95
 
         # Mock user selecting "Suspicious"
-        mock_questionary_select.return_value.ask.return_value = (
-            "Suspicious (keep as malicious)"
-        )
+        mock_questionary_select.return_value.ask.return_value = "suspicious"
 
         # Run triage (passing obj as both malicious and all_objects for test)
         result = triage_malicious_objects(test_file, [obj], [obj])
@@ -72,9 +70,7 @@ class TestTriageMaliciousObjects:
         )
 
         # Mock user selecting "Benign"
-        mock_questionary_select.return_value.ask.return_value = (
-            "Benign (false positive)"
-        )
+        mock_questionary_select.return_value.ask.return_value = "benign"
 
         # Run triage with all objects, only exec_obj is malicious
         result = triage_malicious_objects(test_file, [exec_obj], [exec_obj, print_obj])
@@ -106,7 +102,7 @@ class TestTriageMaliciousObjects:
         obj.maliciousness = 0.95
 
         # Mock user selecting "Skip"
-        mock_questionary_select.return_value.ask.return_value = "Skip (unsure)"
+        mock_questionary_select.return_value.ask.return_value = "skip"
 
         # Run triage (passing obj as both malicious and all_objects for test)
         result = triage_malicious_objects(test_file, [obj], [obj])
@@ -135,7 +131,7 @@ class TestTriageMaliciousObjects:
         obj.maliciousness = 0.95
 
         # Mock user selecting "Quit"
-        mock_questionary_select.return_value.ask.return_value = "Quit (stop triaging)"
+        mock_questionary_select.return_value.ask.return_value = "quit"
 
         # Run triage and expect exception
         with pytest.raises(TriageQuitException):
@@ -183,8 +179,8 @@ class TestTriageMaliciousObjects:
 
         # Mock user selecting "Suspicious" for first, "Benign" for second
         mock_questionary_select.return_value.ask.side_effect = [
-            "Suspicious (keep as malicious)",
-            "Benign (false positive)",
+            "suspicious",
+            "benign",
         ]
 
         # Run triage with all objects
@@ -238,9 +234,7 @@ class TestTriageMaliciousObjects:
         module_obj.maliciousness = 1.0
 
         # Mock user selecting "Benign" for the module (this should be handled carefully)
-        mock_questionary_select.return_value.ask.return_value = (
-            "Benign (false positive)"
-        )
+        mock_questionary_select.return_value.ask.return_value = "benign"
 
         # Run triage with module object
         result = triage_malicious_objects(test_file, [module_obj], [module_obj])
@@ -294,9 +288,7 @@ setuptools.setup(
         module_obj.maliciousness = 0.998  # High maliciousness like in the real case
 
         # Mock user selecting "Benign" for the module
-        mock_questionary_select.return_value.ask.return_value = (
-            "Benign (false positive)"
-        )
+        mock_questionary_select.return_value.ask.return_value = "benign"
 
         # Run triage with module object
         result = triage_malicious_objects(test_file, [module_obj], [module_obj])

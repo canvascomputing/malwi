@@ -253,11 +253,19 @@ def triage_malicious_objects(
             print(f"Error during triage classification: {e}")
             classification = "Skip (unsure)"
 
-        if classification == "Suspicious (keep as malicious)":
+        # Import triage constants
+        from common.triage import (
+            TRIAGE_SUSPICIOUS,
+            TRIAGE_BENIGN,
+            TRIAGE_SKIP,
+            TRIAGE_QUIT,
+        )
+
+        if classification == TRIAGE_SUSPICIOUS:
             triaged_objects.append(obj)
-        elif classification == "Benign (false positive)":
+        elif classification == TRIAGE_BENIGN:
             benign_objects.append(obj)
-        elif classification == "Quit (stop triaging)":
+        elif classification == TRIAGE_QUIT:
             raise TriageQuitException("User quit triage")
         # For 'Skip', we don't add to either list
 

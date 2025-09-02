@@ -18,29 +18,29 @@ logger = logging.getLogger(__name__)
 
 
 # Triage decision constants
-TRIAGE_SUSPICIOUS = "Suspicious (keep as malicious)"
-TRIAGE_BENIGN = "Benign (false positive)"
-TRIAGE_SKIP = "Skip (unsure)"
-TRIAGE_QUIT = "Quit (stop triaging)"
+TRIAGE_SUSPICIOUS = "suspicious"
+TRIAGE_BENIGN = "benign"
+TRIAGE_SKIP = "skip"
+TRIAGE_QUIT = "quit"
 
 
 def create_triage_prompt(obj: MalwiObject, file_content: str) -> str:
-    """Create the standardized triage prompt for AI analysis."""
-    return f"""You are a security analyst reviewing potentially malicious code. A malware detection system flagged this code with a maliciousness score of {obj.maliciousness:.3f} (0.0=benign, 1.0=malicious).
+    return f"""You are a security software analyst reviewing random code of a large repository.
 
-File: {obj.file_path}
-Object: {obj.name}
-Code:
+- the following code should be deeply analyzed for suspicious activities
+- suspicious activities include:
+    - exfiltration, networking, communication
+    - obfuscation, encoding of payloads
+    - access to sensitive information
 ```
 {obj.source_code or file_content}
 ```
 
-Please analyze this code for security issues and determine if it's actually malicious or a false positive.
+Please analyze the code for suspicious activities.
 
 Based on your analysis, respond with exactly one of these options:
+- "{TRIAGE_SUSPICIOUS}" - if this appears to be suspicious code
 - "{TRIAGE_BENIGN}" - if this appears to be legitimate code
-- "{TRIAGE_SUSPICIOUS}" - if this appears to be malicious  
-- "{TRIAGE_SKIP}" - if you cannot determine with confidence
 
 Your final decision:"""
 
