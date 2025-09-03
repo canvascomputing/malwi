@@ -7,15 +7,15 @@
 
 ### Key Features
 
-- 🛡️ **AI-Powered Python Malware Detection**: Leverages advanced AI to identify malicious code in Python projects with high accuracy.
+- 🛡️ **AI-Powered Python Malware Detection**
 
-- ⚡ **Lightning-Fast Codebase Scanning**: Scans entire repositories in seconds, so you can focus on development—not security worries.
+- ⚡ **Lightning-Fast Codebase Scanning**
 
-- 🔒 **100% Offline & Private**: Your code never leaves your machine. Full control, zero data exposure.
+- 🔒 **100% Offline & Private**
 
-- 💰 **Free & Open-Source**: No hidden costs. Built on transparent research and openly available data.
+- 💰 **Free & Open-Source**
 
-- 🇪🇺 **Developed in the EU**: Committed to open-source principles and European data standards.
+- 🇪🇺 **Developed in the EU**
 
 ### 1) Install
 ```
