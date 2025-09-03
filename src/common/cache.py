@@ -18,16 +18,13 @@ class MalwiCache:
             cache_file: Path to cache file. If None, caching is disabled.
         """
         self.cache_file = cache_file
-        self.cache_data: Dict[str, Tuple[str, str, float]] = {}
-        self.triage_cache_file = None
-        self.triage_data: Dict[
-            str, Tuple[str, str, str]
-        ] = {}  # hash -> (filename, object, decision)
+        # Unified cache structure: hash -> (filename, object, score, decision)
+        # score can be None if not available, decision can be None if not triaged
+        self.cache_data: Dict[str, Tuple[str, str, Optional[float], Optional[str]]] = {}
         self.enabled = cache_file is not None
 
         if self.enabled:
             self._load_cache()
-            # Triage cache will be set up lazily when first needed
 
     def _load_cache(self):
         """Load existing cache data from file."""
@@ -41,36 +38,26 @@ class MalwiCache:
                     hash_key = row["hash"]
                     filename = row["filename"]
                     object_name = row["object"]
-                    score = round(float(row["score"]), 3)  # Round to 3 decimal places
-                    self.cache_data[hash_key] = (filename, object_name, score)
+
+                    # Handle score (could be missing in old format or empty)
+                    score = None
+                    if "score" in row and row["score"]:
+                        try:
+                            score = round(
+                                float(row["score"]), 3
+                            )  # Round to 3 decimal places
+                        except ValueError:
+                            score = None
+
+                    # Handle decision (could be missing in old format or empty)
+                    decision = None
+                    if "decision" in row and row["decision"]:
+                        decision = row["decision"]
+
+                    self.cache_data[hash_key] = (filename, object_name, score, decision)
         except Exception:
             # If cache file is corrupted or has issues, start with empty cache
             self.cache_data = {}
-
-    def _ensure_triage_cache_initialized(self):
-        """Initialize triage cache if not already done (lazy initialization)."""
-        if self.triage_cache_file is None and self.enabled:
-            # Set up triage cache file (same directory, different extension)
-            self.triage_cache_file = self.cache_file.with_suffix(".triage.csv")
-            self._load_triage_cache()
-
-    def _load_triage_cache(self):
-        """Load existing triage cache data from file."""
-        if not self.triage_cache_file or not self.triage_cache_file.exists():
-            return
-
-        try:
-            with open(self.triage_cache_file, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    hash_key = row["hash"]
-                    filename = row["filename"]
-                    object_name = row["object"]
-                    decision = row["decision"]
-                    self.triage_data[hash_key] = (filename, object_name, decision)
-        except Exception:
-            # If triage cache file is corrupted or has issues, start with empty cache
-            self.triage_data = {}
 
     def _get_object_hash(self, obj: MalwiObject) -> str:
         """
@@ -109,7 +96,7 @@ class MalwiCache:
 
         hash_key = self._get_object_hash(obj)
         if hash_key in self.cache_data:
-            return self.cache_data[hash_key][2]  # Return score
+            return self.cache_data[hash_key][2]  # Return score (3rd element)
 
         return None
 
@@ -130,11 +117,20 @@ class MalwiCache:
         hash_key = self._get_object_hash(obj)
         filename = Path(obj.file_path).name
 
-        # Store in memory cache
-        self.cache_data[hash_key] = (filename, obj.name, rounded_score)
+        # Store in memory cache - preserve existing decision if any
+        existing_decision = None
+        if hash_key in self.cache_data:
+            existing_decision = self.cache_data[hash_key][3]  # 4th element is decision
 
-        # Append to file
-        self._append_to_cache_file(hash_key, filename, obj.name, rounded_score)
+        self.cache_data[hash_key] = (
+            filename,
+            obj.name,
+            rounded_score,
+            existing_decision,
+        )
+
+        # Update cache file
+        self._update_cache_file()
 
     def get_cached_triage_decision(self, obj: MalwiObject) -> Optional[str]:
         """
@@ -149,10 +145,9 @@ class MalwiCache:
         if not self.enabled:
             return None
 
-        self._ensure_triage_cache_initialized()
         hash_key = self._get_object_hash(obj)
-        if hash_key in self.triage_data:
-            return self.triage_data[hash_key][2]  # Return decision
+        if hash_key in self.cache_data:
+            return self.cache_data[hash_key][3]  # Return decision (4th element)
 
         return None
 
@@ -162,82 +157,56 @@ class MalwiCache:
 
         Args:
             obj: MalwiObject to cache
-            decision: Triage decision to cache (suspicious, benign, skip)
+            decision: Triage decision to cache (suspicious, benign)
         """
         if not self.enabled:
             return
 
-        self._ensure_triage_cache_initialized()
         hash_key = self._get_object_hash(obj)
         filename = Path(obj.file_path).name
 
-        # Store in memory cache
-        self.triage_data[hash_key] = (filename, obj.name, decision)
+        # Store in memory cache - preserve existing score if any
+        existing_score = None
+        if hash_key in self.cache_data:
+            existing_score = self.cache_data[hash_key][2]  # 3rd element is score
 
-        # Append to file
-        self._append_to_triage_cache_file(hash_key, filename, obj.name, decision)
+        self.cache_data[hash_key] = (filename, obj.name, existing_score, decision)
 
-    def _append_to_cache_file(
-        self, hash_key: str, filename: str, object_name: str, score: float
-    ):
+        # Update cache file
+        self._update_cache_file()
+
+    def _update_cache_file(self):
         """
-        Append new cache entry to file.
-
-        Args:
-            hash_key: SHA512 hash
-            filename: Name of the file
-            object_name: Name of the object
-            score: Prediction score
+        Update the entire cache file with current cache data.
+        This prevents duplicates and keeps the file clean.
         """
         try:
             # Create parent directories if they don't exist
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Check if file exists to write header
-            file_exists = self.cache_file.exists()
-
-            with open(self.cache_file, "a", encoding="utf-8", newline="") as f:
+            # Write entire cache to file
+            with open(self.cache_file, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
 
-                # Write header if new file
-                if not file_exists:
-                    writer.writerow(["hash", "filename", "object", "score"])
+                # Write header
+                writer.writerow(["hash", "filename", "object", "score", "decision"])
 
-                # Write data row
-                writer.writerow([hash_key, filename, object_name, score])
-
-        except Exception:
-            # If writing fails, continue without caching
-            pass
-
-    def _append_to_triage_cache_file(
-        self, hash_key: str, filename: str, object_name: str, decision: str
-    ):
-        """
-        Append new triage cache entry to file.
-
-        Args:
-            hash_key: SHA512 hash
-            filename: Name of the file
-            object_name: Name of the object
-            decision: Triage decision
-        """
-        try:
-            # Create parent directories if they don't exist
-            self.triage_cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # Check if file exists to write header
-            file_exists = self.triage_cache_file.exists()
-
-            with open(self.triage_cache_file, "a", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-
-                # Write header if new file
-                if not file_exists:
-                    writer.writerow(["hash", "filename", "object", "decision"])
-
-                # Write data row
-                writer.writerow([hash_key, filename, object_name, decision])
+                # Write all cache entries
+                for hash_key, (
+                    filename,
+                    object_name,
+                    score,
+                    decision,
+                ) in self.cache_data.items():
+                    writer.writerow(
+                        [
+                            hash_key,
+                            filename,
+                            object_name,
+                            score if score is not None else "",
+                            decision if decision is not None else "",
+                        ]
+                    )
 
         except Exception:
             # If writing fails, continue without caching
