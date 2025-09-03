@@ -246,15 +246,16 @@ def triage_malicious_objects(
         print(f"Warning: Could not read file content: {e}")
         file_content = ""
 
-    for obj in malicious_objects:
-        # Import triage constants at top of loop
-        from common.triage import (
-            TRIAGE_SUSPICIOUS,
-            TRIAGE_BENIGN,
-            TRIAGE_SKIP,
-            TRIAGE_QUIT,
-        )
+    # Import triage constants once
+    from common.triage import (
+        TRIAGE_SUSPICIOUS,
+        TRIAGE_BENIGN,
+        TRIAGE_SKIP,
+        TRIAGE_QUIT,
+    )
 
+    total_objects = len(malicious_objects)
+    for current_index, obj in enumerate(malicious_objects, 1):
         # Check if we already have a triage decision cached for this object
         cached_decision = None
         if cache is not None:
@@ -281,7 +282,10 @@ def triage_malicious_objects(
             # Get classification from triage provider
             classification_successful = False
             try:
-                classification = triage_provider.classify_object(obj, file_content)
+                progress = (current_index, total_objects)
+                classification = triage_provider.classify_object(
+                    obj, file_content, progress
+                )
                 classification_successful = True
             except Exception as e:
                 print(f"Error during triage classification: {e}")

@@ -52,9 +52,16 @@ Respond with one word: {TRIAGE_SUSPICIOUS} or {TRIAGE_BENIGN}"""
 class TriageProvider(Protocol):
     """Protocol for triage decision providers."""
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         """
         Classify a malicious object.
+
+        Args:
+            obj: The MalwiObject to classify
+            file_content: The full content of the file
+            progress: Optional tuple of (current_index, total_count) for progress display
 
         Returns one of:
         - "Suspicious (keep as malicious)"
@@ -68,11 +75,16 @@ class TriageProvider(Protocol):
 class InteractiveTriageProvider:
     """Interactive triage using questionary."""
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         import questionary
 
         # Display object information
         print(f"\n{'=' * 70}")
+        if progress:
+            current, total = progress
+            print(f"Progress: {current}/{total} objects")
         print(f"File: {obj.file_path}")
         print(f"Object: {obj.name}")
         print(f"Maliciousness: {obj.maliciousness:.3f}" if obj.maliciousness else "N/A")
@@ -131,7 +143,9 @@ class UITriageProvider:
             console_logger = logging.getLogger("console")
             console_logger.setLevel(logging.CRITICAL)
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         """Show GUI dialog for object classification."""
         self.result = None
 
@@ -146,7 +160,7 @@ class UITriageProvider:
                 self._window_initialized = True
 
             # Update the window content with new object data
-            self._update_content(obj, file_content)
+            self._update_content(obj, file_content, progress)
 
             # Bring window to front and focus
             self.root.deiconify()  # Show if minimized
@@ -400,13 +414,20 @@ class UITriageProvider:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
-    def _update_content(self, obj: MalwiObject, file_content: str):
+    def _update_content(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ):
         """Update the window content for a new triage decision."""
         # Update file path
         self.widgets["file_label"].config(text=f"📄 File: {obj.file_path}")
 
-        # Update object name
-        self.widgets["name_label"].config(text=f"🎯 Object: {obj.name}")
+        # Update object name with progress if available
+        if progress:
+            current, total = progress
+            name_text = f"🎯 Object: {obj.name} ({current}/{total})"
+        else:
+            name_text = f"🎯 Object: {obj.name}"
+        self.widgets["name_label"].config(text=name_text)
 
         # Update maliciousness score
         score_text = (
@@ -503,12 +524,17 @@ class MistralTriageProvider:
             logger.error(f"Mistral triage failed for {obj.name}: {e}")
             return TRIAGE_SKIP
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         """Classify object using Mistral AI."""
         try:
             decision = self.triage_with_mistral(obj, file_content)
 
-            logger.info(f"Mistral triage decision for {obj.name}: {decision}")
+            progress_str = f" ({progress[0]}/{progress[1]})" if progress else ""
+            logger.info(
+                f"Mistral triage decision for {obj.name}{progress_str}: {decision}"
+            )
 
             return decision
 
@@ -576,12 +602,17 @@ class GeminiTriageProvider:
             logger.error(f"Gemini triage failed for {obj.name}: {e}")
             return TRIAGE_SKIP
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         """Classify object using Gemini API."""
         try:
             decision = self.triage_with_gemini(obj, file_content)
 
-            logger.info(f"Gemini triage decision for {obj.name}: {decision}")
+            progress_str = f" ({progress[0]}/{progress[1]})" if progress else ""
+            logger.info(
+                f"Gemini triage decision for {obj.name}{progress_str}: {decision}"
+            )
 
             return decision
 
@@ -677,12 +708,17 @@ class OpenAITriageProvider:
             logger.error(f"OpenAI triage failed for {obj.name}: {e}")
             return TRIAGE_SKIP
 
-    def classify_object(self, obj: MalwiObject, file_content: str) -> str:
+    def classify_object(
+        self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
+    ) -> str:
         """Classify object using OpenAI-compatible API."""
         try:
             decision = self.triage_with_openai(obj, file_content)
 
-            logger.info(f"OpenAI triage decision for {obj.name}: {decision}")
+            progress_str = f" ({progress[0]}/{progress[1]})" if progress else ""
+            logger.info(
+                f"OpenAI triage decision for {obj.name}{progress_str}: {decision}"
+            )
 
             return decision
 
