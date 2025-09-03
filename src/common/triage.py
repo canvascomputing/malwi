@@ -1,13 +1,11 @@
 """MCP-based triage functionality for malwi."""
 
-import asyncio
 import io
 import logging
 import os
 import sys
-import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import scrolledtext
 from typing import Protocol
 
 from mistralai import Mistral
@@ -235,6 +233,21 @@ class UITriageProvider:
         )
         title_label.pack()
 
+        # Progress frame (new)
+        progress_frame = tk.Frame(self.root, bg="#2b2b2b")
+        progress_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Progress label showing remaining files
+        self.widgets["progress_label"] = tk.Label(
+            progress_frame,
+            text="📊 Files: Loading...",
+            font=("Arial", 14, "bold"),
+            bg="#2b2b2b",
+            fg="#ffcc00",
+            anchor="center",
+        )
+        self.widgets["progress_label"].pack(fill=tk.X)
+
         # Object info frame
         info_frame = tk.Frame(self.root, bg="#2b2b2b")
         info_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -418,15 +431,29 @@ class UITriageProvider:
         self, obj: MalwiObject, file_content: str, progress: tuple[int, int] = None
     ):
         """Update the window content for a new triage decision."""
+        # Update progress label with remaining files count
+        if progress:
+            current, total = progress
+            remaining = total - current + 1
+            progress_text = f"📊 Files: {current} of {total} ({remaining} remaining)"
+            self.widgets["progress_label"].config(text=progress_text)
+            # Update color based on progress
+            if current >= total * 0.75:
+                self.widgets["progress_label"].config(
+                    fg="#00ff00"
+                )  # Green when near end
+            elif current >= total * 0.5:
+                self.widgets["progress_label"].config(fg="#ffcc00")  # Yellow in middle
+            else:
+                self.widgets["progress_label"].config(fg="#ff9900")  # Orange at start
+        else:
+            self.widgets["progress_label"].config(text="📊 Files: N/A")
+
         # Update file path
         self.widgets["file_label"].config(text=f"📄 File: {obj.file_path}")
 
-        # Update object name with progress if available
-        if progress:
-            current, total = progress
-            name_text = f"🎯 Object: {obj.name} ({current}/{total})"
-        else:
-            name_text = f"🎯 Object: {obj.name}"
+        # Update object name (without progress since it's shown above)
+        name_text = f"🎯 Object: {obj.name}"
         self.widgets["name_label"].config(text=name_text)
 
         # Update maliciousness score

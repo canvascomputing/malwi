@@ -212,6 +212,7 @@ def triage_malicious_objects(
     all_objects: List[MalwiObject] = None,
     triage_provider=None,
     cache=None,
+    file_progress: tuple[int, int] = None,
 ) -> List[MalwiObject]:
     """
     Review malicious objects and let user or AI classify them.
@@ -282,7 +283,11 @@ def triage_malicious_objects(
             # Get classification from triage provider
             classification_successful = False
             try:
-                progress = (current_index, total_objects)
+                # Use file progress if available, otherwise use object progress
+                if file_progress:
+                    progress = file_progress
+                else:
+                    progress = (current_index, total_objects)
                 classification = triage_provider.classify_object(
                     obj, file_content, progress
                 )
@@ -763,17 +768,20 @@ class MalwiReport:
 
         disable_tqdm = silent or (len(accepted_files) <= 1 and input_path.is_file())
 
-        for file_path in tqdm(
-            accepted_files,
-            desc=tqdm_desc,
-            unit="file",
-            ncols=100,
-            disable=disable_tqdm,
-            leave=False,
-            file=sys.stderr,  # Explicitly set stderr
-            dynamic_ncols=True,  # Better terminal handling
-            miniters=1,  # Force updates
-            mininterval=0.1,  # Minimum update interval
+        for file_idx, file_path in enumerate(
+            tqdm(
+                accepted_files,
+                desc=tqdm_desc,
+                unit="file",
+                ncols=100,
+                disable=disable_tqdm,
+                leave=False,
+                file=sys.stderr,  # Explicitly set stderr
+                dynamic_ncols=True,  # Better terminal handling
+                miniters=1,  # Force updates
+                mininterval=0.1,  # Minimum update interval
+            ),
+            1,
         ):
             try:
                 file_all_objects, file_malicious_objects = process_single_file(
@@ -787,12 +795,14 @@ class MalwiReport:
                 # Triage malicious findings if enabled
                 if file_malicious_objects and triage:
                     try:
+                        file_progress = (file_idx, len(accepted_files))
                         triaged_malicious_objects = triage_malicious_objects(
                             file_path,
                             file_malicious_objects,
                             file_all_objects,
                             triage_provider,
                             cache,
+                            file_progress=file_progress,
                         )
                     except TriageQuitException:
                         # User quit triage - stop processing entirely
