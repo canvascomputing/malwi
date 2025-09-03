@@ -296,11 +296,12 @@ def triage_malicious_objects(
                 print(f"Error during triage classification: {e}")
                 classification = TRIAGE_SKIP
 
-            # Only cache decisions from successful user interactions (not errors or quits)
+            # Only cache definitive decisions from successful user interactions (not errors, quits, or skips)
             if (
                 cache is not None
                 and classification_successful
                 and classification != TRIAGE_QUIT
+                and classification != TRIAGE_SKIP
             ):
                 cache.cache_triage_decision(obj, classification)
 
