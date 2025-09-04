@@ -78,9 +78,10 @@ class TestMalwiObject:
         ):
             result = malwi_obj.predict()
 
-        # Should not set maliciousness and return None
-        assert malwi_obj.maliciousness is None
-        assert result is None
+        # Should now analyze even without special tokens
+        assert malwi_obj.maliciousness is not None
+        assert result is not None
+        assert "probabilities" in result
 
     def test_to_dict_yaml_json(self, malwi_obj):
         """Test conversion to dict, YAML, and JSON."""
@@ -131,9 +132,9 @@ class TestMalwiObject:
         # Test that warnings are handled in prediction
         # Since there's no bytecode, prediction should use warnings + MALFORMED_FILE
         result = obj.predict()
-        # For objects without bytecode and with warnings, maliciousness should be None
-        # unless special tokens are detected
-        assert obj.maliciousness is None
+        # Now all objects are analyzed, even those with warnings
+        assert obj.maliciousness is not None
+        assert result is not None
 
     def test_malwi_object_javascript(self):
         """Test MalwiObject with JavaScript language."""

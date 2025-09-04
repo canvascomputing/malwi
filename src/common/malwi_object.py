@@ -283,14 +283,9 @@ class MalwiObject:
 
         # Use the merged to_token_string method which includes warnings and handles all cases
         token_string = self.to_token_string(map_special_tokens=True)
-        prediction = None
-        if any(
-            token in token_string
-            for token in SPECIAL_TOKENS.get(self.language, {}).values()
-        ):
-            prediction = get_node_text_prediction(token_string)
-        else:
-            self.maliciousness = None
+
+        # Always make a prediction - all code should be analyzed
+        prediction = get_node_text_prediction(token_string)
 
         if prediction and "probabilities" in prediction:
             self.maliciousness = prediction["probabilities"][1]
