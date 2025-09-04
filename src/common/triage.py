@@ -7,6 +7,8 @@ import sys
 import tkinter as tk
 from tkinter import scrolledtext
 from typing import Protocol
+import subprocess
+import platform
 
 from mistralai import Mistral
 from openai import OpenAI
@@ -252,7 +254,7 @@ class UITriageProvider:
         info_frame = tk.Frame(self.root, bg="#2b2b2b")
         info_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        # File path label (will be updated)
+        # File path label (will be updated) - make it clickable and copiable
         self.widgets["file_label"] = tk.Label(
             info_frame,
             text="📄 File: ",
@@ -260,8 +262,15 @@ class UITriageProvider:
             bg="#2b2b2b",
             fg="#cccccc",
             anchor="w",
+            cursor="hand2",  # Show hand cursor on hover
         )
         self.widgets["file_label"].pack(fill=tk.X)
+
+        # Store the current file path for click operations
+        self.current_file_path = ""
+
+        # Bind click event for file path - left click to open
+        self.widgets["file_label"].bind("<Button-1>", self._open_file)
 
         # Object name label (will be updated)
         self.widgets["name_label"] = tk.Label(
@@ -449,8 +458,11 @@ class UITriageProvider:
         else:
             self.widgets["progress_label"].config(text="📊 Files: N/A")
 
-        # Update file path
-        self.widgets["file_label"].config(text=f"📄 File: {obj.file_path}")
+        # Update file path and store for click operation
+        self.current_file_path = str(obj.file_path)
+        self.widgets["file_label"].config(
+            text=f"📄 File: {obj.file_path} (click to open)"
+        )
 
         # Update object name (without progress since it's shown above)
         name_text = f"🎯 Object: {obj.name}"
@@ -502,6 +514,21 @@ class UITriageProvider:
         if self.root:
             self.root.quit()  # Exit mainloop
             # Don't destroy - window will be reused
+
+    def _open_file(self, event):
+        """Open the file in the default editor when clicked."""
+        if not self.current_file_path:
+            return
+
+        try:
+            if platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", self.current_file_path], check=False)
+            elif platform.system() == "Windows":
+                os.startfile(self.current_file_path)
+            else:  # Linux and other Unix-like systems
+                subprocess.run(["xdg-open", self.current_file_path], check=False)
+        except Exception as e:
+            logger.warning(f"Could not open file: {e}")
 
 
 class MistralTriageProvider:
