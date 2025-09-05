@@ -1,11 +1,13 @@
+<div align="center">
+
 # malwi - AI Python Malware Scanner
-
 <img src="malwi-logo.png" alt="Logo">
-<a href='https://huggingface.co/schirrmacher/malwi'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20HF-Model-blue'></a>&ensp; 
 
-## malwi specializes in finding malware
+<a href='https://huggingface.co/schirrmacher/malwi'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20HF-Model-blue'></a>
 
-### Key Features
+</div>
+
+## Key Features
 
 - 🛡️ **AI-Powered Python Malware Detection**
 
