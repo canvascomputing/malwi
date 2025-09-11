@@ -11,12 +11,12 @@ from typing import List, Optional, Any, Dict
 
 from tqdm import tqdm
 
-from common.mapping import FUNCTION_MAPPING
-from common.predict_distilbert import get_model_version_string
-from common.messaging import get_message_manager, file_error
-from common.files import collect_files_by_extension
-from common.config import EXTENSION_COMMENT_PREFIX, EXTENSION_TO_LANGUAGE
-from common.malwi_object import MalwiObject, disassemble_file_ast
+from .mapping import FUNCTION_MAPPING
+from .predict_distilbert import get_model_version_string
+from .messaging import get_message_manager, file_error
+from .files import collect_files_by_extension
+from .config import EXTENSION_COMMENT_PREFIX, EXTENSION_TO_LANGUAGE
+from .malwi_object import MalwiObject, disassemble_file_ast
 from malwi._version import __version__
 
 
@@ -218,7 +218,7 @@ def triage_malicious_objects(
     """
     # Import here to avoid circular imports
     if triage_provider is None:
-        from common.triage import create_triage_provider
+        from .triage import create_triage_provider
 
         triage_provider = create_triage_provider(use_mcp=False)
 
@@ -254,7 +254,7 @@ def triage_malicious_objects(
             classification = "Skip (unsure)"
 
         # Import triage constants
-        from common.triage import (
+        from .triage import (
             TRIAGE_SUSPICIOUS,
             TRIAGE_BENIGN,
             TRIAGE_SKIP,
@@ -565,7 +565,7 @@ class MalwiReport:
 
                         # Try to get DistilBERT tokens
                         try:
-                            from common.predict_distilbert import get_thread_tokenizer
+                            from .predict_distilbert import get_thread_tokenizer
 
                             tokenizer = get_thread_tokenizer()
                             distilbert_tokens = tokenizer.tokenize(token_string)
@@ -619,7 +619,7 @@ class MalwiReport:
         tokenizer_path: Optional[str] = None,
     ) -> None:
         """Load ML models into memory for batch processing."""
-        from common.predict_distilbert import initialize_models
+        from .predict_distilbert import initialize_models
 
         initialize_models(
             model_path=distilbert_model_path,

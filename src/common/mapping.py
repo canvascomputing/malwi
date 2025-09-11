@@ -9,8 +9,8 @@ from enum import Enum
 from packaging.version import Version, InvalidVersion
 from typing import Any, Dict, Set
 
-from common.files import read_json_from_file
-from common.config import (
+from .files import read_json_from_file
+from .config import (
     STRING_MAX_LENGTH,
     STRING_REGEX_SIZE_LIMIT,
     STRING_LARGE_PAYLOAD_THRESHOLD,
