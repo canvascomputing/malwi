@@ -21,7 +21,7 @@ FILE_PATHOLOGICAL_THRESHOLD = (
 )  # 1MB - Threshold for PATHOLOGICAL_FILE warning
 
 # Supported file extensions for analysis
-SUPPORTED_EXTENSIONS = ["py", "js", "mjs", "cjs"]
+SUPPORTED_EXTENSIONS = ["py", "js", "mjs", "cjs", "rs"]
 
 # Language mappings based on file extensions
 EXTENSION_TO_LANGUAGE = {
@@ -29,6 +29,7 @@ EXTENSION_TO_LANGUAGE = {
     ".js": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
+    ".rs": "rust",
 }
 
 # Comment prefixes for different file extensions (used in code output format)
@@ -37,4 +38,5 @@ EXTENSION_COMMENT_PREFIX = {
     ".js": "//",
     ".mjs": "//",
     ".cjs": "//",
+    ".rs": "#",
 }
