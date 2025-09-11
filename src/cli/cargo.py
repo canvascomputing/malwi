@@ -26,6 +26,33 @@ from common.messaging import (
 )
 
 
+def validate_tar_member(member: tarfile.TarInfo, target_dir: Path) -> None:
+    """Validate that a tar member extracts within target_dir and links stay inside."""
+    member_path = (target_dir / member.name).resolve()
+    try:
+        member_path.relative_to(target_dir)
+    except ValueError:
+        raise Exception(f"Unsafe path in tar archive: {member.name}")
+    if member.islnk() or member.issym():
+        link_target = Path(member.linkname)
+        if member.islnk():
+            if link_target.is_absolute():
+                resolved_link = link_target.resolve()
+            else:
+                resolved_link = (target_dir / link_target).resolve()
+        else:
+            if link_target.is_absolute():
+                resolved_link = link_target.resolve()
+            else:
+                resolved_link = (member_path.parent / link_target).resolve()
+        try:
+            resolved_link.relative_to(target_dir)
+        except ValueError:
+            raise Exception(
+                f"Unsafe link in tar archive: {member.name} -> {member.linkname}"
+            )
+
+
 class CargoScanner:
     """Scanner for crates.io packages."""
 
@@ -102,15 +129,12 @@ class CargoScanner:
         extract_dir = self.temp_dir / file_path.stem
         extract_dir.mkdir(parents=True, exist_ok=True)
         try:
+            extract_dir_resolved = extract_dir.resolve()
             with tarfile.open(file_path, "r:gz") as tar_ref:
                 for member in tar_ref.getmembers():
-                    member_path = (extract_dir / member.name).resolve()
-                    try:
-                        member_path.relative_to(extract_dir.resolve())
-                    except ValueError:
-                        raise Exception(f"Unsafe path in tar archive: {member.name}")
-                tar_ref.extractall(extract_dir)
-            return extract_dir
+                    validate_tar_member(member, extract_dir_resolved)
+                tar_ref.extractall(extract_dir_resolved)
+            return extract_dir_resolved
         except Exception as e:
             error(f"Failed to extract {file_path}: {e}")
             return None
