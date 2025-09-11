@@ -17,6 +17,8 @@
 
 - 🇪🇺 **Developed in the EU**: Committed to open-source principles and European data standards.
 
+- 🦀 **Experimental Rust Crate Scanning**: Download and analyze crates from crates.io using `malwi cargo <crate>`.
+
 ### 1) Install
 ```
 pip install --user malwi
@@ -111,6 +113,7 @@ malwi scan parent_directory --batch --format yaml
 ```
 
 **Environment Variables:**
+- `OPENAI_API_KEY` - For OpenAI-based triage
 - `MISTRAL_API_KEY` - For Mistral AI triage
 - `GEMINI_API_KEY` - For Gemini AI triage
 
@@ -138,6 +141,32 @@ malwi pypi requests
 
 => 🟢 good
 ```
+
+## Rust Crate Scanning
+
+malwi can download and scan Rust crates from [crates.io](https://crates.io) without building or executing their code:
+
+```bash
+malwi cargo serde
+# scan a specific version
+malwi cargo tokio 1.38.0
+```
+
+### Requirements
+
+- `tree-sitter-rust` grammar library must be installed (included with the Python package)
+
+### Environment Variables
+
+No additional variables are needed for basic scanning. For AI-assisted triage, set one of:
+
+- `OPENAI_API_KEY`
+- `MISTRAL_API_KEY`
+- `GEMINI_API_KEY`
+
+### Limitations
+
+Rust analysis is **experimental**. Macro expansion, build scripts, and complex token trees may not be fully supported, which can lead to false positives or missed findings.
 
 ## Why malwi?
 
