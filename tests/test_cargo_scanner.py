@@ -1,11 +1,14 @@
 import sys
 import os
 from pathlib import Path
+import io
+import tarfile
+import pytest
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from cli.cargo import CargoScanner
+from cli.cargo import CargoScanner, validate_tar_member
 
 
 def test_parse_dependencies_from_lock(tmp_path):
@@ -40,3 +43,41 @@ rand = { version = "0.8" }
     deps = scanner.parse_dependencies(tmp_path)
     assert "serde 1.0" in deps
     assert "rand 0.8" in deps
+
+
+def test_validate_tar_member_allows_safe_file(tmp_path):
+    tar_path = tmp_path / "safe.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        info = tarfile.TarInfo(name="file.txt")
+        data = b"safe"
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    with tarfile.open(tar_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            validate_tar_member(member, tmp_path)
+
+
+def test_validate_tar_member_rejects_path_traversal(tmp_path):
+    tar_path = tmp_path / "traversal.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        info = tarfile.TarInfo(name="../evil.txt")
+        data = b"evil"
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    with tarfile.open(tar_path, "r:gz") as tar:
+        member = tar.getmembers()[0]
+        with pytest.raises(Exception):
+            validate_tar_member(member, tmp_path)
+
+
+def test_validate_tar_member_rejects_link_outside(tmp_path):
+    tar_path = tmp_path / "link.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        info = tarfile.TarInfo(name="link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../outside"
+        tar.addfile(info)
+    with tarfile.open(tar_path, "r:gz") as tar:
+        member = tar.getmembers()[0]
+        with pytest.raises(Exception):
+            validate_tar_member(member, tmp_path)
