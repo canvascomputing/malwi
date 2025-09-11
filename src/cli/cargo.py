@@ -103,6 +103,12 @@ class CargoScanner:
         extract_dir.mkdir(parents=True, exist_ok=True)
         try:
             with tarfile.open(file_path, "r:gz") as tar_ref:
+                for member in tar_ref.getmembers():
+                    member_path = (extract_dir / member.name).resolve()
+                    try:
+                        member_path.relative_to(extract_dir.resolve())
+                    except ValueError:
+                        raise Exception(f"Unsafe path in tar archive: {member.name}")
                 tar_ref.extractall(extract_dir)
             return extract_dir
         except Exception as e:
