@@ -214,16 +214,27 @@ def split_files_into_chunks(files: List[Path], chunk_size: int) -> List[List[str
 
 
 def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
-    """Combine multiple CSV chunk files into a single output file."""
+    """Combine CSV chunk files into a single output file.
+
+    If the output file already exists, new rows are appended instead of
+    overwriting existing data. This allows multiple preprocessing runs to
+    accumulate into the same CSV (e.g., processing multiple languages
+    sequentially).
+    """
+
     total_rows = 0
 
     # Increase CSV field size limit to handle very large token strings
     csv.field_size_limit(10 * 1024 * 1024)  # 10MB limit instead of default 131KB
 
-    with open(output_path, "w", encoding="utf-8", newline="") as output_file:
+    file_exists = output_path.exists()
+    mode = "a" if file_exists else "w"
+
+    with open(output_path, mode, encoding="utf-8", newline="") as output_file:
         writer = csv.writer(output_file)
-        # Write header
-        writer.writerow(["tokens", "hash", "language", "filepath"])
+        # Write header only for new files
+        if not file_exists:
+            writer.writerow(["tokens", "hash", "language", "filepath"])
 
         for chunk_file in chunk_files:
             chunk_path = Path(chunk_file)
