@@ -1,5 +1,6 @@
 include README.md
 recursive-include src/common/syntax_mapping *.json
+recursive-include src/common/syntax_mapping/rust *.json
 
 # Exclude development and training directories/files from source distributions
 prune tests/
@@ -14,4 +15,8 @@ global-exclude CLAUDE.md
 global-exclude RESEARCH.md
 global-exclude util/build_helpers.py
 global-exclude _moved_files.txt
-prune _training_backup/
+prune _training_backup
+
+# Include sample Rust files and crates
+recursive-include tests/source_samples/rust *.rs
+recursive-include tests/source_samples/rust_crate *
