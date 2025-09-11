@@ -1620,9 +1620,13 @@ class ASTCompiler:
         self._in_function_scope = True
         self._nesting_depth += 1
 
-        func_body_bytecode = self._generate_bytecode(
-            body_node, source_code_bytes, file_path
-        )
+        if body_node:
+            func_body_bytecode = self._generate_bytecode(
+                body_node, source_code_bytes, file_path
+            )
+        else:
+            # Bodyless function declaration (e.g., in traits or extern blocks)
+            func_body_bytecode = []
         if (
             not func_body_bytecode
             or func_body_bytecode[-1].opcode != OpCode.RETURN_VALUE
