@@ -556,9 +556,17 @@ MALICIOUS_REPO_URLS = [
 ]
 ENCRYPTED_ZIP_PASSWORD = b"infected"  # Password for DataDog encrypted zips
 
+# Sample Rust repositories to ingest
+RUST_REPO_URLS = [
+    "https://github.com/rust-lang/rust-clippy",
+    "https://github.com/serde-rs/serde",
+    "https://github.com/tokio-rs/tokio",
+]
+
 REPO_CACHE_DIR = ".repo_cache"
 BENIGN_REPOS_CACHE_PATH = os.path.join(REPO_CACHE_DIR, "benign_repos")
 MALICIOUS_REPOS_CACHE_PATH = os.path.join(REPO_CACHE_DIR, "malicious_repos")
+RUST_REPOS_CACHE_PATH = os.path.join(REPO_CACHE_DIR, "rust_repos")
 
 # Load pinned repository configurations
 PINNED_REPOS_CONFIG_PATH = (
@@ -1029,6 +1037,24 @@ def process_benign_repositories(repo_urls):
     return processed_paths
 
 
+def process_rust_repositories(repo_urls):
+    logging.info("Processing rust repositories...")
+    processed_paths = []
+    for repo_url in repo_urls:
+        repo_name = get_repo_name_from_url(repo_url)
+        try:
+            cloned_repo_path = get_or_clone_repo(repo_url, RUST_REPOS_CACHE_PATH)
+            if not cloned_repo_path:
+                continue
+
+            processed_paths.append(cloned_repo_path)
+            logging.info(f"Processing rust: {repo_name}")
+            # Placeholder for actual processing logic
+        except Exception as e:
+            logging.error(f"Error processing rust repo {repo_name}: {e}")
+    return processed_paths
+
+
 def process_malicious_repositories(repo_urls_list):
     logging.info("Processing malicious repositories...")
     all_processed_package_paths = []
@@ -1078,7 +1104,7 @@ def main():
     parser.add_argument(
         "--type",
         type=str,
-        choices=["benign", "malicious", "all"],
+        choices=["benign", "malicious", "rust", "all"],
         default="all",
         help="Type of dataset to process (default: all)",
     )
@@ -1139,12 +1165,16 @@ def main():
     )
     os.makedirs(BENIGN_REPOS_CACHE_PATH, exist_ok=True)
     os.makedirs(MALICIOUS_REPOS_CACHE_PATH, exist_ok=True)
+    os.makedirs(RUST_REPOS_CACHE_PATH, exist_ok=True)
 
     if args.type in ["benign", "all"]:
         process_benign_repositories(BENIGN_REPO_URLS)
 
     if args.type in ["malicious", "all"]:
         process_malicious_repositories(MALICIOUS_REPO_URLS)
+
+    if args.type in ["rust", "all"]:
+        process_rust_repositories(RUST_REPO_URLS)
 
     logging.info("Script execution finished.")
 
