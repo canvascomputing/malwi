@@ -8,7 +8,7 @@ from tree_sitter import Parser, Language
 import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
 
-from common.mapping import (
+from .mapping import (
     FUNCTION_MAPPING,
     IMPORT_MAPPING,
     reduce_whitespace,
@@ -30,8 +30,8 @@ from common.mapping import (
     get_string_size_bucket,
     SENSITIVE_PATHS,
 )
-from common.config import STRING_MAX_LENGTH
-from common.malwi_object import MalwiObject
+from .config import STRING_MAX_LENGTH
+from .malwi_object import MalwiObject
 
 
 class OpCode(Enum):
@@ -320,7 +320,7 @@ class Instruction:
         elif op_code == OpCode.LOAD_CONST and isinstance(arg, tuple):
             # Handle tuples by extracting string content and mapping individual elements
             # This is especially important for marshal operations and import tuples
-            from common.mapping import map_tuple_arg
+            from .mapping import map_tuple_arg
 
             tuple_mapping = map_tuple_arg(arg, str(arg))
             if tuple_mapping:
@@ -1638,7 +1638,7 @@ class ASTCompiler:
         # Only create separate MalwiObject for top-level functions (nesting_depth == 0)
         if self._nesting_depth == 0:
             # Create separate MalwiObject and add to collection
-            from common.malwi_object import MalwiObject
+            from .malwi_object import MalwiObject
 
             func_code_obj = MalwiObject(
                 name=func_name,
@@ -1712,7 +1712,7 @@ class ASTCompiler:
         # Only create separate MalwiObject for top-level classes
         if self._nesting_depth == 0:
             # Create separate MalwiObject and add to collection
-            from common.malwi_object import MalwiObject
+            from .malwi_object import MalwiObject
 
             class_code_obj = MalwiObject(
                 name=class_name,

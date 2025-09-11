@@ -438,5 +438,13 @@
     "zlib": "ARCHIVE_COMPRESSION",
     "zlib.compress": "ARCHIVE_COMPRESSION",
     "zlib.decompress": "ARCHIVE_COMPRESSION"
+  },
+  "rust": {
+    "std::process::Command::new": "PROCESS_MANAGEMENT",
+    "std::fs::remove_file": "FILESYSTEM_DELETION",
+    "std::fs::remove_dir_all": "FILESYSTEM_DELETION",
+    "std::net::TcpStream::connect": "NETWORK_SOCKET_CONNECT",
+    "std::net::UdpSocket::bind": "NETWORK_SOCKET_BIND",
+    "reqwest::blocking::get": "NETWORK_HTTP_REQUEST"
   }
 }
