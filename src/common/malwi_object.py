@@ -19,10 +19,16 @@ from common.mapping import (
 )
 from common.config import FILE_LARGE_THRESHOLD, FILE_PATHOLOGICAL_THRESHOLD
 
-# Import moved to avoid circular dependency
-from common.predict_distilbert import (
-    get_node_text_prediction,
-)
+# Import moved to avoid circular dependency and optional heavy deps
+try:  # pragma: no cover - fallback when optional deps missing
+    from common.predict_distilbert import (
+        get_node_text_prediction,
+    )
+except Exception:  # pragma: no cover - executed when dependency missing
+    def get_node_text_prediction(*args, **kwargs):  # type: ignore
+        """Fallback used when prediction dependencies are unavailable."""
+        raise ImportError("predict_distilbert dependency is not installed")
+
 from common.files import read_json_from_file
 
 

@@ -6,7 +6,14 @@ import threading
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, DistilBertForSequenceClassification
+
+# Transformers is an optional dependency in the test environment. If it's not
+# available we fall back to lightweight stubs and raise informative errors only
+# when functionality is actually invoked.
+try:  # pragma: no cover - executed only when transformers is installed
+    from transformers import AutoTokenizer, DistilBertForSequenceClassification
+except Exception:  # pragma: no cover - transformers not installed
+    AutoTokenizer = DistilBertForSequenceClassification = None  # type: ignore
 
 # Disable tokenizers parallelism to avoid warnings in multiprocessing contexts
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -118,6 +125,10 @@ def initialize_models(
 
     # Store tokenizer path for thread-local instances
     _thread_local.tokenizer_path = actual_tokenizer_path
+
+    if AutoTokenizer is None or DistilBertForSequenceClassification is None:
+        logging.error("transformers library is not installed")
+        return
 
     try:
         HF_TOKENIZER_INSTANCE = AutoTokenizer.from_pretrained(
