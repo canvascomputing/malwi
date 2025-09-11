@@ -40,7 +40,8 @@ class Language(Enum):
 
     PYTHON = "python"
     JAVASCRIPT = "javascript"
-    BOTH = "both"
+    RUST = "rust"
+    ALL = "all"
 
 
 def train_tokenizer_api(
@@ -244,8 +245,8 @@ Examples:
             "--language",
             "-l",
             choices=[lang.value for lang in Language],
-            default=Language.BOTH.value,
-            help="Programming language(s) to process (default: both)",
+            default=Language.ALL.value,
+            help="Programming language(s) to process (default: all)",
         )
 
         return parser
@@ -352,9 +353,8 @@ Examples:
             info("   • This may take 10-30 minutes depending on network speed")
 
             # Process language-specific repositories
-            if args.language in [Language.PYTHON.value, Language.BOTH.value]:
+            if args.language in [Language.PYTHON.value, Language.ALL.value]:
                 info("   • Processing Python repositories...")
-                # Import download functions dynamically
                 from research.download_data import (
                     process_benign_repositories,
                     process_malicious_repositories,
@@ -365,8 +365,17 @@ Examples:
                 process_benign_repositories(BENIGN_REPO_URLS)
                 process_malicious_repositories(MALICIOUS_REPO_URLS)
 
-            if args.language in [Language.JAVASCRIPT.value, Language.BOTH.value]:
+            if args.language in [Language.JAVASCRIPT.value, Language.ALL.value]:
                 warning("JavaScript repository processing not yet implemented")
+
+            if args.language in [Language.RUST.value, Language.ALL.value]:
+                info("   • Processing Rust repositories...")
+                from research.download_data import (
+                    process_rust_repositories,
+                    RUST_REPO_URLS,
+                )
+
+                process_rust_repositories(RUST_REPO_URLS)
 
             success("   Repository download completed")
 
@@ -378,6 +387,8 @@ Examples:
             info(
                 "   • .repo_cache/malicious_repos/ - Malicious package datasets (pinned)"
             )
+            if args.language in [Language.RUST.value, Language.ALL.value]:
+                info("   • .repo_cache/rust_repos/ - Rust repositories (pinned)")
 
             # Show disk usage summary
             info("💾 Disk usage summary:")
@@ -429,7 +440,7 @@ Examples:
             # Step 2: Generate AST data from source files
             progress("Step 2: Generate AST Data (Parallel Processing)")
 
-            if args.language in [Language.PYTHON.value, Language.BOTH.value]:
+            if args.language in [Language.PYTHON.value, Language.ALL.value]:
                 info("   • Generating benign Python AST data...")
                 # Import preprocess function dynamically
                 from research.preprocess import preprocess_data
@@ -471,8 +482,46 @@ Examples:
                     timeout_minutes=90,  # 1.5 hours for suspicious samples
                 )
 
-            if args.language in [Language.JAVASCRIPT.value, Language.BOTH.value]:
+            if args.language in [Language.JAVASCRIPT.value, Language.ALL.value]:
                 warning("JavaScript preprocessing not yet implemented")
+
+            if args.language in [Language.RUST.value, Language.ALL.value]:
+                info("   • Generating benign Rust AST data...")
+                from research.preprocess import preprocess_data
+
+                preprocess_data(
+                    input_path=Path(".repo_cache/rust_repos"),
+                    output_path=Path("benign.csv"),
+                    extensions=[".rs"],
+                    use_parallel=True,
+                    timeout_minutes=240,
+                )
+
+                preprocess_data(
+                    input_path=Path("../malwi-samples/rust/benign"),
+                    output_path=Path("benign.csv"),
+                    extensions=[".rs"],
+                    use_parallel=True,
+                    timeout_minutes=90,
+                )
+
+                info("   • Generating malicious Rust AST data...")
+
+                preprocess_data(
+                    input_path=Path("../malwi-samples/rust/malicious"),
+                    output_path=Path("malicious.csv"),
+                    extensions=[".rs"],
+                    use_parallel=True,
+                    timeout_minutes=120,
+                )
+
+                preprocess_data(
+                    input_path=Path("../malwi-samples/rust/suspicious"),
+                    output_path=Path("malicious.csv"),
+                    extensions=[".rs"],
+                    use_parallel=True,
+                    timeout_minutes=90,
+                )
 
             success("   AST data generation completed")
 

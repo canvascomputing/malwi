@@ -248,7 +248,7 @@ def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
 def preprocess_data(
     input_path: Path,
     output_path: Path,
-    extensions: List[str] = [".py"],
+    extensions: List[str] = [".py", ".js", ".rs"],
     num_processes: int = None,
     chunk_size: int = 100,
     use_parallel: bool = True,
@@ -291,6 +291,8 @@ def preprocess_data(
             lang = "python"
         elif file_path.suffix == ".js":
             lang = "javascript"
+        elif file_path.suffix == ".rs":
+            lang = "rust"
         else:
             continue
 
@@ -446,6 +448,10 @@ def _process_sequential(files: List[Path], output_path: Path) -> None:
         from common.bytecode import ASTCompiler
 
         compilers["javascript"] = ASTCompiler("javascript")
+    if any(f.suffix == ".rs" for f in files):
+        from common.bytecode import ASTCompiler
+
+        compilers["rust"] = ASTCompiler("rust")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     csv_writer = CSVWriter(output_path)
@@ -461,6 +467,8 @@ def _process_sequential(files: List[Path], output_path: Path) -> None:
                 compiler = compilers.get("python")
             elif file_path.suffix == ".js":
                 compiler = compilers.get("javascript")
+            elif file_path.suffix == ".rs":
+                compiler = compilers.get("rust")
             else:
                 continue
 
@@ -490,7 +498,10 @@ def main():
     )
     parser.add_argument("output_path", type=Path, help="Path to save CSV output file")
     parser.add_argument(
-        "--extensions", nargs="+", default=[".py"], help="File extensions to process"
+        "--extensions",
+        nargs="+",
+        default=[".py", ".js", ".rs"],
+        help="File extensions to process",
     )
     parser.add_argument(
         "--num-processes",
