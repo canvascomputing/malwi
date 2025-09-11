@@ -24,6 +24,7 @@ class TestCLIEntry:
         assert "malwi - AI Python Malware Scanner" in captured.out
         assert "scan" in captured.out  # Check for scan subcommand
         assert "pypi" in captured.out  # Check for pypi subcommand
+        assert "cargo" in captured.out  # Check for cargo subcommand
 
     def test_no_arguments_shows_error(self, capsys):
         """Test that running without arguments shows help"""
