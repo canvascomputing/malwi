@@ -52,7 +52,7 @@ where = ["src"]
 exclude = ["research", "research.*"]
 
 [tool.setuptools.package-data]
-"common.syntax_mapping" = ["*.json"]
+"common.syntax_mapping" = ["*.json", "rust/*.json"]
 
 [dependency-groups]
 dev = [

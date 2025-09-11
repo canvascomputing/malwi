@@ -25,6 +25,7 @@ setup(
             "import_mapping.json",
             "sensitive_files.json",
             "target_files.json",
+            "rust/*.json",
         ]
     },
     install_requires=[
