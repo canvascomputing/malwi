@@ -35,10 +35,16 @@ def validate_tar_member(member: tarfile.TarInfo, target_dir: Path) -> None:
         raise Exception(f"Unsafe path in tar archive: {member.name}")
     if member.islnk() or member.issym():
         link_target = Path(member.linkname)
-        if link_target.is_absolute():
-            resolved_link = link_target.resolve()
+        if member.islnk():
+            if link_target.is_absolute():
+                resolved_link = link_target.resolve()
+            else:
+                resolved_link = (target_dir / link_target).resolve()
         else:
-            resolved_link = (member_path.parent / link_target).resolve()
+            if link_target.is_absolute():
+                resolved_link = link_target.resolve()
+            else:
+                resolved_link = (member_path.parent / link_target).resolve()
         try:
             resolved_link.relative_to(target_dir)
         except ValueError:

@@ -81,3 +81,16 @@ def test_validate_tar_member_rejects_link_outside(tmp_path):
         member = tar.getmembers()[0]
         with pytest.raises(Exception):
             validate_tar_member(member, tmp_path)
+
+
+def test_validate_tar_member_rejects_hard_link_outside(tmp_path):
+    tar_path = tmp_path / "hardlink.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        info = tarfile.TarInfo(name="dir/link")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "../outside"
+        tar.addfile(info)
+    with tarfile.open(tar_path, "r:gz") as tar:
+        member = tar.getmembers()[0]
+        with pytest.raises(Exception):
+            validate_tar_member(member, tmp_path)
