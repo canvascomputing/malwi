@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 malwi is an AI-powered Python malware scanner that detects zero-day vulnerabilities without requiring internet access. It uses a 3-step pipeline:
 
 1. **AST Compilation**: Python/JavaScript files → language-independent bytecode via AST parsing
-2. **Token Mapping**: Bytecode → tokens via custom mappings  
-3. **DistilBERT Analysis**: Tokens → maliciousness scores and final classification
+2. **Token Mapping**: Bytecode → tokens via custom mappings
+3. **DistilBERT Analysis**: Tokens → multi-label classification (benign, malicious, telemetry, suspicious)
 
 ## Key Commands
 
@@ -120,6 +120,16 @@ python util/build_helpers.py restore
 # Training files are excluded: train_*.py, preprocess.py, etc.
 ```
 
+## Multi-Label Classification
+
+The system now supports multi-label classification instead of binary malicious/benign:
+
+- **MalwiObject.labels**: Dict[str, float] mapping label names to confidence scores
+- **MalwiReport.labelled_objects**: List of objects with detected labels (replaces malicious_objects)
+- **Training Data**: CSV files include a "label" column derived from folder structure (../malwi-samples/python/{label}/)
+- **Model Training**: DistilBERT trained with multi-class classification, dynamic label mapping
+- **Cache Support**: Updated to store and retrieve label dictionaries instead of single scores
+
 ## Research Workflow
 
 **For AI model training research and performance tracking:**
@@ -205,6 +215,7 @@ This ensures that:
 - **Scan Command**: `src/cli/scan.py` - Local file/directory scanning functionality
 - **PyPI Command**: `src/cli/pypi.py` - PyPI package downloading and scanning
 - **Core Pipeline**: `src/common/malwi_object.py` → `src/common/bytecode.py` → `src/common/predict_distilbert.py`
+- **Multi-Label Classification**: Objects can have multiple labels with confidence scores (e.g., `{"malicious": 0.8, "telemetry": 0.6}`)
 - **Data Preprocessing**: `src/research/preprocess.py` - Parallel processing for fast AST compilation
 - **AST Compilation**: `src/common/bytecode.py` - Language-independent bytecode generation (renamed from ast_to_malwicode.py)
 - **File Operations**: `src/common/files.py` - File copying and utility functions
@@ -219,7 +230,9 @@ malwi provides three triage modes to help reduce false positives and validate ma
 ### Interactive Triage (`--triage`)
 - **Purpose**: Manually review each malicious finding before reporting
 - **Workflow**: Prompts user for each finding with options:
-  - `Suspicious (keep as malicious)` - Preserves the finding in the report
+  - `Malicious (clearly dangerous)` - Preserves the finding as a high-priority threat
+  - `Suspicious (unclear intent)` - Preserves the finding as a medium-priority threat
+  - `Telemetry (data collection)` - Preserves the finding as a telemetry/privacy concern
   - `Benign (false positive)` - Automatically comments out the code in source files
   - `Skip (unsure)` - Leaves finding in report without modification
   - `Quit (stop triaging)` - Stops triage process and generates report
@@ -232,18 +245,18 @@ malwi provides three triage modes to help reduce false positives and validate ma
   - File path, object name, and AI maliciousness score
   - Large colored buttons for classification decisions
   - Keyboard shortcuts for quick navigation
-- **Workflow**: Same options as interactive triage but in a visual interface
+- **Workflow**: Same four classification options as interactive triage but in a visual interface
 - **Use case**: When you prefer a graphical interface over command-line interaction
 - **Requirements**: Requires tkinter (included with most Python installations)
 
 ### AI-Powered Triage (`--triage-llm`)
 - **Purpose**: Automatic false positive detection using Large Language Model analysis
 - **Providers**: Supports OpenAI, Mistral, and Gemini AI services (tries in that order)
-- **Workflow**: 
-  1. AI analyzes each malicious finding with context (file path, code, maliciousness score)
-  2. AI classifies findings as suspicious, benign, or skip
+- **Workflow**:
+  1. AI analyzes each malicious finding with context (file path, code, threat score)
+  2. AI classifies findings as malicious, suspicious, telemetry, benign, or skip
   3. Benign findings are automatically commented out in source files
-  4. Suspicious findings are preserved in the final report
+  4. Malicious, suspicious, and telemetry findings are preserved in the final report
 - **Environment Variables**: Requires at least one of `OPENAI_API_KEY`, `MISTRAL_API_KEY`, or `GEMINI_API_KEY`
 - **Mutual Exclusion**: Cannot be used together with `--triage` (interactive mode)
 
@@ -368,3 +381,4 @@ malwi uses pinned repository commits to ensure reproducible training data:
 - **Language Support**: Supports both Python and JavaScript files through language-independent AST compilation
 - **Output Formats**: Supports demo, markdown, json, yaml formats via `--format` flag
 - **Performance**: F1=0.96, Recall=0.95, Precision≥0.95 for DistilBERT model
+- **Supported Labels**: `benign`, `malicious`, `suspicious`, `telemetry` (extensible for future categories)

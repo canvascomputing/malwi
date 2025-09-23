@@ -30,7 +30,7 @@ from common.messaging import (
 
 
 def _process_single_file_with_compiler(
-    file_path: Path, compiler, timeout: int = 30
+    file_path: Path, compiler, label: str = None, timeout: int = 30
 ) -> Dict:
     """
     Process a single file with an existing compiler and timeout protection.
@@ -69,6 +69,7 @@ def _process_single_file_with_compiler(
                     "hash": obj.to_hash(),
                     "language": obj.language,
                     "filepath": str(obj.file_path),
+                    "label": label or "",
                 }
                 serializable_objects.append(obj_data)
             except Exception as e:
@@ -100,6 +101,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
             - language: Language type string
             - chunk_id: Identifier for this chunk
             - temp_dir: Temporary directory path string
+            - label: Label for these files (optional)
     Returns:
         Dictionary with processing results
     """
@@ -109,6 +111,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
         language = chunk_data["language"]
         chunk_id = chunk_data["chunk_id"]
         temp_dir = Path(chunk_data["temp_dir"])
+        label = chunk_data.get("label", "")
 
         # Create ONE compiler instance per chunk (not per file!)
         # Import inside worker to avoid serialization issues
@@ -134,13 +137,13 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
         # Use context manager for file handling
         with open(chunk_output, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["tokens", "hash", "language", "filepath"])
+            writer.writerow(["tokens", "hash", "language", "filepath", "label"])
 
             # Process each file with shared compiler and individual timeout protection
             for file_path in file_paths:
                 try:
                     file_result = _process_single_file_with_compiler(
-                        file_path, compiler, timeout=30
+                        file_path, compiler, label=label, timeout=30
                     )
 
                     if file_result["success"]:
@@ -152,6 +155,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
                                     obj_data["hash"],
                                     obj_data["language"],
                                     obj_data["filepath"],
+                                    obj_data["label"],
                                 ]
                             )
                             total_code_objects += 1
@@ -223,7 +227,7 @@ def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
     with open(output_path, "w", encoding="utf-8", newline="") as output_file:
         writer = csv.writer(output_file)
         # Write header
-        writer.writerow(["tokens", "hash", "language", "filepath"])
+        writer.writerow(["tokens", "hash", "language", "filepath", "label"])
 
         for chunk_file in chunk_files:
             chunk_path = Path(chunk_file)
@@ -253,6 +257,7 @@ def preprocess_data(
     chunk_size: int = 100,
     use_parallel: bool = True,
     timeout_minutes: int = 120,
+    label: str = None,
 ) -> None:
     """
     Preprocess source files for malwi training pipeline with proper resource management.
@@ -271,10 +276,19 @@ def preprocess_data(
 
     info(f"Found {len(files)} files to process")
 
+    # Determine label from path if not explicitly provided
+    if label is None:
+        # Try to infer label from path (e.g., ../malwi-samples/python/malicious -> "malicious")
+        path_parts = input_path.parts
+        for part in path_parts:
+            if part in ["malicious", "benign", "suspicious", "telemetry"]:
+                label = part
+                break
+
     # Check if we should use parallel processing
     if not use_parallel or len(files) <= 10:
         info("Using sequential processing...")
-        _process_sequential(files, output_path)
+        _process_sequential(files, output_path, label=label)
         return
 
     # Use all available CPUs by default
@@ -312,6 +326,7 @@ def preprocess_data(
                         "files": chunk_files,  # Already converted to strings
                         "language": language,
                         "chunk_id": chunk_id,
+                        "label": label or "",
                     }
                 )
                 chunk_id += 1
@@ -432,8 +447,10 @@ def preprocess_data(
             error("No successful chunks - no output generated")
 
 
-def _process_sequential(files: List[Path], output_path: Path) -> None:
-    """Process files sequentially."""
+def _process_sequential(
+    files: List[Path], output_path: Path, label: str = None
+) -> None:
+    """Process files sequentially with optional label."""
     from research.csv_writer import CSVWriter
 
     # Create compilers
@@ -467,7 +484,7 @@ def _process_sequential(files: List[Path], output_path: Path) -> None:
             if compiler:
                 try:
                     code_objects = compiler.process_file(file_path)
-                    csv_writer.write_code_objects(code_objects)
+                    csv_writer.write_code_objects(code_objects, label=label)
                 except Exception as e:
                     logging.warning(f"Failed to process {file_path}: {e}")
                     continue

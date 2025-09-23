@@ -24,10 +24,10 @@ class TestCacheDuplication:
                 file_source_code="test code",
                 source_code="test code",
             )
-            obj.maliciousness = 0.95
+            obj.labels = {"malicious": 0.95}
 
             # Cache score first
-            cache.cache_score(obj, 0.95)
+            cache.cache_labels(obj, {"malicious": 0.95})
 
             # Cache triage decision
             cache.cache_triage_decision(obj, "suspicious")
@@ -63,7 +63,7 @@ class TestCacheDuplication:
                 file_source_code="code 1",
                 source_code="code 1",
             )
-            obj1.maliciousness = 0.95
+            obj1.labels = {"malicious": 0.95}
 
             obj2 = MalwiObject(
                 name="test_function_2",
@@ -72,13 +72,13 @@ class TestCacheDuplication:
                 file_source_code="code 2",
                 source_code="code 2",
             )
-            obj2.maliciousness = 0.85
+            obj2.labels = {"malicious": 0.85}
 
             # Cache scores and decisions for both
-            cache.cache_score(obj1, 0.95)
+            cache.cache_labels(obj1, {"malicious": 0.95})
             cache.cache_triage_decision(obj1, "suspicious")
 
-            cache.cache_score(obj2, 0.85)
+            cache.cache_labels(obj2, {"malicious": 0.85})
             cache.cache_triage_decision(obj2, "benign")
 
             # Read cache file
@@ -116,7 +116,7 @@ class TestCacheDuplication:
 
             # First session: cache only score
             cache1 = MalwiCache(cache_path)
-            cache1.cache_score(obj, 0.95)
+            cache1.cache_labels(obj, {"malicious": 0.95})
 
             # Second session: new cache instance, add decision
             cache2 = MalwiCache(cache_path)
@@ -124,7 +124,10 @@ class TestCacheDuplication:
 
             # Third session: verify both are preserved
             cache3 = MalwiCache(cache_path)
-            assert cache3.get_cached_score(obj) == 0.95, "Score not preserved"
+            cached_labels = cache3.get_cached_labels(obj)
+            assert cached_labels and cached_labels.get("malicious") == 0.95, (
+                "Labels not preserved"
+            )
             assert cache3.get_cached_triage_decision(obj) == "suspicious", (
                 "Decision not preserved"
             )
@@ -151,13 +154,13 @@ class TestCacheDuplication:
                 file_source_code="test",
                 source_code="test",
             )
-            obj.maliciousness = 0.75
+            obj.labels = {"benign": 0.75}
 
             # Cache decision first
             cache.cache_triage_decision(obj, "benign")
 
             # Then cache score
-            cache.cache_score(obj, 0.75)
+            cache.cache_labels(obj, {"benign": 0.75})
 
             # Should still have only one entry
             with open(cache_path, "r") as f:

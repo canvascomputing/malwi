@@ -18,9 +18,9 @@ class MalwiCache:
             cache_file: Path to cache file. If None, caching is disabled.
         """
         self.cache_file = cache_file
-        # Unified cache structure: hash -> (filename, object, score, decision)
-        # score can be None if not available, decision can be None if not triaged
-        self.cache_data: Dict[str, Tuple[str, str, Optional[float], Optional[str]]] = {}
+        # Unified cache structure: hash -> (filename, object, labels, decision)
+        # labels can be None/empty dict, decision can be None if not triaged
+        self.cache_data: Dict[str, Tuple[str, str, Optional[Dict], Optional[str]]] = {}
         self.enabled = cache_file is not None
 
         if self.enabled:
@@ -39,22 +39,38 @@ class MalwiCache:
                     filename = row["filename"]
                     object_name = row["object"]
 
-                    # Handle score (could be missing in old format or empty)
-                    score = None
-                    if "score" in row and row["score"]:
+                    # Handle labels (could be missing in old format or empty)
+                    labels = {}
+                    if "labels" in row and row["labels"]:
                         try:
-                            score = round(
-                                float(row["score"]), 3
-                            )  # Round to 3 decimal places
-                        except ValueError:
-                            score = None
+                            # Parse labels from JSON-like string or legacy score
+                            import json
+
+                            labels = json.loads(row["labels"])
+                        except (ValueError, json.JSONDecodeError):
+                            # Fallback for legacy score format
+                            if "score" in row and row["score"]:
+                                try:
+                                    score = float(row["score"])
+                                    # Convert legacy score to labels
+                                    if score > 0.5:
+                                        labels = {"malicious": round(score, 3)}
+                                    else:
+                                        labels = {"benign": round(1.0 - score, 3)}
+                                except ValueError:
+                                    labels = {}
 
                     # Handle decision (could be missing in old format or empty)
                     decision = None
                     if "decision" in row and row["decision"]:
                         decision = row["decision"]
 
-                    self.cache_data[hash_key] = (filename, object_name, score, decision)
+                    self.cache_data[hash_key] = (
+                        filename,
+                        object_name,
+                        labels,
+                        decision,
+                    )
         except Exception:
             # If cache file is corrupted or has issues, start with empty cache
             self.cache_data = {}
@@ -81,38 +97,38 @@ class MalwiCache:
         # Create SHA512 hash
         return hashlib.sha512(content.encode("utf-8")).hexdigest()
 
-    def get_cached_score(self, obj: MalwiObject) -> Optional[float]:
+    def get_cached_labels(self, obj: MalwiObject) -> Optional[Dict]:
         """
-        Get cached prediction score for an object.
+        Get cached prediction labels for an object.
 
         Args:
             obj: MalwiObject to look up
 
         Returns:
-            Cached score if found, None otherwise
+            Cached labels dict if found, None otherwise
         """
         if not self.enabled:
             return None
 
         hash_key = self._get_object_hash(obj)
         if hash_key in self.cache_data:
-            return self.cache_data[hash_key][2]  # Return score (3rd element)
+            return self.cache_data[hash_key][2]  # Return labels (3rd element)
 
         return None
 
-    def cache_score(self, obj: MalwiObject, score: float):
+    def cache_labels(self, obj: MalwiObject, labels: Dict[str, float]):
         """
-        Cache prediction score for an object.
+        Cache prediction labels for an object.
 
         Args:
             obj: MalwiObject to cache
-            score: Prediction score to cache
+            labels: Dict of label names to confidence scores
         """
         if not self.enabled:
             return
 
-        # Round score to 3 decimal places
-        rounded_score = round(score, 3)
+        # Round label scores to 3 decimal places
+        rounded_labels = {k: round(v, 3) for k, v in labels.items()}
 
         hash_key = self._get_object_hash(obj)
         filename = Path(obj.file_path).name
@@ -125,7 +141,7 @@ class MalwiCache:
         self.cache_data[hash_key] = (
             filename,
             obj.name,
-            rounded_score,
+            rounded_labels,
             existing_decision,
         )
 
@@ -165,12 +181,14 @@ class MalwiCache:
         hash_key = self._get_object_hash(obj)
         filename = Path(obj.file_path).name
 
-        # Store in memory cache - preserve existing score if any
-        existing_score = None
+        # Store in memory cache - preserve existing labels if any
+        existing_labels = {}
         if hash_key in self.cache_data:
-            existing_score = self.cache_data[hash_key][2]  # 3rd element is score
+            existing_labels = (
+                self.cache_data[hash_key][2] or {}
+            )  # 3rd element is labels
 
-        self.cache_data[hash_key] = (filename, obj.name, existing_score, decision)
+        self.cache_data[hash_key] = (filename, obj.name, existing_labels, decision)
 
         # Update cache file
         self._update_cache_file()
@@ -189,13 +207,15 @@ class MalwiCache:
                 writer = csv.writer(f)
 
                 # Write header
-                writer.writerow(["hash", "filename", "object", "score", "decision"])
+                writer.writerow(["hash", "filename", "object", "labels", "decision"])
 
                 # Write all cache entries
+                import json
+
                 for hash_key, (
                     filename,
                     object_name,
-                    score,
+                    labels,
                     decision,
                 ) in self.cache_data.items():
                     writer.writerow(
@@ -203,7 +223,7 @@ class MalwiCache:
                             hash_key,
                             filename,
                             object_name,
-                            score if score is not None else "",
+                            json.dumps(labels) if labels else "",
                             decision if decision is not None else "",
                         ]
                     )
@@ -219,8 +239,11 @@ class MalwiCache:
         Returns:
             Dictionary with cache statistics
         """
+        triage_count = sum(
+            1 for entry in self.cache_data.values() if entry[3] is not None
+        )
         return {
             "total_entries": len(self.cache_data),
-            "triage_entries": len(self.triage_data),
+            "triage_entries": triage_count,
             "enabled": self.enabled,
         }

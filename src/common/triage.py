@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 # Triage decision constants
+TRIAGE_MALICIOUS = "malicious"
 TRIAGE_SUSPICIOUS = "suspicious"
+TRIAGE_TELEMETRY = "telemetry"
 TRIAGE_BENIGN = "benign"
 TRIAGE_SKIP = "skip"
 TRIAGE_QUIT = "quit"
@@ -43,10 +45,12 @@ def create_triage_prompt(obj: MalwiObject, file_content: str) -> str:
 Please analyze the code for suspicious activities.
 
 Based on your analysis, respond with exactly one of these options:
-- "{TRIAGE_SUSPICIOUS}" - if this appears to be suspicious code
+- "{TRIAGE_MALICIOUS}" - if this appears to be clearly malicious/dangerous code
+- "{TRIAGE_SUSPICIOUS}" - if this appears to be suspicious but unclear intent
+- "{TRIAGE_TELEMETRY}" - if this appears to be telemetry/data collection code
 - "{TRIAGE_BENIGN}" - if this appears to be legitimate code
 
-Respond with one word: {TRIAGE_SUSPICIOUS} or {TRIAGE_BENIGN}"""
+Respond with one word: {TRIAGE_MALICIOUS}, {TRIAGE_SUSPICIOUS}, {TRIAGE_TELEMETRY}, or {TRIAGE_BENIGN}"""
 
 
 class TriageProvider(Protocol):
@@ -87,7 +91,18 @@ class InteractiveTriageProvider:
             print(f"Progress: {current}/{total} objects")
         print(f"File: {obj.file_path}")
         print(f"Object: {obj.name}")
-        print(f"Maliciousness: {obj.maliciousness:.3f}" if obj.maliciousness else "N/A")
+        # Get the highest threat score from labels
+        threat_score = 0.0
+        if obj.labels:
+            threat_score = max(
+                (score for label, score in obj.labels.items() if label != "benign"),
+                default=0.0,
+            )
+        print(
+            f"Threat Level: {threat_score:.3f}"
+            if threat_score > 0
+            else "Labels: not analyzed"
+        )
         print(f"Embedding count: {obj.embedding_count} tokens")
         print(f"{'=' * 70}")
 
@@ -98,14 +113,21 @@ class InteractiveTriageProvider:
             print(file_content)
 
         # Ask user to classify
-        maliciousness_str = (
-            f"{obj.maliciousness:.2f}" if obj.maliciousness is not None else "N/A"
-        )
+        # Get the highest threat score for display
+        threat_score = 0.0
+        if obj.labels:
+            threat_score = max(
+                (score for label, score in obj.labels.items() if label != "benign"),
+                default=0.0,
+            )
+        threat_str = f"{threat_score:.2f}" if threat_score > 0 else "N/A"
 
         return questionary.select(
-            f"How would you classify this code (AI score: {maliciousness_str})?",
+            f"How would you classify this code (AI score: {threat_str})?",
             choices=[
+                TRIAGE_MALICIOUS,
                 TRIAGE_SUSPICIOUS,
+                TRIAGE_TELEMETRY,
                 TRIAGE_BENIGN,
                 TRIAGE_SKIP,
                 TRIAGE_QUIT,
@@ -347,19 +369,47 @@ class UITriageProvider:
             "borderwidth": 3,
         }
 
-        # Suspicious button
-        suspicious_btn = tk.Button(
+        # Malicious button
+        malicious_btn = tk.Button(
             buttons_frame,
-            text="👹 Suspicious\n(Keep as malicious)",
+            text="💀 Malicious\n(Clearly dangerous)",
             bg="#8B0000",
             fg="#ffffff",
             activebackground="#660000",
+            activeforeground="#ffffff",
+            disabledforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_MALICIOUS),
+            **button_config,
+        )
+        malicious_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Suspicious button
+        suspicious_btn = tk.Button(
+            buttons_frame,
+            text="👹 Suspicious\n(Unclear intent)",
+            bg="#CD853F",
+            fg="#ffffff",
+            activebackground="#A0522D",
             activeforeground="#ffffff",
             disabledforeground="#ffffff",
             command=lambda: self._set_result(TRIAGE_SUSPICIOUS),
             **button_config,
         )
         suspicious_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        # Telemetry button
+        telemetry_btn = tk.Button(
+            buttons_frame,
+            text="📊 Telemetry\n(Data collection)",
+            bg="#4682B4",
+            fg="#ffffff",
+            activebackground="#2F4F4F",
+            activeforeground="#ffffff",
+            disabledforeground="#ffffff",
+            command=lambda: self._set_result(TRIAGE_TELEMETRY),
+            **button_config,
+        )
+        telemetry_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
         # Benign button
         benign_btn = tk.Button(
@@ -404,17 +454,19 @@ class UITriageProvider:
         quit_btn.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
         # Keyboard shortcuts
-        self.root.bind("<Return>", lambda e: self._set_result(TRIAGE_SUSPICIOUS))
+        self.root.bind("<Return>", lambda e: self._set_result(TRIAGE_MALICIOUS))
         self.root.bind("<Escape>", lambda e: self._set_result(TRIAGE_SKIP))
-        self.root.bind("1", lambda e: self._set_result(TRIAGE_SUSPICIOUS))
-        self.root.bind("2", lambda e: self._set_result(TRIAGE_BENIGN))
-        self.root.bind("3", lambda e: self._set_result(TRIAGE_SKIP))
+        self.root.bind("1", lambda e: self._set_result(TRIAGE_MALICIOUS))
+        self.root.bind("2", lambda e: self._set_result(TRIAGE_SUSPICIOUS))
+        self.root.bind("3", lambda e: self._set_result(TRIAGE_TELEMETRY))
+        self.root.bind("4", lambda e: self._set_result(TRIAGE_BENIGN))
+        self.root.bind("5", lambda e: self._set_result(TRIAGE_SKIP))
         self.root.bind("q", lambda e: self._set_result(TRIAGE_QUIT))
 
         # Instructions label
         instructions_label = tk.Label(
             self.root,
-            text="💡 Keyboard shortcuts: 1=Suspicious, 2=Benign, 3=Skip, Q=Quit, Enter=Suspicious, Esc=Skip",
+            text="💡 Keyboard shortcuts: 1=Malicious, 2=Suspicious, 3=Telemetry, 4=Benign, 5=Skip, Q=Quit, Enter=Malicious, Esc=Skip",
             font=("Arial", 9),
             bg="#2b2b2b",
             fg="#888888",
@@ -468,11 +520,17 @@ class UITriageProvider:
         name_text = f"🎯 Object: {obj.name}"
         self.widgets["name_label"].config(text=name_text)
 
-        # Update maliciousness score
+        # Update threat score from labels
+        threat_score = 0.0
+        if obj.labels:
+            threat_score = max(
+                (score for label, score in obj.labels.items() if label != "benign"),
+                default=0.0,
+            )
         score_text = (
-            f"⚠️  AI Maliciousness Score: {obj.maliciousness:.3f}"
-            if obj.maliciousness
-            else "⚠️  AI Maliciousness Score: N/A"
+            f"⚠️  AI Threat Score: {threat_score:.3f}"
+            if threat_score > 0
+            else "⚠️  AI Threat Score: N/A"
         )
         self.widgets["score_label"].config(text=score_text)
 
@@ -564,10 +622,14 @@ class MistralTriageProvider:
             response_text = response.choices[0].message.content
 
             # Parse the decision
-            if TRIAGE_BENIGN in response_text:
-                return TRIAGE_BENIGN
+            if TRIAGE_MALICIOUS in response_text:
+                return TRIAGE_MALICIOUS
             elif TRIAGE_SUSPICIOUS in response_text:
                 return TRIAGE_SUSPICIOUS
+            elif TRIAGE_TELEMETRY in response_text:
+                return TRIAGE_TELEMETRY
+            elif TRIAGE_BENIGN in response_text:
+                return TRIAGE_BENIGN
             elif TRIAGE_SKIP in response_text:
                 return TRIAGE_SKIP
             else:
@@ -639,10 +701,14 @@ class GeminiTriageProvider:
             response_text = content.lower().strip()
 
             # Parse the decision
-            if TRIAGE_BENIGN in response_text:
-                return TRIAGE_BENIGN
+            if TRIAGE_MALICIOUS in response_text:
+                return TRIAGE_MALICIOUS
             elif TRIAGE_SUSPICIOUS in response_text:
                 return TRIAGE_SUSPICIOUS
+            elif TRIAGE_TELEMETRY in response_text:
+                return TRIAGE_TELEMETRY
+            elif TRIAGE_BENIGN in response_text:
+                return TRIAGE_BENIGN
             elif TRIAGE_SKIP in response_text:
                 return TRIAGE_SKIP
             else:
@@ -745,10 +811,14 @@ class OpenAITriageProvider:
             response_text = content.lower().strip()
 
             # Parse the decision
-            if TRIAGE_BENIGN in response_text:
-                return TRIAGE_BENIGN
+            if TRIAGE_MALICIOUS in response_text:
+                return TRIAGE_MALICIOUS
             elif TRIAGE_SUSPICIOUS in response_text:
                 return TRIAGE_SUSPICIOUS
+            elif TRIAGE_TELEMETRY in response_text:
+                return TRIAGE_TELEMETRY
+            elif TRIAGE_BENIGN in response_text:
+                return TRIAGE_BENIGN
             elif TRIAGE_SKIP in response_text:
                 return TRIAGE_SKIP
             else:

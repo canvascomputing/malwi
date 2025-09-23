@@ -72,6 +72,9 @@ class TestWindowingPrediction(unittest.TestCase):
         ]
         mock_model.side_effect = mock_model_outputs
 
+        # Configure model config for label mapping
+        mock_model.config.id2label = {0: "benign", 1: "malicious"}
+
         # --- 2. Call the Function under Test ---
 
         long_text_input = "A" * 2000
@@ -86,7 +89,7 @@ class TestWindowingPrediction(unittest.TestCase):
         )
 
         self.assertEqual(
-            result["label"], "Malicious", "The final label should be 'Malicious'"
+            result["label"], "malicious", "The final label should be 'malicious'"
         )
         self.assertEqual(result["index"], 1, "The final index should be 1")
 

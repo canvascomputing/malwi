@@ -12,7 +12,7 @@ class TestReportResultField:
         """Test result is 'good' when no malicious objects."""
         report = MalwiReport(
             all_objects=[],
-            malicious_objects=[],
+            labelled_objects=[],
             threshold=0.7,
             all_files=[],
             skipped_files=[],
@@ -37,11 +37,11 @@ class TestReportResultField:
             file_path="test.py",
             file_source_code="",
         )
-        mock_obj.maliciousness = 0.8
+        mock_obj.labels = {"malicious": 0.8}
 
         report = MalwiReport(
             all_objects=[mock_obj],
-            malicious_objects=[mock_obj],
+            labelled_objects=[mock_obj],
             threshold=0.7,
             all_files=[Path("test.py")],
             skipped_files=[],
@@ -66,11 +66,11 @@ class TestReportResultField:
             file_path="test.py",
             file_source_code="",
         )
-        mock_obj.maliciousness = 0.9
+        mock_obj.labels = {"malicious": 0.9}
 
         report = MalwiReport(
             all_objects=[mock_obj],
-            malicious_objects=[mock_obj],
+            labelled_objects=[mock_obj],
             threshold=0.7,
             all_files=[Path("test.py")],
             skipped_files=[],
@@ -91,7 +91,7 @@ class TestReportResultField:
         """Test result field appears in JSON output."""
         report = MalwiReport(
             all_objects=[],
-            malicious_objects=[],
+            labelled_objects=[],
             threshold=0.7,
             all_files=[],
             skipped_files=[],
@@ -112,7 +112,7 @@ class TestReportResultField:
         """Test result field appears in YAML output."""
         report = MalwiReport(
             all_objects=[],
-            malicious_objects=[],
+            labelled_objects=[],
             threshold=0.7,
             all_files=[],
             skipped_files=[],
@@ -134,7 +134,7 @@ class TestReportResultField:
         # Test good result
         good_report = MalwiReport(
             all_objects=[],
-            malicious_objects=[],
+            labelled_objects=[],
             threshold=0.7,
             all_files=[],
             skipped_files=[],
@@ -157,11 +157,11 @@ class TestReportResultField:
             file_path="test.py",
             file_source_code="",
         )
-        mock_obj.maliciousness = 0.8
+        mock_obj.labels = {"malicious": 0.8}
 
         suspicious_report = MalwiReport(
             all_objects=[mock_obj],
-            malicious_objects=[mock_obj],
+            labelled_objects=[mock_obj],
             threshold=0.7,
             all_files=[Path("test.py")],
             skipped_files=[],
@@ -184,7 +184,7 @@ class TestReportResultField:
         # Test malicious result
         malicious_report = MalwiReport(
             all_objects=[mock_obj],
-            malicious_objects=[mock_obj],
+            labelled_objects=[mock_obj],
             threshold=0.7,
             all_files=[Path("test.py")],
             skipped_files=[],

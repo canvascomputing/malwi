@@ -441,6 +441,7 @@ Examples:
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=240,  # 4 hours for 200k+ files
+                    label="benign",
                 )
 
                 # Add false-positives from malwi-samples
@@ -450,6 +451,7 @@ Examples:
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=90,  # Even malwi-samples can be large
+                    label="benign",
                 )
 
                 info("   • Generating malicious Python AST data...")
@@ -460,6 +462,7 @@ Examples:
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=120,  # 2 hours for malicious samples
+                    label="malicious",
                 )
 
                 # Add suspicious findings for future training categories
@@ -469,6 +472,7 @@ Examples:
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=90,  # 1.5 hours for suspicious samples
+                    label="suspicious",
                 )
 
             if args.language in [Language.JAVASCRIPT.value, Language.BOTH.value]:

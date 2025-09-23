@@ -207,11 +207,31 @@ def _get_windowed_predictions(
         if hasattr(outputs, "logits"):
             logits = outputs.logits
             probabilities = F.softmax(logits, dim=-1).cpu()[0]
+
+            # Get label mapping from model config
+            if (
+                hasattr(HF_MODEL_INSTANCE.config, "id2label")
+                and HF_MODEL_INSTANCE.config.id2label
+                and not any(
+                    k.startswith("LABEL_")
+                    for k in HF_MODEL_INSTANCE.config.id2label.values()
+                )
+            ):
+                label_map = HF_MODEL_INSTANCE.config.id2label
+            else:
+                # Fallback for backward compatibility with binary models
+                label_map = {0: "benign", 1: "malicious"}
+
+            # Create labels dictionary with confidence scores
+            labels_dict = {}
+            for idx, prob in enumerate(probabilities.tolist()):
+                if idx in label_map:
+                    label_name = label_map[idx]
+                    labels_dict[label_name] = prob
+
+            # Get the highest confidence label
             prediction_idx = torch.argmax(probabilities).item()
-            label_map = {0: "Benign", 1: "Malicious"}
-            predicted_label = label_map.get(
-                prediction_idx, f"Unknown_Index_{prediction_idx}"
-            )
+            predicted_label = label_map.get(prediction_idx, f"unknown_{prediction_idx}")
 
             window_results.append(
                 {
@@ -219,6 +239,7 @@ def _get_windowed_predictions(
                     "index": prediction_idx,
                     "label": predicted_label,
                     "probabilities": probabilities.tolist(),
+                    "labels": labels_dict,
                 }
             )
 
@@ -300,15 +321,24 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
                     "prediction_debug": prediction_debug_info,
                 }
 
-            # Aggregate results: find the window with the highest probability for "Malicious" (index 1)
-            # This is a common strategy: if any part is malicious, the whole is.
-            best_window = max(window_predictions, key=lambda x: x["probabilities"][1])
+            # Aggregate results: find the window with highest confidence for any non-benign label
+            # Strategy: if any part is malicious/suspicious, the whole is
+            def get_max_threat_score(window):
+                # Get maximum probability for non-benign labels
+                probs = window["probabilities"]
+                # Assume index 0 is benign (or check label map)
+                if len(probs) > 1:
+                    return max(probs[1:])  # Max of all non-benign labels
+                return 0.0
+
+            best_window = max(window_predictions, key=get_max_threat_score)
 
             return {
                 "status": "success",
                 "index": best_window["index"],
                 "label": best_window["label"],
                 "probabilities": best_window["probabilities"],
+                "labels": best_window.get("labels", {}),
                 "prediction_debug": prediction_debug_info,
             }
 
@@ -335,10 +365,32 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
             if hasattr(outputs, "logits"):
                 logits = outputs.logits
                 probabilities = F.softmax(logits, dim=-1).cpu()[0]
+
+                # Get label mapping from model config
+                if (
+                    hasattr(HF_MODEL_INSTANCE.config, "id2label")
+                    and HF_MODEL_INSTANCE.config.id2label
+                    and not any(
+                        k.startswith("LABEL_")
+                        for k in HF_MODEL_INSTANCE.config.id2label.values()
+                    )
+                ):
+                    label_map = HF_MODEL_INSTANCE.config.id2label
+                else:
+                    # Fallback for backward compatibility with binary models
+                    label_map = {0: "benign", 1: "malicious"}
+
+                # Create labels dictionary with confidence scores
+                labels_dict = {}
+                for idx, prob in enumerate(probabilities.tolist()):
+                    if idx in label_map:
+                        label_name = label_map[idx]
+                        labels_dict[label_name] = prob
+
+                # Get the highest confidence label
                 prediction_idx = torch.argmax(probabilities).item()
-                label_map = {0: "Benign", 1: "Malicious"}
                 predicted_label = label_map.get(
-                    prediction_idx, f"Unknown_Index_{prediction_idx}"
+                    prediction_idx, f"unknown_{prediction_idx}"
                 )
 
                 return {
@@ -346,6 +398,7 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
                     "index": prediction_idx,
                     "label": predicted_label,
                     "probabilities": probabilities.tolist(),
+                    "labels": labels_dict,
                     "prediction_debug": prediction_debug_info,
                 }
 

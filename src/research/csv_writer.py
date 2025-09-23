@@ -30,10 +30,17 @@ class CSVWriter:
         self.writer = csv.writer(self.file_handle)
 
         if is_empty:
-            self.writer.writerow(["tokens", "hash", "language", "filepath"])
+            self.writer.writerow(["tokens", "hash", "language", "filepath", "label"])
 
-    def write_code_objects(self, code_objects: List["MalwiObject"]) -> None:
-        """Write MalwiObject data to CSV."""
+    def write_code_objects(
+        self, code_objects: List["MalwiObject"], label: str = None
+    ) -> None:
+        """Write MalwiObject data to CSV with label.
+
+        Args:
+            code_objects: List of MalwiObject instances
+            label: Label for these objects (e.g., 'malicious', 'benign', 'suspicious', 'telemetry')
+        """
         for obj in code_objects:
             self.writer.writerow(
                 [
@@ -41,6 +48,7 @@ class CSVWriter:
                     obj.to_hash(),
                     obj.language,
                     obj.file_path,
+                    label or "",
                 ]
             )
 

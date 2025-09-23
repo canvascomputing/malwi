@@ -65,7 +65,7 @@ class TestMalwiObject:
             result = malwi_obj.predict()
 
         # Should have set maliciousness score
-        assert malwi_obj.maliciousness == 0.7
+        assert malwi_obj.labels.get("malicious") == 0.7
         assert result == {"probabilities": [0.3, 0.7]}
 
     def test_predict_no_special_tokens(self, malwi_obj):
@@ -79,13 +79,13 @@ class TestMalwiObject:
             result = malwi_obj.predict()
 
         # Should now analyze even without special tokens
-        assert malwi_obj.maliciousness is not None
+        assert malwi_obj.labels is not None
         assert result is not None
         assert "probabilities" in result
 
     def test_to_dict_yaml_json(self, malwi_obj):
         """Test conversion to dict, YAML, and JSON."""
-        malwi_obj.maliciousness = 0.8
+        malwi_obj.labels = {"malicious": 0.8}
         # Code is now available via the property
 
         # Test to_dict
@@ -133,7 +133,7 @@ class TestMalwiObject:
         # Since there's no bytecode, prediction should use warnings + MALFORMED_FILE
         result = obj.predict()
         # Now all objects are analyzed, even those with warnings
-        assert obj.maliciousness is not None
+        assert obj.labels is not None
         assert result is not None
 
     def test_malwi_object_javascript(self):
@@ -239,7 +239,7 @@ def test_malwi_object_creation_minimal():
     assert obj.name == "minimal"
     assert obj.language == "python"
     assert obj.file_path == "minimal.py"
-    assert obj.maliciousness is None
+    assert obj.labels == {}
     assert obj.byte_code is None
 
 

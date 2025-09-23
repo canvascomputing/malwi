@@ -309,11 +309,11 @@ class MaliciousClass:
             )
 
             # Manually create some malicious objects for testing if none detected
-            if not report.malicious_objects and report.all_objects:
+            if not report.labelled_objects and report.all_objects:
                 # Take any object and mark it as malicious for testing
                 test_obj = report.all_objects[0]
-                test_obj.maliciousness = 0.9  # High maliciousness score
-                report.malicious_objects = [test_obj]
+                test_obj.labels = {"malicious": 0.9}  # High maliciousness score
+                report.labelled_objects = [test_obj]
 
             # Generate code format output
             code_output = report.to_code_text()
@@ -327,7 +327,7 @@ class MaliciousClass:
             assert "# Object:" in code_output
 
             # Should have maliciousness score
-            assert "# Maliciousness:" in code_output
+            assert "# Labels:" in code_output
 
             # Should have embedding count information
             assert "# Embedding count:" in code_output
@@ -367,7 +367,7 @@ def safe_function():
             # Code format now shows ALL objects, not just malicious ones
             # Should contain the safe function even if it's not malicious
             assert "safe_function" in code_output
-            assert "# Maliciousness:" in code_output
+            assert "# Labels:" in code_output
             assert "# File:" in code_output
 
     def test_source_code_population_method(self):

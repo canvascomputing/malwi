@@ -3,7 +3,7 @@ import json
 import yaml
 import unittest
 
-from typing import List
+from typing import List, Dict
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -19,7 +19,7 @@ class MockMalwiObject:
 
     name: str
     file_path: str
-    maliciousness: float
+    labels: Dict[str, float] = field(default_factory=dict)
     file_source_code: str = ""
     _code_text: str = ""
     warnings: List[str] = field(default_factory=list)
@@ -88,7 +88,7 @@ class MockMalwiObject:
             "contents": [
                 {
                     "name": self.name,
-                    "score": self.maliciousness,
+                    "labels": self.labels if self.labels else {},
                     "code": final_code_value,
                     "tokens": f"TOKEN_{self.name.upper()}",
                     "hash": f"hash_for_{self.name}",
@@ -104,14 +104,14 @@ class TestMalwiReport(unittest.TestCase):
         self.malicious_obj = MockMalwiObject(
             name="evil_func",
             file_path="/tmp/malware.py",
-            maliciousness=0.95,
+            labels={"malicious": 0.95},
             file_source_code="import os; os.system('rm -rf /')",
             _code_text="os.system('rm -rf /')",
         )
         self.benign_obj = MockMalwiObject(
             name="safe_func",
             file_path="/tmp/script.py",
-            maliciousness=0.10,
+            labels={"benign": 0.90},
             file_source_code="print('hello')",
             _code_text="print('hello')",
         )
@@ -119,7 +119,7 @@ class TestMalwiReport(unittest.TestCase):
 
         self.malicious_report = MalwiReport(
             all_objects=self.all_objects,
-            malicious_objects=[self.malicious_obj],
+            labelled_objects=[self.malicious_obj],
             threshold=0.7,
             all_files=[Path("/tmp/malware.py"), Path("/tmp/script.py")],
             skipped_files=[],
@@ -135,7 +135,7 @@ class TestMalwiReport(unittest.TestCase):
 
         self.benign_report = MalwiReport(
             all_objects=[self.benign_obj],
-            malicious_objects=[],
+            labelled_objects=[],
             threshold=0.7,
             all_files=[Path("/tmp/script.py")],
             skipped_files=[],
@@ -196,7 +196,7 @@ class TestMalwiReport(unittest.TestCase):
         """Test the simple text output for a malicious report."""
         text = self.malicious_report.to_demo_text()
         self.assertIn("- files: 2", text)
-        self.assertIn("suspicious:", text)
+        self.assertIn("malicious:", text)
         self.assertIn("system interaction", text)
         self.assertIn("=> 👹 malicious 0.88", text)
         self.assertIn("/tmp/malware.py", text)  # Check file path is included
@@ -220,7 +220,7 @@ class TestMalwiReport(unittest.TestCase):
 
         self.assertIn("## /tmp/malware.py", md)
         self.assertIn("- Object: `evil_func`", md)
-        self.assertIn("- Maliciousness: 👹 `0.95`", md)
+        self.assertIn("- Labels: 👹 malicious: `0.95`", md)
         self.assertIn("```\nos.system('rm -rf /')\n```", md)
 
         self.assertNotIn("## /tmp/script.py", md)

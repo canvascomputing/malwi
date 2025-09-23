@@ -46,7 +46,7 @@ def test_malwi_report_exports():
     # Create a minimal report
     report = MalwiReport(
         all_objects=[],
-        malicious_objects=[],
+        labelled_objects=[],
         threshold=0.7,
         all_files=[],
         skipped_files=[],

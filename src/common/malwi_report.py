@@ -58,19 +58,23 @@ def process_single_file(
             all_objects.append(obj)
             # In triage mode, don't write to cache yet
             obj.predict(cache=cache, write_to_cache=not triage_mode)
-            if (
-                maliciousness_threshold is not None
-                and obj.maliciousness
-                and obj.maliciousness > maliciousness_threshold
-            ):
-                # Check if this object was previously triaged as benign
-                if cache is not None:
-                    cached_triage_decision = cache.get_cached_triage_decision(obj)
-                    if cached_triage_decision == "benign":
-                        # Skip objects that were previously triaged as benign (false positives)
-                        continue
+            # Check if object has any threatening label above threshold
+            if maliciousness_threshold is not None and obj.labels:
+                # Only include objects with harmful labels in labelled_objects
+                has_harmful_label = any(
+                    confidence > maliciousness_threshold and label not in ["benign"]
+                    for label, confidence in obj.labels.items()
+                )
 
-                malicious_objects.append(obj)
+                if has_harmful_label:
+                    # Check if this object was previously triaged as benign
+                    if cache is not None:
+                        cached_triage_decision = cache.get_cached_triage_decision(obj)
+                        if cached_triage_decision == "benign":
+                            # Skip objects that were previously triaged as benign (false positives)
+                            continue
+
+                    malicious_objects.append(obj)
 
         return all_objects, malicious_objects
 
@@ -92,11 +96,15 @@ def format_object_for_display(obj: MalwiObject, comment_prefix: str = "#") -> st
     """
     output_parts = []
 
-    # Format maliciousness score
-    if obj.maliciousness is not None:
-        score_text = f"Maliciousness: {obj.maliciousness:.3f}"
+    # Format label scores
+    if obj.labels:
+        # Show all labels with their confidence scores
+        label_parts = []
+        for label, confidence in sorted(obj.labels.items(), key=lambda x: -x[1]):
+            label_parts.append(f"{label}: {confidence:.3f}")
+        score_text = "Labels: " + ", ".join(label_parts)
     else:
-        score_text = "Maliciousness: not analyzed"
+        score_text = "Labels: not analyzed"
 
     # Add file path comment with embedding count info and maliciousness score
     output_parts.append(f"{comment_prefix} {'=' * 70}")
@@ -249,7 +257,9 @@ def triage_malicious_objects(
 
     # Import triage constants once
     from common.triage import (
+        TRIAGE_MALICIOUS,
         TRIAGE_SUSPICIOUS,
+        TRIAGE_TELEMETRY,
         TRIAGE_BENIGN,
         TRIAGE_SKIP,
         TRIAGE_QUIT,
@@ -305,16 +315,16 @@ def triage_malicious_objects(
             ):
                 cache.cache_triage_decision(obj, classification)
 
-        if classification == TRIAGE_SUSPICIOUS:
+        if classification in [TRIAGE_MALICIOUS, TRIAGE_SUSPICIOUS, TRIAGE_TELEMETRY]:
             triaged_objects.append(obj)
-            # Cache the confirmed malicious object score
-            if cache is not None and obj.maliciousness is not None:
-                cache.cache_score(obj, obj.maliciousness)
+            # Cache the confirmed threat object labels
+            if cache is not None and obj.labels:
+                cache.cache_labels(obj, obj.labels)
         elif classification == TRIAGE_BENIGN:
             benign_objects.append(obj)
-            # Cache the confirmed benign object score
-            if cache is not None and obj.maliciousness is not None:
-                cache.cache_score(obj, obj.maliciousness)
+            # Cache the confirmed benign object labels
+            if cache is not None and obj.labels:
+                cache.cache_labels(obj, obj.labels)
         elif classification == TRIAGE_QUIT:
             raise TriageQuitException("User quit triage")
         # For 'Skip', we don't add to either list
@@ -333,7 +343,9 @@ class MalwiReport:
     """Result of processing files from a path."""
 
     all_objects: List[MalwiObject]
-    malicious_objects: List[MalwiObject]
+    labelled_objects: List[
+        MalwiObject
+    ]  # Objects with detected labels (previously malicious_objects)
     threshold: float
     all_files: List[Path]
     skipped_files: List[Path]
@@ -357,16 +369,18 @@ class MalwiReport:
             "skipped_files": len(self.skipped_files),
             "processed_files": len(self.all_files) - len(self.skipped_files),
             "processed_objects": processed_objects_count,
-            "malicious_objects": len(self.malicious_objects),
+            "malicious_objects": len(
+                self.labelled_objects
+            ),  # Keep key name for backward compatibility
             "start": self.start_time,
             "duration": self.duration,
             "file_types": self.all_file_types,
         }
 
-        # Determine the result based on malicious flag and malicious objects count
+        # Determine the result based on malicious flag and labelled objects count
         if self.malicious:
             result = "malicious"
-        elif len(self.malicious_objects) > 0:
+        elif len(self.labelled_objects) > 0:
             result = "suspicious"
         else:
             result = "good"
@@ -379,13 +393,9 @@ class MalwiReport:
             "details": [],
         }
 
-        for obj in self.all_objects:
-            is_malicious = (
-                obj.maliciousness is not None and obj.maliciousness > self.threshold
-            )
-
-            if is_malicious:
-                report_data["details"].append(obj.to_dict())
+        # Only show objects that are in labelled_objects (harmful labels above threshold)
+        for obj in self.labelled_objects:
+            report_data["details"].append(obj.to_dict())
 
         return report_data
 
@@ -428,11 +438,30 @@ class MalwiReport:
 
         if result == "malicious" or result == "suspicious":
             txt += f"  ├── skipped: {stats['skipped_files']}{skipped_types_str}\n"
-            txt += "  └── suspicious:\n"
 
-            # Group malicious objects by file path
+            # Collect all detected labels across all objects
+            detected_labels = set()
+            for obj in self.labelled_objects:
+                if obj.labels:
+                    for label, confidence in obj.labels.items():
+                        if confidence > self.threshold and label != "benign":
+                            detected_labels.add(label)
+
+            # Create label display
+            if detected_labels:
+                label_list = sorted(list(detected_labels))
+                if len(label_list) == 1:
+                    label_text = f"{label_list[0]}:"
+                else:
+                    label_text = f"threats ({', '.join(label_list)}):"
+            else:
+                label_text = "suspicious:"
+
+            txt += f"  └── {label_text}\n"
+
+            # Group labelled objects by file path
             files_with_objects = {}
-            for obj in self.malicious_objects:
+            for obj in self.labelled_objects:
                 if obj.file_path not in files_with_objects:
                     files_with_objects[obj.file_path] = []
                 files_with_objects[obj.file_path].append(obj)
@@ -463,9 +492,9 @@ class MalwiReport:
                         # Get tokens for this specific object
                         obj_tokens = obj.to_tokens(map_special_tokens=True)
                         obj_activities = []
-                        # Collect tokens from all languages represented in malicious objects
+                        # Collect tokens from all languages represented in labelled objects
                         languages_in_objects = set(
-                            o.language for o in self.malicious_objects
+                            o.language for o in self.labelled_objects
                         )
                         all_filter_values = set()
                         for lang in languages_in_objects:
@@ -540,14 +569,21 @@ class MalwiReport:
 
             for object in file["contents"]:
                 name = object["name"] if object["name"] else "<object>"
-                score = object["score"]
-                if score > self.threshold:
-                    maliciousness = f"👹 `{round(score, 2)}`"
+                labels = object.get("labels", {})
+
+                # Check if malicious label exists and is above threshold
+                if "malicious" in labels and labels["malicious"] > self.threshold:
+                    label_display = f"👹 malicious: `{round(labels['malicious'], 2)}`"
                 else:
-                    maliciousness = f"🟢 `{round(score, 2)}`"
+                    # Show highest confidence label
+                    if labels:
+                        top_label = max(labels.items(), key=lambda x: x[1])
+                        label_display = f"🟢 {top_label[0]}: `{round(top_label[1], 2)}`"
+                    else:
+                        label_display = "🟢 no labels"
 
                 txt += f"- Object: `{name if name else 'Not defined'}`\n"
-                txt += f"- Maliciousness: {maliciousness}\n\n"
+                txt += f"- Labels: {label_display}\n\n"
                 txt += "### Code\n\n"
                 txt += f"```\n{object['code']}\n```\n\n"
                 txt += "### Tokens\n\n"
@@ -746,7 +782,7 @@ class MalwiReport:
             duration = time.time() - start_time
             return cls(
                 all_objects=[],
-                malicious_objects=[],
+                labelled_objects=[],
                 threshold=malicious_threshold,
                 all_files=all_files,
                 skipped_files=skipped_files,
@@ -825,20 +861,23 @@ class MalwiReport:
         # Determine maliciousness based on DistilBERT predictions only
         malicious = len(malicious_objects) > 0
 
-        # Calculate confidence based on average maliciousness score of detected objects
+        # Calculate confidence based on average confidence score of detected objects
         if malicious_objects:
-            confidence = sum(
-                obj.maliciousness for obj in malicious_objects if obj.maliciousness
-            ) / len(malicious_objects)
+            # Get highest confidence from any malicious label
+            malicious_confidences = []
+            for obj in malicious_objects:
+                if obj.labels and "malicious" in obj.labels:
+                    malicious_confidences.append(obj.labels["malicious"])
+            confidence = max(malicious_confidences) if malicious_confidences else 0.5
         else:
             confidence = 1.0  # High confidence for clean files
 
-        # Generate activity list from malicious objects for reporting
+        # Generate activity list from labelled objects for reporting
         activities = []
         if malicious_objects:
-            # Extract function tokens from malicious objects for activity reporting
+            # Extract function tokens from labelled objects for activity reporting
             function_tokens = set()
-            # Collect tokens from all languages represented in malicious objects
+            # Collect tokens from all languages represented in labelled objects
             languages_in_objects = set(obj.language for obj in malicious_objects)
             all_filter_values = set()
             for lang in languages_in_objects:
@@ -854,7 +893,7 @@ class MalwiReport:
         duration = time.time() - start_time
         return cls(
             all_objects=all_objects,
-            malicious_objects=malicious_objects,
+            labelled_objects=malicious_objects,
             threshold=malicious_threshold,
             all_files=all_files,
             skipped_files=skipped_files,

@@ -107,7 +107,7 @@ class MalwiObject:
     warnings: List[str]
     file_source_code: str
     language: str
-    maliciousness: Optional[float] = None
+    labels: Dict[str, float] = None  # Dict of label -> confidence score
     byte_code: Optional[List] = None  # List of Instructions from AST compilation
     source_code: Optional[str] = None  # Specific source code for this object
     location: Optional[Tuple[int, int]] = None  # Start and end line numbers
@@ -128,7 +128,7 @@ class MalwiObject:
         self.language = language
         self.file_path = file_path
         self.warnings = list(warnings)
-        self.maliciousness = None
+        self.labels = {}  # Initialize as empty dict
         self.file_source_code = file_source_code
         self._embedding_count = None
         self.byte_code = byte_code
@@ -275,11 +275,11 @@ class MalwiObject:
     def predict(self, cache=None, write_to_cache=True) -> Optional[dict]:
         # Check cache first if available
         if cache is not None:
-            cached_score = cache.get_cached_score(self)
-            if cached_score is not None:
-                self.maliciousness = cached_score
+            cached_labels = cache.get_cached_labels(self)
+            if cached_labels is not None:
+                self.labels = cached_labels
                 # Return a mock prediction dict for compatibility
-                return {"probabilities": [1.0 - cached_score, cached_score]}
+                return {"labels": cached_labels}
 
         # Use the merged to_token_string method which includes warnings and handles all cases
         token_string = self.to_token_string(map_special_tokens=True)
@@ -287,12 +287,21 @@ class MalwiObject:
         # Always make a prediction - all code should be analyzed
         prediction = get_node_text_prediction(token_string)
 
-        if prediction and "probabilities" in prediction:
-            self.maliciousness = prediction["probabilities"][1]
+        if prediction and "labels" in prediction:
+            self.labels = prediction["labels"]
+        elif prediction and "probabilities" in prediction:
+            # Backward compatibility: convert old format to new labels format
+            benign_prob = prediction["probabilities"][0]
+            malicious_prob = prediction["probabilities"][1]
+            self.labels = {}
+            if malicious_prob > 0.5:
+                self.labels["malicious"] = malicious_prob
+            else:
+                self.labels["benign"] = benign_prob
 
             # Cache the result if cache is available and write_to_cache is True
-            if cache is not None and self.maliciousness is not None and write_to_cache:
-                cache.cache_score(self, self.maliciousness)
+            if cache is not None and self.labels and write_to_cache:
+                cache.cache_labels(self, self.labels)
 
         return prediction
 
@@ -331,7 +340,7 @@ class MalwiObject:
             "contents": [
                 {
                     "name": self.name,
-                    "score": self.maliciousness,
+                    "labels": self.labels if self.labels else {},
                     "code": final_code_value,
                     "tokens": token_string,
                     "hash": content_hash,

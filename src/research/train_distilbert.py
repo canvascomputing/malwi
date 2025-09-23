@@ -48,16 +48,20 @@ DEFAULT_NUM_PROC = (
 
 
 def load_asts_from_csv(
-    csv_file_path: str, token_column_name: str = "tokens"
-) -> list[str]:
+    csv_file_path: str,
+    token_column_name: str = "tokens",
+    label_column_name: str = "label",
+) -> tuple[list[str], list[str]]:
+    """Load AST tokens and their corresponding labels from CSV."""
     asts = []
+    labels = []
     try:
         df = pd.read_csv(csv_file_path)
         if token_column_name not in df.columns:
             warning(
                 f"Column '{token_column_name}' not found in {csv_file_path}. Returning empty list."
             )
-            return []
+            return [], []
 
         for idx, row in df.iterrows():
             ast_data = row[token_column_name]
@@ -68,21 +72,35 @@ def load_asts_from_csv(
             ):
                 continue
             asts.append(ast_data.strip())
+
+            # Get label if it exists, otherwise infer from filename
+            if label_column_name in df.columns and not pd.isna(row[label_column_name]):
+                labels.append(str(row[label_column_name]).strip())
+            else:
+                # Infer label from filename (legacy support)
+                if "benign" in csv_file_path.lower():
+                    labels.append("benign")
+                elif "malicious" in csv_file_path.lower():
+                    labels.append("malicious")
+                else:
+                    labels.append("unknown")
+
         success(f"Loaded {len(asts)} sample strings from {csv_file_path}")
     except FileNotFoundError:
         error(f"File not found at {csv_file_path}. Returning empty list.")
-        return []
+        return [], []
     except Exception as e:
         error(f"Reading CSV {csv_file_path}: {e}. Returning empty list.")
-        return []
-    return asts
+        return [], []
+    return asts, labels
 
 
 def compute_metrics(pred):
     labels = pred.label_ids
     preds = pred.predictions.argmax(-1)
+    # Use weighted average for multi-class classification
     precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, preds, average="binary", zero_division=0
+        labels, preds, average="weighted", zero_division=0
     )
     acc = accuracy_score(labels, preds)
     return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall}
@@ -228,8 +246,13 @@ def run_training(args):
 
     progress("Starting DistilBERT model training...")
 
-    benign_asts = load_asts_from_csv(args.benign, args.token_column)
-    malicious_asts = load_asts_from_csv(args.malicious, args.token_column)
+    # Load data with labels from both CSVs
+    benign_asts, benign_labels = load_asts_from_csv(
+        args.benign, args.token_column, "label"
+    )
+    malicious_asts, malicious_labels = load_asts_from_csv(
+        args.malicious, args.token_column, "label"
+    )
 
     info(f"Loaded {len(benign_asts)} benign samples")
     info(f"Loaded {len(malicious_asts)} malicious samples")
@@ -261,8 +284,20 @@ def run_training(args):
     info(f"Using {len(benign_asts)} benign samples for training")
     info(f"Using {len(malicious_asts)} malicious samples for training")
 
+    # Combine all texts and labels
     all_texts_for_training = benign_asts + malicious_asts
-    all_labels_for_training = [0] * len(benign_asts) + [1] * len(malicious_asts)
+    all_labels_text = benign_labels + malicious_labels
+
+    # Create a label map for converting string labels to integers
+    unique_labels = sorted(set(all_labels_text))
+    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
+    id_to_label = {idx: label for label, idx in label_to_id.items()}
+
+    info(f"Label mapping: {label_to_id}")
+
+    # Convert string labels to integer labels
+    all_labels_for_training = [label_to_id[label] for label in all_labels_text]
+    num_labels = len(unique_labels)
 
     if not all_texts_for_training:
         error("No data available for training after filtering or downsampling.")
@@ -363,10 +398,12 @@ def run_training(args):
     info(f"Setting up DistilBERT model with hidden_size={args.hidden_size}...")
 
     # Load the base config but override key parameters for our custom model
-    config = DistilBertConfig.from_pretrained(args.model_name, num_labels=2)
+    config = DistilBertConfig.from_pretrained(args.model_name, num_labels=num_labels)
     config.pad_token_id = tokenizer.pad_token_id
     config.cls_token_id = tokenizer.cls_token_id
     config.sep_token_id = tokenizer.sep_token_id
+    config.id2label = id_to_label
+    config.label2id = label_to_id
 
     # Configure model size based on hidden_size parameter
     config.hidden_size = args.hidden_size
