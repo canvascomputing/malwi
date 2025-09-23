@@ -214,16 +214,27 @@ def split_files_into_chunks(files: List[Path], chunk_size: int) -> List[List[str
 
 
 def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
-    """Combine multiple CSV chunk files into a single output file."""
+    """Combine CSV chunk files into a single output file.
+
+    If the output file already exists, new rows are appended instead of
+    overwriting existing data. This allows multiple preprocessing runs to
+    accumulate into the same CSV (e.g., processing multiple languages
+    sequentially).
+    """
+
     total_rows = 0
 
     # Increase CSV field size limit to handle very large token strings
     csv.field_size_limit(10 * 1024 * 1024)  # 10MB limit instead of default 131KB
 
-    with open(output_path, "w", encoding="utf-8", newline="") as output_file:
+    file_exists = output_path.exists()
+    mode = "a" if file_exists else "w"
+
+    with open(output_path, mode, encoding="utf-8", newline="") as output_file:
         writer = csv.writer(output_file)
-        # Write header
-        writer.writerow(["tokens", "hash", "language", "filepath"])
+        # Write header only for new files
+        if not file_exists:
+            writer.writerow(["tokens", "hash", "language", "filepath"])
 
         for chunk_file in chunk_files:
             chunk_path = Path(chunk_file)
@@ -248,7 +259,7 @@ def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
 def preprocess_data(
     input_path: Path,
     output_path: Path,
-    extensions: List[str] = [".py"],
+    extensions: List[str] = [".py", ".js", ".rs"],
     num_processes: int = None,
     chunk_size: int = 100,
     use_parallel: bool = True,
@@ -291,6 +302,8 @@ def preprocess_data(
             lang = "python"
         elif file_path.suffix == ".js":
             lang = "javascript"
+        elif file_path.suffix == ".rs":
+            lang = "rust"
         else:
             continue
 
@@ -446,6 +459,10 @@ def _process_sequential(files: List[Path], output_path: Path) -> None:
         from common.bytecode import ASTCompiler
 
         compilers["javascript"] = ASTCompiler("javascript")
+    if any(f.suffix == ".rs" for f in files):
+        from common.bytecode import ASTCompiler
+
+        compilers["rust"] = ASTCompiler("rust")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     csv_writer = CSVWriter(output_path)
@@ -461,6 +478,8 @@ def _process_sequential(files: List[Path], output_path: Path) -> None:
                 compiler = compilers.get("python")
             elif file_path.suffix == ".js":
                 compiler = compilers.get("javascript")
+            elif file_path.suffix == ".rs":
+                compiler = compilers.get("rust")
             else:
                 continue
 
@@ -490,7 +509,10 @@ def main():
     )
     parser.add_argument("output_path", type=Path, help="Path to save CSV output file")
     parser.add_argument(
-        "--extensions", nargs="+", default=[".py"], help="File extensions to process"
+        "--extensions",
+        nargs="+",
+        default=[".py", ".js", ".rs"],
+        help="File extensions to process",
     )
     parser.add_argument(
         "--num-processes",

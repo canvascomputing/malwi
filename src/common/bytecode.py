@@ -7,8 +7,9 @@ from typing import Optional, Any, List
 from tree_sitter import Parser, Language
 import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
+import tree_sitter_rust as tsrust
 
-from common.mapping import (
+from .mapping import (
     FUNCTION_MAPPING,
     IMPORT_MAPPING,
     reduce_whitespace,
@@ -30,8 +31,8 @@ from common.mapping import (
     get_string_size_bucket,
     SENSITIVE_PATHS,
 )
-from common.config import STRING_MAX_LENGTH
-from common.malwi_object import MalwiObject
+from .config import STRING_MAX_LENGTH
+from .malwi_object import MalwiObject
 
 
 class OpCode(Enum):
@@ -265,7 +266,7 @@ class Instruction:
         Args:
             op_code: The operation code (e.g., LOAD_CONST, STORE_NAME, CALL)
             arg: The argument value to be mapped (string, number, identifier, etc.)
-            language: Programming language context ("python" or "javascript")
+            language: Programming language context ("python", "javascript", or "rust")
             for_hashing: If True, removes variable parts to create stable hashes
                         for deduplication of similar code patterns
 
@@ -320,7 +321,7 @@ class Instruction:
         elif op_code == OpCode.LOAD_CONST and isinstance(arg, tuple):
             # Handle tuples by extracting string content and mapping individual elements
             # This is especially important for marshal operations and import tuples
-            from common.mapping import map_tuple_arg
+            from .mapping import map_tuple_arg
 
             tuple_mapping = map_tuple_arg(arg, str(arg))
             if tuple_mapping:
@@ -444,7 +445,7 @@ def emit(opcode: "OpCode", arg: Any = None, language: str = "python") -> Instruc
 
 class ASTCompiler:
     """
-    Compiles a tree-sitter AST from Python or JavaScript into "Malwicode".
+    Compiles a tree-sitter AST from Python, JavaScript or Rust into "Malwicode".
     An instance of the compiler is tied to a specific language.
     """
 
@@ -452,6 +453,7 @@ class ASTCompiler:
     SUPPORTED_LANGUAGES = {
         "python": tspython.language(),
         "javascript": tsjavascript.language(),
+        "rust": tsrust.language(),
     }
 
     def __init__(self, language: str):
@@ -1618,9 +1620,13 @@ class ASTCompiler:
         self._in_function_scope = True
         self._nesting_depth += 1
 
-        func_body_bytecode = self._generate_bytecode(
-            body_node, source_code_bytes, file_path
-        )
+        if body_node:
+            func_body_bytecode = self._generate_bytecode(
+                body_node, source_code_bytes, file_path
+            )
+        else:
+            # Bodyless function declaration (e.g., in traits or extern blocks)
+            func_body_bytecode = []
         if (
             not func_body_bytecode
             or func_body_bytecode[-1].opcode != OpCode.RETURN_VALUE
@@ -1638,7 +1644,7 @@ class ASTCompiler:
         # Only create separate MalwiObject for top-level functions (nesting_depth == 0)
         if self._nesting_depth == 0:
             # Create separate MalwiObject and add to collection
-            from common.malwi_object import MalwiObject
+            from .malwi_object import MalwiObject
 
             func_code_obj = MalwiObject(
                 name=func_name,
@@ -1712,7 +1718,7 @@ class ASTCompiler:
         # Only create separate MalwiObject for top-level classes
         if self._nesting_depth == 0:
             # Create separate MalwiObject and add to collection
-            from common.malwi_object import MalwiObject
+            from .malwi_object import MalwiObject
 
             class_code_obj = MalwiObject(
                 name=class_name,
@@ -1742,6 +1748,50 @@ class ASTCompiler:
             bytecode.extend(class_body_bytecode)
             bytecode.append(self._emit_store(class_name))
 
+        return bytecode
+
+    def _handle_macro_definition(
+        self, node: Node, source_code_bytes: bytes, file_path: Path
+    ) -> List[Instruction]:
+        """Handle Rust macro definitions."""
+        bytecode = []
+        name_node = node.child_by_field_name("name")
+        macro_name = self._get_node_text(name_node, source_code_bytes)
+        if not macro_name:
+            macro_name = "<macro>"
+
+        bytecode.append(emit(OpCode.LOAD_CONST, macro_name))
+        bytecode.append(emit(OpCode.MAKE_FUNCTION, 0))
+        bytecode.append(self._emit_store(macro_name))
+        return bytecode
+
+    def _handle_macro_invocation(
+        self, node: Node, source_code_bytes: bytes, file_path: Path
+    ) -> List[Instruction]:
+        """Handle Rust macro invocations."""
+        bytecode = []
+
+        # Load the macro name
+        path_node = node.child_by_field_name("path") or node.child_by_field_name(
+            "macro"
+        )
+        macro_name = self._get_node_text(path_node, source_code_bytes)
+
+        bytecode.append(emit(OpCode.PUSH_NULL, None))
+        if macro_name:
+            bytecode.append(emit(OpCode.LOAD_NAME, macro_name))
+
+        # Macros use token trees; treat named children as arguments
+        arg_count = 0
+        token_tree = node.child_by_field_name("token_tree")
+        if token_tree:
+            for child in token_tree.named_children:
+                bytecode.extend(
+                    self._generate_bytecode(child, source_code_bytes, file_path)
+                )
+                arg_count += 1
+
+        bytecode.append(emit(OpCode.CALL, arg_count))
         return bytecode
 
     def _handle_comprehension(
@@ -2923,7 +2973,7 @@ class ASTCompiler:
         self, node: Node, source_code_bytes: bytes, file_path: Path
     ) -> List[Instruction]:
         """
-        Recursively traverses a Python or JavaScript AST and generates bytecode.
+        Recursively traverses a Python, JavaScript or Rust AST and generates bytecode.
 
         Sub-functions created (32 handlers):
 
@@ -3281,6 +3331,7 @@ class ASTCompiler:
             "function_definition",
             "function_declaration",
             "generator_function_declaration",
+            "function_item",
         ]:  # Examples: def func():, function name() {}, function* gen() {}
             bytecode.extend(
                 self._handle_function_definition(node, source_code_bytes, file_path)
@@ -3292,6 +3343,16 @@ class ASTCompiler:
         ]:  # Examples: class MyClass:, class Component extends React.Component
             bytecode.extend(
                 self._handle_class_definition(node, source_code_bytes, file_path)
+            )
+
+        elif node_type == "macro_definition":
+            bytecode.extend(
+                self._handle_macro_definition(node, source_code_bytes, file_path)
+            )
+
+        elif node_type == "macro_invocation":
+            bytecode.extend(
+                self._handle_macro_invocation(node, source_code_bytes, file_path)
             )
 
         # --- Comprehensions and Generators ---

@@ -42,13 +42,19 @@ def load_base_tokens_from_function_mapping(
         with open(function_mapping_path, "r") as f:
             function_mapping = json.load(f)
 
-        # Extract all function keys from the "python" section
-        if "python" in function_mapping:
-            base_tokens = set(function_mapping["python"].keys())
-            info(f"Loaded {len(base_tokens)} base tokens from {function_mapping_path}")
+        # Extract tokens from all language sections
+        base_tokens = set()
+        for lang, mapping in function_mapping.items():
+            if isinstance(mapping, dict):
+                base_tokens.update(mapping.keys())
+
+        if base_tokens:
+            info(
+                f"Loaded {len(base_tokens)} base tokens from {function_mapping_path}"
+            )
             return base_tokens
         else:
-            warning(f"No 'python' section found in {function_mapping_path}")
+            warning(f"No function mappings found in {function_mapping_path}")
             return set()
 
     except FileNotFoundError:

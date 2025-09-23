@@ -6,6 +6,7 @@ from common.messaging import result
 from malwi._version import __version__
 from cli.scan import setup_scan_parser
 from cli.pypi import setup_pypi_parser
+from cli.cargo import setup_cargo_parser
 
 
 def main():
@@ -23,6 +24,7 @@ def main():
     # Set up subcommand parsers using their respective setup functions
     setup_scan_parser(subparsers)
     setup_pypi_parser(subparsers)
+    setup_cargo_parser(subparsers)
 
     args = parser.parse_args()
 

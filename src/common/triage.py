@@ -5,10 +5,23 @@ import logging
 import os
 from typing import Protocol
 
-from mistralai import Mistral
-from openai import OpenAI
+# These third-party APIs are optional in the test environment. Import them
+# lazily and default to ``None`` when the packages are missing so that the
+# rest of the module can be imported without errors.
+try:  # pragma: no cover - executed only when mistralai is installed
+    from mistralai import Mistral
+except Exception:  # pragma: no cover
+    Mistral = None  # type: ignore
 
-from google import genai
+try:  # pragma: no cover - executed only when openai package is installed
+    from openai import OpenAI
+except Exception:  # pragma: no cover
+    OpenAI = None  # type: ignore
+
+try:  # pragma: no cover - executed only when google-genai is installed
+    from google import genai
+except Exception:  # pragma: no cover
+    genai = None  # type: ignore
 
 from .malwi_object import MalwiObject
 

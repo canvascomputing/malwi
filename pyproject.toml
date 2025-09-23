@@ -28,6 +28,7 @@ dependencies = [
     "tree-sitter>=0.25.0",
     "tree-sitter-javascript>=0.23.1",
     "tree-sitter-python>=0.23.6",
+    "tree-sitter-rust>=0.24.0",
     "tqdm>=4.67.1",
     "tabulate>=0.9.0",
     "questionary>=2.1.1",
@@ -51,7 +52,7 @@ where = ["src"]
 exclude = ["research", "research.*"]
 
 [tool.setuptools.package-data]
-"common.syntax_mapping" = ["*.json"]
+"common.syntax_mapping" = ["*.json", "rust/*.json"]
 
 [dependency-groups]
 dev = [

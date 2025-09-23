@@ -6,8 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from common.config import SUPPORTED_EXTENSIONS
-from common.messaging import path_error
+from .config import SUPPORTED_EXTENSIONS
+from .messaging import path_error
 
 
 def read_json_from_file(filepath: pathlib.Path) -> Dict[str, Any]:

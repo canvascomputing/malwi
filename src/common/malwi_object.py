@@ -11,19 +11,25 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 
-from common.mapping import (
+from .mapping import (
     SpecialCases,
     FUNCTION_MAPPING,
     IMPORT_MAPPING,
     COMMON_TARGET_FILES,
 )
-from common.config import FILE_LARGE_THRESHOLD, FILE_PATHOLOGICAL_THRESHOLD
+from .config import FILE_LARGE_THRESHOLD, FILE_PATHOLOGICAL_THRESHOLD
 
-# Import moved to avoid circular dependency
-from common.predict_distilbert import (
-    get_node_text_prediction,
-)
-from common.files import read_json_from_file
+# Import moved to avoid circular dependency and optional heavy deps
+try:  # pragma: no cover - fallback when optional deps missing
+    from .predict_distilbert import (
+        get_node_text_prediction,
+    )
+except Exception:  # pragma: no cover - executed when dependency missing
+    def get_node_text_prediction(*args, **kwargs):  # type: ignore
+        """Fallback used when prediction dependencies are unavailable."""
+        raise ImportError("predict_distilbert dependency is not installed")
+
+from .files import read_json_from_file
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -49,7 +55,7 @@ def disassemble_file_ast(
 
     try:
         # Import here to avoid circular dependency
-        from common.bytecode import ASTCompiler
+        from .bytecode import ASTCompiler
 
         # Use the AST compiler with the detected language
         ast_compiler = ASTCompiler(language)
@@ -250,7 +256,7 @@ class MalwiObject:
 
         try:
             # Import here to avoid circular dependencies
-            from common.predict_distilbert import get_thread_tokenizer
+            from .predict_distilbert import get_thread_tokenizer
 
             # Get the token string (same format used for prediction)
             token_string = self.to_token_string(map_special_tokens=True)
