@@ -439,85 +439,84 @@ class MalwiReport:
         if result == "malicious" or result == "suspicious":
             txt += f"  ├── skipped: {stats['skipped_files']}{skipped_types_str}\n"
 
-            # Collect all detected labels across all objects
-            detected_labels = set()
+            # Group objects by category and file path
+            categories_with_files = {}
             for obj in self.labelled_objects:
                 if obj.labels:
                     for label, confidence in obj.labels.items():
                         if confidence > self.threshold and label != "benign":
-                            detected_labels.add(label)
+                            if label not in categories_with_files:
+                                categories_with_files[label] = {}
+                            if obj.file_path not in categories_with_files[label]:
+                                categories_with_files[label][obj.file_path] = []
+                            categories_with_files[label][obj.file_path].append(obj)
 
-            # Create label display
-            if detected_labels:
-                label_list = sorted(list(detected_labels))
-                if len(label_list) == 1:
-                    label_text = f"{label_list[0]}:"
+            # Display each category as a separate tree branch
+            sorted_categories = sorted(categories_with_files.keys())
+            for i, category in enumerate(sorted_categories):
+                is_last_category = i == len(sorted_categories) - 1
+                if is_last_category:
+                    txt += f"  └── {category}:\n"
+                    category_prefix = "      "
                 else:
-                    label_text = f"threats ({', '.join(label_list)}):"
-            else:
-                label_text = "suspicious:"
+                    txt += f"  ├── {category}:\n"
+                    category_prefix = "  │   "
 
-            txt += f"  └── {label_text}\n"
+                # Display files for this category
+                files_with_objects = categories_with_files[category]
 
-            # Group labelled objects by file path
-            files_with_objects = {}
-            for obj in self.labelled_objects:
-                if obj.file_path not in files_with_objects:
-                    files_with_objects[obj.file_path] = []
-                files_with_objects[obj.file_path].append(obj)
-
-            malicious_files = sorted(files_with_objects.keys())
-            for i, file_path in enumerate(malicious_files):
-                is_last_file = i == len(malicious_files) - 1
-                if is_last_file:
-                    txt += f"      └── {file_path}\n"
-                    file_prefix = "          "
-                else:
-                    txt += f"      ├── {file_path}\n"
-                    file_prefix = "      │   "
-
-                # List objects in this file
-                objects_in_file = files_with_objects[file_path]
-                for j, obj in enumerate(objects_in_file):
-                    is_last_object = j == len(objects_in_file) - 1
-                    if is_last_object:
-                        txt += f"{file_prefix}└── {obj.name}\n"
-                        object_prefix = file_prefix + "    "
+                malicious_files = sorted(files_with_objects.keys())
+                for j, file_path in enumerate(malicious_files):
+                    is_last_file = j == len(malicious_files) - 1
+                    if is_last_file:
+                        txt += f"{category_prefix}└── {file_path}\n"
+                        file_prefix = category_prefix + "    "
                     else:
-                        txt += f"{file_prefix}├── {obj.name}\n"
-                        object_prefix = file_prefix + "│   "
+                        txt += f"{category_prefix}├── {file_path}\n"
+                        file_prefix = category_prefix + "│   "
 
-                    # List activities for this object
-                    if result == "malicious":
-                        # Get tokens for this specific object
-                        obj_tokens = obj.to_tokens(map_special_tokens=True)
-                        obj_activities = []
-                        # Collect tokens from all languages represented in labelled objects
-                        languages_in_objects = set(
-                            o.language for o in self.labelled_objects
-                        )
-                        all_filter_values = set()
-                        for lang in languages_in_objects:
-                            all_filter_values.update(
-                                FUNCTION_MAPPING.get(lang, {}).values()
+                    # List objects in this file
+                    objects_in_file = files_with_objects[file_path]
+                    for k, obj in enumerate(objects_in_file):
+                        is_last_object = k == len(objects_in_file) - 1
+                        if is_last_object:
+                            txt += f"{file_prefix}└── {obj.name}\n"
+                            object_prefix = file_prefix + "    "
+                        else:
+                            txt += f"{file_prefix}├── {obj.name}\n"
+                            object_prefix = file_prefix + "│   "
+
+                        # List activities for this object
+                        if result == "malicious":
+                            # Get tokens for this specific object
+                            obj_tokens = obj.to_tokens(map_special_tokens=True)
+                            obj_activities = []
+                            # Collect tokens from all languages represented in labelled objects
+                            languages_in_objects = set(
+                                o.language for o in self.labelled_objects
+                            )
+                            all_filter_values = set()
+                            for lang in languages_in_objects:
+                                all_filter_values.update(
+                                    FUNCTION_MAPPING.get(lang, {}).values()
+                                )
+
+                            obj_activities = list(
+                                set(
+                                    [
+                                        token
+                                        for token in obj_tokens
+                                        if token in all_filter_values
+                                    ]
+                                )
                             )
 
-                        obj_activities = list(
-                            set(
-                                [
-                                    token
-                                    for token in obj_tokens
-                                    if token in all_filter_values
-                                ]
-                            )
-                        )
-
-                        for k, activity in enumerate(obj_activities):
-                            is_last_activity = k == len(obj_activities) - 1
-                            if is_last_activity:
-                                txt += f"{object_prefix}└── {activity.lower().replace('_', ' ')}\n"
-                            else:
-                                txt += f"{object_prefix}├── {activity.lower().replace('_', ' ')}\n"
+                            for l, activity in enumerate(obj_activities):
+                                is_last_activity = l == len(obj_activities) - 1
+                                if is_last_activity:
+                                    txt += f"{object_prefix}└── {activity.lower().replace('_', ' ')}\n"
+                                else:
+                                    txt += f"{object_prefix}├── {activity.lower().replace('_', ' ')}\n"
         else:
             txt += f"  └── skipped: {stats['skipped_files']}{skipped_types_str}\n"
 
