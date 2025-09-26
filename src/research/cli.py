@@ -21,8 +21,9 @@ from common.messaging import (
     progress,
 )
 
-# Import the default constant for function signatures
+# Import the default constants for function signatures
 from research.train_tokenizer import DEFAULT_TOP_N_TOKENS
+from research.train_distilbert import DEFAULT_BENIGN_TO_MALICIOUS_RATIO
 
 # We'll import these functions dynamically when needed to avoid import errors
 
@@ -94,7 +95,7 @@ def train_distilbert_api(
     epochs: int = 3,
     hidden_size: int = 256,
     num_proc: int = 1,
-    benign_ratio: float = 20.0,
+    benign_ratio: float = DEFAULT_BENIGN_TO_MALICIOUS_RATIO,
 ) -> bool:
     """
     Train DistilBERT model with training data.
@@ -127,7 +128,7 @@ def train_distilbert_api(
                 self.window_stride = 128
                 self.batch_size = 16
                 self.save_steps = 0
-                self.benign_ratio = 20.0
+                self.benign_ratio = DEFAULT_BENIGN_TO_MALICIOUS_RATIO
                 self.token_column = "tokens"
                 self.vocab_size = 30522
 
