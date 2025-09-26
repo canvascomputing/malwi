@@ -200,6 +200,40 @@ def save_model_with_prefix(trainer, tokenizer, output_path: Path):
             success(f"Renamed {original_name} to {new_name}")
 
 
+def cleanup_checkpoints(results_path: Path):
+    """
+    Clean up intermediate training checkpoints to save disk space.
+    Keeps only the final best model and removes intermediate checkpoint directories.
+
+    Args:
+        results_path: Path to the training results directory containing checkpoints
+    """
+    try:
+        if not results_path.exists():
+            return
+
+        # Find all checkpoint directories (checkpoint-*)
+        checkpoint_dirs = list(results_path.glob("checkpoint-*"))
+
+        if checkpoint_dirs:
+            info(f"Cleaning up {len(checkpoint_dirs)} training checkpoints...")
+            import shutil
+
+            for checkpoint_dir in checkpoint_dirs:
+                shutil.rmtree(checkpoint_dir)
+                info(f"Removed checkpoint: {checkpoint_dir.name}")
+
+            success(
+                f"Cleaned up {len(checkpoint_dirs)} checkpoints from {results_path}"
+            )
+        else:
+            info("No checkpoints found to clean up")
+
+    except Exception as e:
+        warning(f"Failed to clean up checkpoints: {e}")
+        # Don't fail the entire process for cleanup issues
+
+
 def cleanup_model_directory(model_output_path: Path):
     """Clean up the model directory, keeping only essential prefixed model files and tokenizer."""
     info(f"Cleaning up model directory: {model_output_path}")
