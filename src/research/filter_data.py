@@ -49,6 +49,120 @@ def enrich_dataframe_with_triage(
     return df_appended
 
 
+def process_unified_csv(input_csv, output_csv, triage_dir=None):
+    """
+    Process a CSV file with categories:
+    - Remove internal duplicates (by 'hash').
+    - Remove cross-category duplicates (benign samples take priority).
+    - If triage_dir given, enrich with MalwiObject data.
+    """
+
+    # Step 1: Load dataset
+    progress("Step 1: Loading dataset from CSV file...")
+    try:
+        df = pd.read_csv(input_csv)
+        info(f"Loaded {len(df)} samples from {input_csv}")
+
+        # Show category distribution
+        if "label" in df.columns:
+            category_counts = df["label"].value_counts()
+            info("Category distribution:")
+            for category, count in category_counts.items():
+                info(f"  - {category}: {count} samples")
+
+    except Exception as e:
+        error(f"Error reading file: {e}")
+        return
+
+    # Step 2: Enrich with triage data if provided
+    if triage_dir and os.path.isdir(triage_dir):
+        progress("Step 2: Enriching dataset with triage data...")
+
+        # Check for category-specific subdirectories
+        for category in ["benign", "malicious", "suspicious", "telemetry"]:
+            triage_path = os.path.join(triage_dir, category)
+            if os.path.isdir(triage_path):
+                info(f"Enriching {category} samples with files from: {triage_path}")
+
+                # Load triage files and add with correct label
+                rows = []
+                for filename in os.listdir(triage_path):
+                    filepath = os.path.join(triage_path, filename)
+                    try:
+                        objs = MalwiObject.from_file(filepath, language="python")
+                        success(f"Loaded {len(objs)} objects from {filepath}")
+                        for obj in objs:
+                            h = obj.to_string_hash()
+                            row = {
+                                "hash": h,
+                                "tokens": obj.to_token_string(),
+                                "filepath": obj.file_path,
+                                "language": "python",
+                                "label": category,
+                            }
+                            rows.append(row)
+                    except Exception as e:
+                        warning(f"Failed to process triage file {filepath}: {e}")
+                        continue
+
+                if rows:
+                    enrichment_df = pd.DataFrame(rows)
+                    df = pd.concat([df, enrichment_df], ignore_index=True)
+                    info(f"  Added {len(rows)} {category} samples from triage")
+
+    # Step 3: Remove internal duplicates
+    progress("Step 3: Removing duplicate samples...")
+    initial_count = len(df)
+    df = df.drop_duplicates(subset=["hash"], keep="first")
+    success(f"Removed {initial_count - len(df)} duplicate samples")
+
+    # Step 4: Handle cross-category duplicates (benign samples take priority)
+    if "label" in df.columns:
+        progress("Step 4: Handling cross-category duplicates...")
+
+        # Group by hash to find duplicates across categories
+        hash_counts = df.groupby("hash")["label"].nunique()
+        duplicate_hashes = hash_counts[hash_counts > 1].index
+
+        if len(duplicate_hashes) > 0:
+            info(
+                f"Found {len(duplicate_hashes)} hashes appearing in multiple categories"
+            )
+
+            # For each duplicate hash, keep only the benign version if it exists
+            # Otherwise keep the first occurrence
+            for hash_val in duplicate_hashes:
+                hash_df = df[df["hash"] == hash_val]
+                if "benign" in hash_df["label"].values:
+                    # Keep only the benign sample
+                    df = df[~((df["hash"] == hash_val) & (df["label"] != "benign"))]
+                else:
+                    # Keep only the first occurrence
+                    indices_to_drop = hash_df.index[1:]
+                    df = df.drop(indices_to_drop)
+
+            success(f"Resolved {len(duplicate_hashes)} cross-category duplicates")
+
+    # Show final distribution
+    if "label" in df.columns:
+        info("Final category distribution:")
+        category_counts = df["label"].value_counts()
+        for category, count in category_counts.items():
+            info(f"  - {category}: {count} samples")
+
+    success(f"Final dataset shape: {df.shape}")
+
+    # Step 5: Save processed dataset
+    progress("Step 5: Saving processed dataset...")
+    try:
+        df.to_csv(output_csv, index=False)
+        success(f"Saved processed dataset to: {output_csv}")
+        success(f"Dataset processing completed: {len(df)} total samples")
+
+    except Exception as e:
+        error(f"Error saving processed CSV: {e}")
+
+
 def process_csv_files(benign, malicious, triage_dir=None):
     """
     Process benign and malicious CSV files:

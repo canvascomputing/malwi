@@ -323,21 +323,30 @@ def create_or_load_tokenizer(
 
 
 def train_tokenizer(args):
-    """Main function to train tokenizer from CSV data."""
+    """Train tokenizer from CSV data with categories."""
     info("Starting tokenizer training...")
 
-    # Load training data from CSV files
+    # Load training data from unified CSV file
     all_texts_for_training = []
 
-    if args.benign:
-        benign_asts = load_asts_from_csv(args.benign, args.token_column)
-        all_texts_for_training.extend(benign_asts)
-        info(f"Loaded {len(benign_asts)} benign samples")
+    if args.training:
+        training_asts = load_asts_from_csv(args.training, args.token_column)
+        all_texts_for_training.extend(training_asts)
+        info(f"Loaded {len(training_asts)} training samples")
 
-    if args.malicious:
-        malicious_asts = load_asts_from_csv(args.malicious, args.token_column)
-        all_texts_for_training.extend(malicious_asts)
-        info(f"Loaded {len(malicious_asts)} malicious samples")
+        # Show category distribution if available
+        try:
+            df = pd.read_csv(args.training)
+            if "label" in df.columns:
+                category_counts = df["label"].value_counts()
+                info("Category distribution in training data:")
+                for category, count in category_counts.items():
+                    info(f"  - {category}: {count} samples")
+        except Exception:
+            pass
+    else:
+        error("No training CSV file provided")
+        return
 
     if not all_texts_for_training:
         error(
@@ -418,10 +427,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Train a custom BPE tokenizer for malware detection from CSV data"
     )
-    parser.add_argument("--benign", "-b", help="Path to benign CSV file (optional)")
-    parser.add_argument(
-        "--malicious", "-m", help="Path to malicious CSV file (optional)"
-    )
+    parser.add_argument("training", help="Path to training CSV file")
     parser.add_argument(
         "--output-path",
         "-o",
@@ -471,12 +477,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
-    # Validate that at least one input file is provided
-    if not args.benign and not args.malicious:
-        error("At least one of --benign or --malicious must be provided")
-        parser.print_help()
-        exit(1)
 
     configure_messaging(quiet=False)
     train_tokenizer(args)

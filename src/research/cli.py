@@ -44,18 +44,16 @@ class Language(Enum):
 
 
 def train_tokenizer_api(
-    benign_csv: str,
-    malicious_csv: str,
+    training_csv: str,
     output_path: str = "malwi_models",
     top_n_tokens: int = DEFAULT_TOP_N_TOKENS,
     force_retrain: bool = True,
 ) -> bool:
     """
-    Train tokenizer with a clean API interface.
+    Train tokenizer with unified CSV file.
 
     Args:
-        benign_csv: Path to benign CSV file
-        malicious_csv: Path to malicious CSV file
+        training_csv: Path to unified training CSV file
         output_path: Output directory for tokenizer
         top_n_tokens: Number of top tokens to use
         force_retrain: Whether to force retrain
@@ -66,12 +64,12 @@ def train_tokenizer_api(
     try:
         # Import dynamically to avoid import errors
         from research.train_tokenizer import train_tokenizer
+        import pandas as pd
 
-        # Create a mock args object for the existing function
+        # Create a mock args object for the function
         class Args:
             def __init__(self):
-                self.benign = benign_csv
-                self.malicious = malicious_csv
+                self.training = training_csv
                 self.output_path = Path(output_path)
                 self.top_n_tokens = top_n_tokens
                 self.force_retrain = force_retrain
@@ -92,18 +90,17 @@ def train_tokenizer_api(
 
 
 def train_distilbert_api(
-    benign_csv: str,
-    malicious_csv: str,
+    training_csv: str,
     epochs: int = 3,
     hidden_size: int = 256,
     num_proc: int = 1,
+    benign_ratio: float = 20.0,
 ) -> bool:
     """
-    Train DistilBERT model with a clean API interface.
+    Train DistilBERT model with training data.
 
     Args:
-        benign_csv: Path to benign CSV file
-        malicious_csv: Path to malicious CSV file
+        training_csv: Path to training CSV file
         epochs: Number of training epochs
         hidden_size: Hidden layer size
         num_proc: Number of processes
@@ -118,11 +115,11 @@ def train_distilbert_api(
         # Create a mock args object for the existing function
         class Args:
             def __init__(self):
-                self.benign = benign_csv
-                self.malicious = malicious_csv
+                self.training = training_csv
                 self.epochs = epochs
                 self.hidden_size = hidden_size
                 self.num_proc = num_proc
+                self.benign_ratio = benign_ratio
                 self.tokenizer_path = Path("malwi_models")
                 self.model_output_path = Path("malwi_models")
                 self.model_name = "distilbert-base-uncased"
@@ -130,7 +127,7 @@ def train_distilbert_api(
                 self.window_stride = 128
                 self.batch_size = 16
                 self.save_steps = 0
-                self.benign_to_malicious_ratio = 60.0
+                self.benign_ratio = 20.0
                 self.token_column = "tokens"
                 self.vocab_size = 30522
 
@@ -417,10 +414,8 @@ Examples:
             progress("Step 1: Cleanup")
             info("   • Removing previous output files...")
             for file in [
-                "benign.csv",
-                "malicious.csv",
-                "malicious_processed.csv",
-                "benign_processed.csv",
+                "training.csv",
+                "training_processed.csv",
             ]:
                 if Path(file).exists():
                     Path(file).unlink()
@@ -430,50 +425,121 @@ Examples:
             progress("Step 2: Generate AST Data (Parallel Processing)")
 
             if args.language in [Language.PYTHON.value, Language.BOTH.value]:
-                info("   • Generating benign Python AST data...")
-                # Import preprocess function dynamically
+                info("   • Generating unified training data with categories...")
+                # Import preprocess function and CSV utilities dynamically
                 from research.preprocess import preprocess_data
+                import pandas as pd
+                import os
+
+                # Create temporary CSVs first, then merge
+                temp_csvs = []
 
                 # Generate benign data from cached repos
+                info("   • Processing benign repositories...")
+                temp_benign_repos = Path("temp_benign_repos.csv")
                 preprocess_data(
                     input_path=Path(".repo_cache/benign_repos"),
-                    output_path=Path("benign.csv"),
+                    output_path=temp_benign_repos,
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=240,  # 4 hours for 200k+ files
                     label="benign",
                 )
+                if temp_benign_repos.exists():
+                    temp_csvs.append(temp_benign_repos)
 
                 # Add false-positives from malwi-samples
+                info("   • Processing benign samples...")
+                temp_benign_samples = Path("temp_benign_samples.csv")
                 preprocess_data(
                     input_path=Path("../malwi-samples/python/benign"),
-                    output_path=Path("benign.csv"),
+                    output_path=temp_benign_samples,
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=90,  # Even malwi-samples can be large
                     label="benign",
                 )
+                if temp_benign_samples.exists():
+                    temp_csvs.append(temp_benign_samples)
 
-                info("   • Generating malicious Python AST data...")
+                info("   • Processing malicious samples...")
                 # Generate malicious data
+                temp_malicious = Path("temp_malicious.csv")
                 preprocess_data(
                     input_path=Path("../malwi-samples/python/malicious"),
-                    output_path=Path("malicious.csv"),
+                    output_path=temp_malicious,
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=120,  # 2 hours for malicious samples
                     label="malicious",
                 )
+                if temp_malicious.exists():
+                    temp_csvs.append(temp_malicious)
 
-                # Add suspicious findings for future training categories
+                info("   • Processing suspicious samples...")
+                # Add suspicious findings
+                temp_suspicious = Path("temp_suspicious.csv")
                 preprocess_data(
                     input_path=Path("../malwi-samples/python/suspicious"),
-                    output_path=Path("malicious.csv"),
+                    output_path=temp_suspicious,
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=90,  # 1.5 hours for suspicious samples
                     label="suspicious",
                 )
+                if temp_suspicious.exists():
+                    temp_csvs.append(temp_suspicious)
+
+                # Check for telemetry category
+                telemetry_path = Path("../malwi-samples/python/telemetry")
+                if telemetry_path.exists():
+                    info("   • Processing telemetry samples...")
+                    temp_telemetry = Path("temp_telemetry.csv")
+                    preprocess_data(
+                        input_path=telemetry_path,
+                        output_path=temp_telemetry,
+                        extensions=[".py"],
+                        use_parallel=True,
+                        timeout_minutes=90,
+                        label="telemetry",
+                    )
+                    if temp_telemetry.exists():
+                        temp_csvs.append(temp_telemetry)
+
+                # Merge all temporary CSVs into single training.csv
+                info("   • Merging all categories into unified training.csv...")
+                if temp_csvs:
+                    dfs = []
+                    for csv_file in temp_csvs:
+                        try:
+                            df = pd.read_csv(csv_file)
+                            dfs.append(df)
+                            info(
+                                f"     - Loaded {len(df)} samples from {csv_file.name}"
+                            )
+                        except Exception as e:
+                            warning(f"     - Failed to load {csv_file}: {e}")
+
+                    if dfs:
+                        merged_df = pd.concat(dfs, ignore_index=True)
+                        merged_df.to_csv("training.csv", index=False)
+                        success(
+                            f"   Created unified training.csv with {len(merged_df)} samples"
+                        )
+
+                        # Show category distribution
+                        if "label" in merged_df.columns:
+                            category_counts = merged_df["label"].value_counts()
+                            info("   Category distribution:")
+                            for category, count in category_counts.items():
+                                info(f"     - {category}: {count} samples")
+
+                    # Clean up temporary files
+                    for csv_file in temp_csvs:
+                        try:
+                            csv_file.unlink()
+                        except Exception:
+                            pass
 
             if args.language in [Language.JAVASCRIPT.value, Language.BOTH.value]:
                 warning("JavaScript preprocessing not yet implemented")
@@ -482,22 +548,26 @@ Examples:
 
             # Step 3: Filter and process the data
             progress("Step 3: Data Processing")
-            info("   • Filtering and processing data...")
+            info("   • Filtering and processing unified data...")
             # Import filter function dynamically
-            from research.filter_data import process_csv_files
+            from research.filter_data import process_unified_csv
 
-            process_csv_files(
-                benign="benign.csv", malicious="malicious.csv", triage_dir="triaging"
-            )
-            success("   Data processing completed")
+            # Process the unified CSV
+            if Path("training.csv").exists():
+                process_unified_csv(
+                    input_csv="training.csv",
+                    output_csv="training_processed.csv",
+                    triage_dir="triaging",
+                )
+                success("   Data processing completed")
+            else:
+                error("   training.csv not found, cannot proceed with data processing")
 
             # Step 4: Summary
             success("Data preprocessing completed successfully!")
             info("📁 Generated files:")
-            info("   • benign.csv (raw benign data)")
-            info("   • malicious.csv (raw malicious data)")
-            info("   • benign_processed.csv (processed benign data)")
-            info("   • malicious_processed.csv (processed malicious data)")
+            info("   • training.csv (unified training data with categories)")
+            info("   • training_processed.csv (processed unified data)")
 
             return True
 
@@ -523,26 +593,23 @@ Examples:
 
         try:
             # Step 1: Check if processed data exists
-            required_files = ["benign_processed.csv", "malicious_processed.csv"]
-            for file in required_files:
-                if not Path(file).exists():
-                    error(f"Processed data file not found: {file}")
-                    error(
-                        "   Please run --steps preprocess first to generate processed data"
-                    )
-                    return False
+            if not Path("training_processed.csv").exists():
+                error("Processed data file not found: training_processed.csv")
+                error(
+                    "   Please run 'preprocess' step first to generate processed data"
+                )
+                return False
 
-            success("Processed data files found")
+            success("Processed data file found")
 
             # Step 2: Train tokenizer first
             progress("Step 1: Training custom tokenizer...")
-            info("   • Training on: benign_processed.csv, malicious_processed.csv")
+            info("   • Training on: training_processed.csv")
             info(f"   • Total tokens: {DEFAULT_TOP_N_TOKENS} (default)")
             info("   • Output directory: malwi_models/")
 
             if not train_tokenizer_api(
-                benign_csv="benign_processed.csv",
-                malicious_csv="malicious_processed.csv",
+                training_csv="training_processed.csv",
                 output_path="malwi_models",
                 top_n_tokens=DEFAULT_TOP_N_TOKENS,
                 force_retrain=True,
@@ -568,7 +635,7 @@ Examples:
             # Step 4: Train DistilBERT model
             progress("Step 2: Training DistilBERT model...")
             info("   • Loading pre-trained tokenizer from malwi_models/")
-            info("   • Training data: benign_processed.csv, malicious_processed.csv")
+            info("   • Training data: training_processed.csv")
             info("   • Model size: 256 hidden dimensions (smaller, faster model)")
             info("   • Epochs: 3")
             info("   • Using 1 processor for training")
@@ -580,8 +647,7 @@ Examples:
             num_proc = os.environ.get("NUM_PROC", "1")
 
             if not train_distilbert_api(
-                benign_csv="benign_processed.csv",
-                malicious_csv="malicious_processed.csv",
+                training_csv="training_processed.csv",
                 epochs=int(epochs),
                 hidden_size=int(hidden_size),
                 num_proc=int(num_proc),

@@ -40,7 +40,7 @@ DEFAULT_EPOCHS = 3
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_VOCAB_SIZE = 30522
 DEFAULT_SAVE_STEPS = 0
-DEFAULT_BENIGN_TO_MALICIOUS_RATIO = 60.0
+DEFAULT_BENIGN_TO_MALICIOUS_RATIO = 20.0
 DEFAULT_HIDDEN_SIZE = 256  # Default to smaller model for faster training
 DEFAULT_NUM_PROC = (
     os.cpu_count() if os.cpu_count() is not None and os.cpu_count() > 1 else 2
@@ -242,51 +242,77 @@ def cleanup_model_directory(model_output_path: Path):
 
 
 def run_training(args):
+    """Train DistilBERT model with CSV containing all categories."""
     disable_progress_bar()
 
     progress("Starting DistilBERT model training...")
 
-    # Load data with labels from both CSVs
-    benign_asts, benign_labels = load_asts_from_csv(
-        args.benign, args.token_column, "label"
-    )
-    malicious_asts, malicious_labels = load_asts_from_csv(
-        args.malicious, args.token_column, "label"
+    # Load data from unified CSV
+    training_asts, training_labels = load_asts_from_csv(
+        args.training, args.token_column, "label"
     )
 
-    info(f"Loaded {len(benign_asts)} benign samples")
-    info(f"Loaded {len(malicious_asts)} malicious samples")
+    info(f"Loaded {len(training_asts)} training samples")
 
-    if not malicious_asts:
-        error("No malicious samples loaded. Cannot proceed with training.")
+    if not training_asts:
+        error("No training samples loaded. Cannot proceed with training.")
         return
 
-    if (
-        benign_asts
-        and args.benign_to_malicious_ratio > 0
-        and len(benign_asts) > len(malicious_asts) * args.benign_to_malicious_ratio
-    ):
-        target_benign_count = int(len(malicious_asts) * args.benign_to_malicious_ratio)
-        if target_benign_count < len(
-            benign_asts
-        ):  # Ensure we are actually downsampling
-            info(
-                f"Downsampling benign samples from {len(benign_asts)} to {target_benign_count}"
-            )
-            rng = np.random.RandomState(42)
-            benign_indices = rng.choice(
-                len(benign_asts), size=target_benign_count, replace=False
-            )
-            benign_asts = [benign_asts[i] for i in benign_indices]
-    elif not benign_asts:
-        warning("No benign samples loaded.")
+    # Show category distribution
+    from collections import Counter
 
-    info(f"Using {len(benign_asts)} benign samples for training")
-    info(f"Using {len(malicious_asts)} malicious samples for training")
+    label_counts = Counter(training_labels)
+    info("Category distribution:")
+    for label, count in sorted(label_counts.items()):
+        info(f"  - {label}: {count} samples")
 
-    # Combine all texts and labels
-    all_texts_for_training = benign_asts + malicious_asts
-    all_labels_text = benign_labels + malicious_labels
+    # Apply benign ratio balancing if configured
+    all_texts_for_training = training_asts
+    all_labels_text = training_labels
+
+    if hasattr(args, "benign_ratio") and args.benign_ratio > 0:
+        # Separate benign from non-benign samples
+        benign_indices = [
+            i for i, label in enumerate(training_labels) if label == "benign"
+        ]
+        non_benign_indices = [
+            i for i, label in enumerate(training_labels) if label != "benign"
+        ]
+
+        benign_asts = [training_asts[i] for i in benign_indices]
+        benign_labels = [training_labels[i] for i in benign_indices]
+        non_benign_asts = [training_asts[i] for i in non_benign_indices]
+        non_benign_labels = [training_labels[i] for i in non_benign_indices]
+
+        info(f"Original benign samples: {len(benign_asts)}")
+        info(f"Original non-benign samples: {len(non_benign_asts)}")
+
+        if (
+            non_benign_asts
+            and len(benign_asts) > len(non_benign_asts) * args.benign_ratio
+        ):
+            target_benign_count = int(len(non_benign_asts) * args.benign_ratio)
+            if target_benign_count < len(benign_asts):
+                info(
+                    f"Downsampling benign samples from {len(benign_asts)} to {target_benign_count}"
+                )
+                import numpy as np
+
+                rng = np.random.RandomState(42)
+                selected_indices = rng.choice(
+                    len(benign_asts), size=target_benign_count, replace=False
+                )
+                benign_asts = [benign_asts[i] for i in selected_indices]
+                benign_labels = [benign_labels[i] for i in selected_indices]
+
+        # Recombine the balanced data
+        all_texts_for_training = benign_asts + non_benign_asts
+        all_labels_text = benign_labels + non_benign_labels
+
+        info(f"Balanced benign samples: {len(benign_asts)}")
+        info(f"Balanced non-benign samples: {len(non_benign_asts)}")
+    else:
+        info("No benign ratio balancing applied")
 
     # Create a label map for converting string labels to integers
     unique_labels = sorted(set(all_labels_text))
@@ -300,10 +326,10 @@ def run_training(args):
     num_labels = len(unique_labels)
 
     if not all_texts_for_training:
-        error("No data available for training after filtering or downsampling.")
+        error("No data available for training after filtering.")
         return
 
-    info(f"Total original samples: {len(all_texts_for_training)}")
+    info(f"Total training samples: {len(all_texts_for_training)}")
 
     (
         distilbert_train_texts,
@@ -433,92 +459,96 @@ def run_training(args):
     info(f"  - Layers: {config.n_layers}")
     info(f"  - FFN dimension: {config.hidden_dim}")
     info(f"  - Max position embeddings: {config.max_position_embeddings}")
+    info(f"  - Number of labels: {num_labels} ({', '.join(unique_labels)})")
 
     model = DistilBertForSequenceClassification(config=config)
 
     # Calculate and display model size
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    info(f"Model size: {total_params:,} parameters ({trainable_params:,} trainable)")
-    info(
-        f"Model size in MB: {total_params * 4 / 1024 / 1024:.2f} MB (assuming float32)"
-    )
+    info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
 
-    if len(tokenizer) != model.config.vocab_size:
-        info(
-            f"Resizing model token embeddings from {model.config.vocab_size} to {len(tokenizer)}"
-        )
-        model.resize_token_embeddings(len(tokenizer))
-
-    training_arguments = TrainingArguments(
+    # Set up training arguments
+    training_args = TrainingArguments(
         output_dir=str(results_path),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        warmup_steps=500,
-        weight_decay=0.01,
-        logging_dir=str(logs_path),
-        logging_steps=10,
         eval_strategy="epoch",
-        save_strategy="epoch" if args.save_steps == 0 else "steps",
-        save_steps=args.save_steps if args.save_steps > 0 else None,
+        save_strategy="epoch",
+        logging_dir=str(logs_path),
+        logging_steps=100,
         load_best_model_at_end=True,
-        metric_for_best_model="f1",
-        save_total_limit=5 if args.save_steps > 0 else None,
+        metric_for_best_model="eval_f1",
+        greater_is_better=True,
+        save_total_limit=2,
         report_to="none",
+        fp16=False,
+        dataloader_num_workers=0,
+        save_safetensors=True,
     )
 
+    # Initialize trainer
     trainer = Trainer(
         model=model,
-        args=training_arguments,
+        args=training_args,
         train_dataset=train_dataset_for_trainer,
         eval_dataset=val_dataset_for_trainer,
-        compute_metrics=compute_metrics,
         tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
     )
 
-    info("Starting model training...")
-    train_result = trainer.train()
+    # Start training
+    progress("Starting model training...")
+    info(f"Training for {args.epochs} epochs...")
 
-    info("Evaluating final model...")
-    eval_result = trainer.evaluate()
+    try:
+        train_result = trainer.train()
 
-    save_model_with_prefix(trainer, tokenizer, model_output_path)
+        # Save the model
+        info("Saving model and tokenizer...")
+        save_model_with_prefix(trainer, tokenizer, model_output_path)
 
-    training_metrics = {
-        "training_loss": train_result.training_loss,
-        "epochs_completed": args.epochs,
-        "original_train_samples": len(distilbert_train_texts),
-        "windowed_train_features": len(train_dataset_for_trainer),
-        "original_validation_samples": len(distilbert_val_texts),
-        "windowed_validation_features": len(val_dataset_for_trainer),
-        "benign_samples_used": len(benign_asts),
-        "malicious_samples_used": len(malicious_asts),
-        "benign_to_malicious_ratio": args.benign_to_malicious_ratio,
-        "vocab_size": args.vocab_size,
-        "max_length": args.max_length,
-        "window_stride": args.window_stride,
-        "batch_size": args.batch_size,
-        **eval_result,
-    }
+        # Evaluate on validation set
+        info("Evaluating model on validation set...")
+        eval_results = trainer.evaluate()
 
-    save_training_metrics(training_metrics, model_output_path)
-    cleanup_model_directory(model_output_path)
+        # Save metrics
+        metrics = {
+            "training_loss": train_result.training_loss,
+            **eval_results,
+            "model_hidden_size": args.hidden_size,
+            "num_labels": num_labels,
+            "total_params": total_params,
+            "trainable_params": trainable_params,
+        }
 
-    success("DistilBERT model training completed successfully")
-    success(f"Final model saved to: {model_output_path}")
-    success(f"Training metrics saved to: {model_output_path}/training_metrics.txt")
-    success(
-        f"Model configuration: hidden_size={args.hidden_size}, layers={config.n_layers}, heads={config.n_heads}"
-    )
+        save_training_metrics(metrics, model_output_path)
+
+        # Print results
+        success("Training completed successfully!")
+        info(f"Final training loss: {train_result.training_loss:.4f}")
+        info(f"Validation accuracy: {eval_results['eval_accuracy']:.4f}")
+        info(f"Validation F1: {eval_results['eval_f1']:.4f}")
+        info(f"Validation precision: {eval_results['eval_precision']:.4f}")
+        info(f"Validation recall: {eval_results['eval_recall']:.4f}")
+
+        # Clean up checkpoints
+        cleanup_checkpoints(results_path)
+
+    except Exception as e:
+        error(f"Training failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--benign", "-b", required=True, help="Path to benign CSV")
-    parser.add_argument(
-        "--malicious", "-m", required=True, help="Path to malicious CSV"
+    parser = argparse.ArgumentParser(
+        description="Train DistilBERT model from training CSV with categories"
     )
+    parser.add_argument("training", help="Path to training CSV file")
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument(
         "--tokenizer-path", type=Path, default=DEFAULT_TOKENIZER_CLI_PATH
@@ -527,7 +557,6 @@ if __name__ == "__main__":
         "--model-output-path", type=Path, default=DEFAULT_MODEL_OUTPUT_CLI_PATH
     )
     parser.add_argument("--max-length", type=int, default=DEFAULT_MAX_LENGTH)
-    # --- New CLI Argument for Windowing ---
     parser.add_argument(
         "--window-stride",
         type=int,
@@ -553,10 +582,10 @@ if __name__ == "__main__":
         help="Name of column to use from CSV",
     )
     parser.add_argument(
-        "--benign-to-malicious-ratio",
+        "--benign-ratio",
         type=float,
         default=DEFAULT_BENIGN_TO_MALICIOUS_RATIO,
-        help="Ratio of benign to malicious samples to use for training (e.g., 1.0 for 1:1). Set to 0 or negative to disable downsampling.",
+        help="Ratio of benign to other categories (e.g., 2.0 for 2:1 benign:others). Set to 0 to disable balancing.",
     )
 
     args = parser.parse_args()
