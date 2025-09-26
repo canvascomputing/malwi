@@ -330,20 +330,36 @@ def train_tokenizer(args):
     all_texts_for_training = []
 
     if args.training:
-        training_asts = load_asts_from_csv(args.training, args.token_column)
-        all_texts_for_training.extend(training_asts)
-        info(f"Loaded {len(training_asts)} training samples")
+        # Load CSV and filter for malicious samples only
+        df = pd.read_csv(args.training)
+        info(f"Loaded training CSV with {len(df)} total samples")
 
-        # Show category distribution if available
-        try:
-            df = pd.read_csv(args.training)
-            if "label" in df.columns:
-                category_counts = df["label"].value_counts()
-                info("Category distribution in training data:")
-                for category, count in category_counts.items():
-                    info(f"  - {category}: {count} samples")
-        except Exception:
-            pass
+        # Show original category distribution
+        if "label" in df.columns:
+            category_counts = df["label"].value_counts()
+            info("Original category distribution:")
+            for category, count in category_counts.items():
+                info(f"  - {category}: {count} samples")
+
+            # Filter for all categories except benign for tokenizer training
+            non_benign_df = df[df["label"] != "benign"]
+            info(
+                f"Filtering to non-benign samples for tokenizer: {len(non_benign_df)} samples (excluding {len(df[df['label'] == 'benign'])} benign samples)"
+            )
+
+            if len(non_benign_df) == 0:
+                warning("No non-benign samples found! Using all samples instead.")
+                training_asts = df[args.token_column].dropna().tolist()
+            else:
+                training_asts = non_benign_df[args.token_column].dropna().tolist()
+        else:
+            warning(
+                "No 'label' column found. Using all samples for tokenizer training."
+            )
+            training_asts = df[args.token_column].dropna().tolist()
+
+        all_texts_for_training.extend(training_asts)
+        info(f"Using {len(training_asts)} samples for tokenizer training")
     else:
         error("No training CSV file provided")
         return
