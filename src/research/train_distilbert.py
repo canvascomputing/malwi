@@ -382,6 +382,30 @@ def run_training(args):
         error("No training data available after train/test split. Cannot proceed.")
         return
 
+    # Calculate category distribution for metrics
+    from collections import Counter
+
+    train_label_counts = Counter(distilbert_train_labels)
+    val_label_counts = Counter(distilbert_val_labels)
+    total_label_counts = Counter(all_labels_for_training)
+
+    info("Training set category distribution:")
+    for label, count in sorted(train_label_counts.items()):
+        percentage = (count / len(distilbert_train_labels)) * 100
+        info(f"  - {label}: {count} samples ({percentage:.1f}%)")
+
+    info("Validation set category distribution:")
+    for label, count in sorted(val_label_counts.items()):
+        percentage = (count / len(distilbert_val_labels)) * 100
+        info(f"  - {label}: {count} samples ({percentage:.1f}%)")
+
+    # Verify all categories are present in validation set
+    missing_in_val = set(train_label_counts.keys()) - set(val_label_counts.keys())
+    if missing_in_val:
+        warning(f"Categories missing in validation set: {missing_in_val}")
+    else:
+        success("All training categories are represented in validation set")
+
     try:
         tokenizer = load_pretrained_tokenizer(
             tokenizer_path=Path(args.tokenizer_path),
@@ -547,7 +571,7 @@ def run_training(args):
         info("Evaluating model on validation set...")
         eval_results = trainer.evaluate()
 
-        # Save metrics
+        # Save metrics including category sample counts
         metrics = {
             "training_loss": train_result.training_loss,
             **eval_results,
@@ -555,7 +579,32 @@ def run_training(args):
             "num_labels": num_labels,
             "total_params": total_params,
             "trainable_params": trainable_params,
+            # Category sample counts
+            "total_training_samples": len(distilbert_train_labels),
+            "total_validation_samples": len(distilbert_val_labels),
+            "total_samples": len(all_labels_for_training),
         }
+
+        # Add individual category counts for training set
+        for label, count in train_label_counts.items():
+            metrics[f"train_{label}_samples"] = count
+            metrics[f"train_{label}_percentage"] = (
+                count / len(distilbert_train_labels)
+            ) * 100
+
+        # Add individual category counts for validation set
+        for label, count in val_label_counts.items():
+            metrics[f"val_{label}_samples"] = count
+            metrics[f"val_{label}_percentage"] = (
+                count / len(distilbert_val_labels)
+            ) * 100
+
+        # Add total category counts across entire dataset
+        for label, count in total_label_counts.items():
+            metrics[f"total_{label}_samples"] = count
+            metrics[f"total_{label}_percentage"] = (
+                count / len(all_labels_for_training)
+            ) * 100
 
         save_training_metrics(metrics, model_output_path)
 
