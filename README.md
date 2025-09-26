@@ -74,12 +74,6 @@ malwi scan <path> [options]
 
 **Common Options:**
 - `--format {demo,markdown,json,yaml,tokens,code}` - Output format (default: demo)
-  - `demo` - Human-readable terminal output with emojis and tree structure
-  - `markdown` - Structured markdown report for documentation
-  - `json` - Machine-readable JSON for integration with other tools
-  - `yaml` - YAML format for configuration management
-  - `tokens` - Raw token analysis with embedding counts
-  - `code` - Extracted code snippets from suspicious objects
 - `--save FILE` - Save output to file
 - `--threshold FLOAT` - Maliciousness threshold (default: 0.7)
 - `--extensions EXT [EXT ...]` - File extensions to scan (default: .py, .js)
