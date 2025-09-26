@@ -95,17 +95,6 @@ def load_asts_from_csv(
     return asts, labels
 
 
-def compute_metrics(pred):
-    labels = pred.label_ids
-    preds = pred.predictions.argmax(-1)
-    # Use weighted average for multi-class classification
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, preds, average="weighted", zero_division=0
-    )
-    acc = accuracy_score(labels, preds)
-    return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall}
-
-
 def load_pretrained_tokenizer(tokenizer_path: Path, max_length: int):
     """
     Load a pre-trained tokenizer from the specified path.
@@ -546,6 +535,52 @@ def run_training(args):
         save_safetensors=True,
     )
 
+    # Create compute_metrics function with access to label names
+    def compute_metrics(pred):
+        labels = pred.label_ids
+        preds = pred.predictions.argmax(-1)
+
+        # Weighted average (influenced by sample counts)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, preds, average="weighted", zero_division=0
+        )
+        acc = accuracy_score(labels, preds)
+
+        # Macro average (equal weight for all categories - better for imbalanced data)
+        macro_precision, macro_recall, macro_f1, _ = precision_recall_fscore_support(
+            labels, preds, average="macro", zero_division=0
+        )
+
+        # Per-category metrics for detailed analysis
+        precision_per_class, recall_per_class, f1_per_class, support_per_class = (
+            precision_recall_fscore_support(
+                labels, preds, average=None, zero_division=0
+            )
+        )
+
+        # Create comprehensive metrics dict
+        metrics = {
+            "accuracy": acc,
+            "f1": f1,
+            "precision": precision,
+            "recall": recall,
+            "macro_f1": macro_f1,
+            "macro_precision": macro_precision,
+            "macro_recall": macro_recall,
+        }
+
+        # Add per-class metrics with category names
+        for i, (prec, rec, f1_score, support) in enumerate(
+            zip(precision_per_class, recall_per_class, f1_per_class, support_per_class)
+        ):
+            category_name = id_to_label.get(i, f"class_{i}")
+            metrics[f"f1_{category_name}"] = f1_score
+            metrics[f"precision_{category_name}"] = prec
+            metrics[f"recall_{category_name}"] = rec
+            metrics[f"support_{category_name}"] = support
+
+        return metrics
+
     # Initialize trainer
     trainer = Trainer(
         model=model,
@@ -612,9 +647,19 @@ def run_training(args):
         success("Training completed successfully!")
         info(f"Final training loss: {train_result.training_loss:.4f}")
         info(f"Validation accuracy: {eval_results['eval_accuracy']:.4f}")
-        info(f"Validation F1: {eval_results['eval_f1']:.4f}")
+        info(f"Validation F1 (weighted): {eval_results['eval_f1']:.4f}")
+        info(f"Validation F1 (macro): {eval_results['eval_macro_f1']:.4f}")
         info(f"Validation precision: {eval_results['eval_precision']:.4f}")
         info(f"Validation recall: {eval_results['eval_recall']:.4f}")
+
+        # Print individual category F1 scores
+        info("Per-category F1 scores:")
+        for category_name in sorted(unique_labels):
+            f1_key = f"eval_f1_{category_name}"
+            if f1_key in eval_results:
+                info(f"  - {category_name}: {eval_results[f1_key]:.4f}")
+            else:
+                warning(f"  - {category_name}: F1 score not found")
 
         # Clean up checkpoints
         cleanup_checkpoints(results_path)
