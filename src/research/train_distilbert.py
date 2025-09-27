@@ -40,7 +40,7 @@ DEFAULT_EPOCHS = 3
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_VOCAB_SIZE = 30522
 DEFAULT_SAVE_STEPS = 0
-DEFAULT_BENIGN_TO_MALICIOUS_RATIO = 80.0
+DEFAULT_BENIGN_TO_MALICIOUS_RATIO = 20.0
 DEFAULT_HIDDEN_SIZE = 256  # Default to smaller model for faster training
 DEFAULT_NUM_PROC = (
     os.cpu_count() if os.cpu_count() is not None and os.cpu_count() > 1 else 2

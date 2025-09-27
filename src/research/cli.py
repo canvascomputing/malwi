@@ -569,8 +569,8 @@ Examples:
                 if temp_malicious.exists():
                     temp_csvs.append(temp_malicious)
 
-                info("   • Processing suspicious samples...")
-                # Add suspicious findings
+                info("   • Processing suspicious samples (as malicious)...")
+                # Add suspicious findings - categorized as malicious (insufficient data)
                 temp_suspicious = Path("temp_suspicious.csv")
                 preprocess_data(
                     input_path=Path("../malwi-samples/python/suspicious"),
@@ -578,7 +578,7 @@ Examples:
                     extensions=[".py"],
                     use_parallel=True,
                     timeout_minutes=90,  # 1.5 hours for suspicious samples
-                    label="suspicious",
+                    label="malicious",
                 )
                 if temp_suspicious.exists():
                     temp_csvs.append(temp_suspicious)
@@ -586,7 +586,7 @@ Examples:
                 # Check for telemetry category
                 telemetry_path = Path("../malwi-samples/python/telemetry")
                 if telemetry_path.exists():
-                    info("   • Processing telemetry samples...")
+                    info("   • Processing telemetry samples (as malicious)...")
                     temp_telemetry = Path("temp_telemetry.csv")
                     preprocess_data(
                         input_path=telemetry_path,
@@ -594,7 +594,7 @@ Examples:
                         extensions=[".py"],
                         use_parallel=True,
                         timeout_minutes=90,
-                        label="telemetry",
+                        label="malicious",
                     )
                     if temp_telemetry.exists():
                         temp_csvs.append(temp_telemetry)
