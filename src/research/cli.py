@@ -215,21 +215,49 @@ class ResearchCLI:
         parser = argparse.ArgumentParser(
             description="malwi Research CLI - Unified interface for training pipeline",
             formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+
+        # Create subparsers (but also support legacy direct args)
+        subparsers = parser.add_subparsers(
+            dest="command", help="Available commands", metavar="command", required=False
+        )
+
+        # Add legacy support: direct pipeline steps as positional args
+        parser.add_argument(
+            "legacy_steps",
+            nargs="*",
+            help=argparse.SUPPRESS,  # Hide from help
+        )
+
+        # Language selection for legacy mode
+        parser.add_argument(
+            "--language",
+            "-l",
+            choices=[lang.value for lang in Language],
+            default=Language.BOTH.value,
+            help="Programming language(s) to process (default: both)",
+        )
+
+        # Legacy support: pipeline steps subcommand
+        steps_parser = subparsers.add_parser(
+            "steps",
+            help="Execute pipeline steps",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
   # Run full pipeline for Python
-  ./research download preprocess train --language python
-  
+  ./research steps download preprocess train --language python
+
   # Preprocess and train (default steps)
-  ./research --language python
-  
+  ./research steps --language python
+
   # Download data only
-  ./research download
+  ./research steps download
             """,
         )
 
         # Pipeline steps
-        parser.add_argument(
+        steps_parser.add_argument(
             "pipeline_steps",
             nargs="*",
             choices=[step.value for step in Step],
@@ -237,13 +265,61 @@ Examples:
             help="Pipeline steps to execute (default: preprocess train)",
         )
 
-        # Language selection
-        parser.add_argument(
+        # Language selection for steps
+        steps_parser.add_argument(
             "--language",
             "-l",
             choices=[lang.value for lang in Language],
             default=Language.BOTH.value,
             help="Programming language(s) to process (default: both)",
+        )
+
+        # Eval subcommand
+        eval_parser = subparsers.add_parser(
+            "eval",
+            help="Evaluate model and tokenizer metrics",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Examples:
+  # Evaluate with default paths
+  ./research eval
+
+  # Evaluate custom tokenizer and model
+  ./research eval -t custom_tokenizer/ -m custom_model/
+
+  # Evaluate only tokenizer
+  ./research eval -t custom_tokenizer/
+            """,
+        )
+
+        eval_parser.add_argument(
+            "--tokenizer",
+            "-t",
+            type=str,
+            default="malwi_models",
+            help="Path to tokenizer directory (default: malwi_models)",
+        )
+
+        eval_parser.add_argument(
+            "--model",
+            "-m",
+            type=str,
+            default="malwi_models",
+            help="Path to model directory (default: malwi_models)",
+        )
+
+        eval_parser.add_argument(
+            "--test-data",
+            type=str,
+            default="training_processed.csv",
+            help="Path to test data CSV (default: training_processed.csv)",
+        )
+
+        eval_parser.add_argument(
+            "--ratio",
+            type=float,
+            default=0.2,
+            help="Percentage of each category to use for evaluation (default: 0.2 = 20%%)",
         )
 
         return parser
@@ -263,9 +339,25 @@ Examples:
         # Configure messaging
         configure_messaging(quiet=False)
 
-        # Execute pipeline steps directly
+        # Handle subcommands
         try:
-            return self._handle_steps_command(parsed_args)
+            if parsed_args.command == "steps":
+                return self._handle_steps_command(parsed_args)
+            elif parsed_args.command == "eval":
+                return self._handle_eval_command(parsed_args)
+            else:
+                # Legacy support: if no command specified, check for legacy steps
+                if not parsed_args.command and parsed_args.legacy_steps:
+                    # Convert legacy args to steps format
+                    parsed_args.pipeline_steps = parsed_args.legacy_steps
+                    return self._handle_steps_command(parsed_args)
+                elif not parsed_args.command and not parsed_args.legacy_steps:
+                    # Default behavior - run preprocess and train
+                    parsed_args.pipeline_steps = ["preprocess", "train"]
+                    return self._handle_steps_command(parsed_args)
+                else:
+                    error(f"Unknown command: {parsed_args.command}")
+                    return 1
         except KeyboardInterrupt:
             warning("Operation interrupted by user")
             return 130
@@ -682,6 +774,267 @@ Examples:
         except Exception as e:
             error(f"Unexpected error during training: {e}")
             return False
+
+    def _handle_eval_command(self, args: argparse.Namespace) -> int:
+        """
+        Handle the eval subcommand to evaluate model and tokenizer metrics.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            Exit code (0 for success, non-zero for failure)
+        """
+        info("📊 Evaluating model and tokenizer metrics")
+
+        try:
+            # Import evaluation modules
+            from pathlib import Path
+            import pandas as pd
+            from transformers import (
+                PreTrainedTokenizerFast,
+                DistilBertForSequenceClassification,
+            )
+            from research.train_distilbert import load_pretrained_tokenizer
+            from sklearn.metrics import (
+                classification_report,
+                precision_recall_fscore_support,
+            )
+            import torch
+
+            # Validate paths
+            tokenizer_path = Path(args.tokenizer)
+            model_path = Path(args.model)
+            test_data_path = Path(args.test_data)
+
+            info(f"   • Tokenizer path: {tokenizer_path}")
+            info(f"   • Model path: {model_path}")
+            info(f"   • Test data: {test_data_path}")
+
+            # Check if tokenizer exists
+            if not tokenizer_path.exists():
+                error(f"Tokenizer directory not found: {tokenizer_path}")
+                return 1
+
+            tokenizer_config_file = tokenizer_path / "tokenizer.json"
+            if not tokenizer_config_file.exists():
+                error(f"Tokenizer config not found: {tokenizer_config_file}")
+                return 1
+
+            # Check if model exists
+            if not model_path.exists():
+                error(f"Model directory not found: {model_path}")
+                return 1
+
+            model_config_file = model_path / "config.json"
+            if not model_config_file.exists():
+                error(f"Model config not found: {model_config_file}")
+                return 1
+
+            # Check if test data exists
+            if not test_data_path.exists():
+                error(f"Test data not found: {test_data_path}")
+                return 1
+
+            success("All required files found")
+
+            # Load tokenizer
+            progress("Loading tokenizer...")
+            try:
+                tokenizer = load_pretrained_tokenizer(tokenizer_path, max_length=512)
+                success(f"Tokenizer loaded successfully")
+                info(f"   • Vocabulary size: {tokenizer.vocab_size}")
+                info(f"   • Max length: {tokenizer.model_max_length}")
+            except Exception as e:
+                error(f"Failed to load tokenizer: {e}")
+                return 1
+
+            # Load model
+            progress("Loading model...")
+            try:
+                model = DistilBertForSequenceClassification.from_pretrained(
+                    str(model_path)
+                )
+                success(f"Model loaded successfully")
+                info(f"   • Model type: {model.__class__.__name__}")
+                info(f"   • Number of labels: {model.num_labels}")
+                info(f"   • Hidden size: {model.config.hidden_size}")
+            except Exception as e:
+                error(f"Failed to load model: {e}")
+                return 1
+
+            # Load test data
+            progress("Loading test data...")
+            try:
+                df = pd.read_csv(test_data_path)
+                success(f"Test data loaded: {len(df)} samples")
+
+                if "label" in df.columns:
+                    label_counts = df["label"].value_counts()
+                    info("   Category distribution:")
+                    for category, count in label_counts.items():
+                        info(f"     - {category}: {count} samples")
+                else:
+                    warning("No 'label' column found in test data")
+
+            except Exception as e:
+                error(f"Failed to load test data: {e}")
+                return 1
+
+            # Evaluate tokenizer metrics
+            progress("Evaluating tokenizer...")
+            if "ast" in df.columns:
+                # Count tokens for sample of ASTs
+                sample_size = min(100, len(df))
+                sample_df = df.head(sample_size)
+
+                total_tokens = 0
+                out_of_vocab_count = 0
+
+                for ast_str in sample_df["ast"].head(sample_size):
+                    if pd.notna(ast_str):
+                        tokens = ast_str.split()
+                        total_tokens += len(tokens)
+
+                        # Check tokenization
+                        tokenized = tokenizer(ast_str, truncation=True, max_length=512)
+                        input_ids = tokenized["input_ids"]
+
+                        # Count unknown tokens (usually token ID 0 or [UNK])
+                        unk_token_id = (
+                            tokenizer.unk_token_id
+                            if hasattr(tokenizer, "unk_token_id")
+                            else 0
+                        )
+                        if unk_token_id is not None:
+                            out_of_vocab_count += input_ids.count(unk_token_id)
+
+                avg_tokens_per_sample = (
+                    total_tokens / sample_size if sample_size > 0 else 0
+                )
+                oov_rate = (
+                    (out_of_vocab_count / total_tokens * 100) if total_tokens > 0 else 0
+                )
+
+                success("Tokenizer evaluation completed")
+                info(f"   • Average tokens per sample: {avg_tokens_per_sample:.1f}")
+                info(f"   • Out-of-vocabulary rate: {oov_rate:.2f}%")
+            else:
+                warning("No 'ast' column found - skipping tokenizer evaluation")
+
+            # Evaluate model if we have labels
+            if "label" in df.columns and "ast" in df.columns:
+                progress("Evaluating model performance...")
+
+                # Prepare labels mapping
+                unique_labels = sorted(df["label"].unique())
+                label_to_id = {label: i for i, label in enumerate(unique_labels)}
+                id_to_label = {i: label for label, i in label_to_id.items()}
+
+                info(f"   • Label mapping: {label_to_id}")
+
+                # Take a stratified sample by category using the ratio parameter
+                info(f"   • Using {args.ratio:.1%} of each category for evaluation")
+
+                eval_dfs = []
+                for label in unique_labels:
+                    label_df = df[df["label"] == label]
+                    sample_size = max(1, int(len(label_df) * args.ratio))
+                    # Ensure we don't exceed available samples
+                    sample_size = min(sample_size, len(label_df))
+                    label_sample = label_df.sample(n=sample_size, random_state=42)
+                    eval_dfs.append(label_sample)
+                    info(f"     - {label}: {sample_size}/{len(label_df)} samples")
+
+                eval_df = pd.concat(eval_dfs, ignore_index=True)
+                info(f"   • Total evaluation samples: {len(eval_df)}")
+
+                # Prepare inputs and labels
+                texts = eval_df["ast"].tolist()
+                true_labels = [label_to_id[label] for label in eval_df["label"]]
+
+                # Tokenize texts
+                inputs = tokenizer(
+                    texts,
+                    truncation=True,
+                    padding=True,
+                    max_length=512,
+                    return_tensors="pt",
+                )
+
+                # Make predictions
+                model.eval()
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+                    predicted_labels = torch.argmax(predictions, dim=-1).tolist()
+
+                # Calculate metrics
+                precision, recall, f1, support = precision_recall_fscore_support(
+                    true_labels, predicted_labels, average="weighted", zero_division=0
+                )
+                macro_precision, macro_recall, macro_f1, _ = (
+                    precision_recall_fscore_support(
+                        true_labels, predicted_labels, average="macro", zero_division=0
+                    )
+                )
+
+                # Per-category metrics
+                (
+                    precision_per_class,
+                    recall_per_class,
+                    f1_per_class,
+                    support_per_class,
+                ) = precision_recall_fscore_support(
+                    true_labels, predicted_labels, average=None, zero_division=0
+                )
+
+                success("Model evaluation completed")
+                info("📈 Overall Metrics:")
+                info(f"   • Weighted F1: {f1:.4f}")
+                info(f"   • Weighted Precision: {precision:.4f}")
+                info(f"   • Weighted Recall: {recall:.4f}")
+                info(f"   • Macro F1: {macro_f1:.4f}")
+                info(f"   • Macro Precision: {macro_precision:.4f}")
+                info(f"   • Macro Recall: {macro_recall:.4f}")
+
+                info("📊 Per-Category Metrics:")
+                for i, (prec, rec, f1_score, supp) in enumerate(
+                    zip(
+                        precision_per_class,
+                        recall_per_class,
+                        f1_per_class,
+                        support_per_class,
+                    )
+                ):
+                    category_name = id_to_label.get(i, f"class_{i}")
+                    info(f"   • {category_name}:")
+                    info(f"     - F1: {f1_score:.4f}")
+                    info(f"     - Precision: {prec:.4f}")
+                    info(f"     - Recall: {rec:.4f}")
+                    info(f"     - Support: {supp}")
+
+                # Detailed classification report
+                info("📋 Detailed Classification Report:")
+                target_names = [id_to_label[i] for i in range(len(unique_labels))]
+                report = classification_report(
+                    true_labels, predicted_labels, target_names=target_names
+                )
+                for line in report.split("\n"):
+                    if line.strip():
+                        info(f"   {line}")
+
+            else:
+                warning(
+                    "Cannot evaluate model performance - missing 'label' or 'ast' columns"
+                )
+
+            success("🎯 Evaluation completed successfully!")
+            return 0
+
+        except Exception as e:
+            error(f"Evaluation failed: {e}")
+            return 1
 
 
 def main():
