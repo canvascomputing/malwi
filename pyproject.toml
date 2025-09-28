@@ -61,10 +61,12 @@ dev = [
 
 training = [
     "accelerate>=1.6.0",
-    "datasets>=3.6.0", 
+    "datasets>=3.6.0",
     "pandas>=2.2.3",
     "scikit-learn>=1.6.1",
     "nltk>=3.9.1",
+    "stable-baselines3>=2.5.0",
+    "gymnasium>=1.0.0",
 ]
 
 [tool.pytest.ini_options]

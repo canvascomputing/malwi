@@ -30,16 +30,19 @@ class CSVWriter:
         self.writer = csv.writer(self.file_handle)
 
         if is_empty:
-            self.writer.writerow(["tokens", "hash", "language", "filepath", "label"])
+            self.writer.writerow(
+                ["tokens", "hash", "language", "filepath", "label", "package"]
+            )
 
     def write_code_objects(
-        self, code_objects: List["MalwiObject"], label: str = None
+        self, code_objects: List["MalwiObject"], label: str = None, package: str = None
     ) -> None:
-        """Write MalwiObject data to CSV with label.
+        """Write MalwiObject data to CSV with label and package.
 
         Args:
             code_objects: List of MalwiObject instances
             label: Label for these objects (e.g., 'malicious', 'benign', 'suspicious', 'telemetry')
+            package: Package name for grouping files from the same malware sample
         """
         for obj in code_objects:
             self.writer.writerow(
@@ -49,6 +52,7 @@ class CSVWriter:
                     obj.language,
                     obj.file_path,
                     label or "",
+                    package or "",
                 ]
             )
 

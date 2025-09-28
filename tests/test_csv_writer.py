@@ -48,7 +48,14 @@ class TestCSVWriter:
             assert len(rows) == 2  # Header + 1 data row
 
             # Check header
-            expected_header = ["tokens", "hash", "language", "filepath", "label"]
+            expected_header = [
+                "tokens",
+                "hash",
+                "language",
+                "filepath",
+                "label",
+                "package",
+            ]
             assert rows[0] == expected_header
 
             # Check data row
@@ -60,6 +67,7 @@ class TestCSVWriter:
                 data_row[3] == "/test/path/example.py"
             )  # filepath (was obj.path before fix)
             assert data_row[4] == ""  # label (empty when not provided)
+            assert data_row[5] == ""  # package (empty when not provided)
 
         finally:
             # Clean up
@@ -178,7 +186,14 @@ class TestCSVWriter:
                 rows = list(reader)
 
             assert len(rows) == 1  # Only header
-            assert rows[0] == ["tokens", "hash", "language", "filepath", "label"]
+            assert rows[0] == [
+                "tokens",
+                "hash",
+                "language",
+                "filepath",
+                "label",
+                "package",
+            ]
 
         finally:
             Path(csv_file_path).unlink()

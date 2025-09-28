@@ -30,7 +30,11 @@ from common.messaging import (
 
 
 def _process_single_file_with_compiler(
-    file_path: Path, compiler, label: str = None, timeout: int = 30
+    file_path: Path,
+    compiler,
+    label: str = None,
+    package_name: str = None,
+    timeout: int = 30,
 ) -> Dict:
     """
     Process a single file with an existing compiler and timeout protection.
@@ -70,6 +74,7 @@ def _process_single_file_with_compiler(
                     "language": obj.language,
                     "filepath": str(obj.file_path),
                     "label": label or "",
+                    "package": package_name or "",
                 }
                 serializable_objects.append(obj_data)
             except Exception as e:
@@ -102,6 +107,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
             - chunk_id: Identifier for this chunk
             - temp_dir: Temporary directory path string
             - label: Label for these files (optional)
+            - package: Package name for these files (optional)
     Returns:
         Dictionary with processing results
     """
@@ -112,6 +118,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
         chunk_id = chunk_data["chunk_id"]
         temp_dir = Path(chunk_data["temp_dir"])
         label = chunk_data.get("label", "")
+        package_name = chunk_data.get("package", "")
 
         # Create ONE compiler instance per chunk (not per file!)
         # Import inside worker to avoid serialization issues
@@ -137,13 +144,19 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
         # Use context manager for file handling
         with open(chunk_output, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["tokens", "hash", "language", "filepath", "label"])
+            writer.writerow(
+                ["tokens", "hash", "language", "filepath", "label", "package"]
+            )
 
             # Process each file with shared compiler and individual timeout protection
             for file_path in file_paths:
                 try:
                     file_result = _process_single_file_with_compiler(
-                        file_path, compiler, label=label, timeout=30
+                        file_path,
+                        compiler,
+                        label=label,
+                        package_name=package_name,
+                        timeout=30,
                     )
 
                     if file_result["success"]:
@@ -156,6 +169,7 @@ def process_file_chunk(chunk_data: Dict) -> Dict:
                                     obj_data["language"],
                                     obj_data["filepath"],
                                     obj_data["label"],
+                                    obj_data["package"],
                                 ]
                             )
                             total_code_objects += 1
@@ -227,7 +241,7 @@ def combine_csv_chunks(chunk_files: List[str], output_path: Path) -> int:
     with open(output_path, "w", encoding="utf-8", newline="") as output_file:
         writer = csv.writer(output_file)
         # Write header
-        writer.writerow(["tokens", "hash", "language", "filepath", "label"])
+        writer.writerow(["tokens", "hash", "language", "filepath", "label", "package"])
 
         for chunk_file in chunk_files:
             chunk_path = Path(chunk_file)
@@ -298,8 +312,8 @@ def preprocess_data(
     info(f"Using parallel processing...")
     info(f"Using {num_processes} processes with {chunk_size} chunk size")
 
-    # Group files by language
-    files_by_language = {}
+    # Group files by language and package (parent folder)
+    files_by_language_and_package = {}
     for file_path in files:
         if file_path.suffix == ".py":
             lang = "python"
@@ -308,15 +322,31 @@ def preprocess_data(
         else:
             continue
 
-        if lang not in files_by_language:
-            files_by_language[lang] = []
-        files_by_language[lang].append(file_path)
+        # Extract package name from parent folder
+        # For path like .../malwi-samples/python/malicious/package_name/file.py
+        # We want "package_name" as the package identifier
+        try:
+            # Get relative path from input_path
+            rel_path = file_path.relative_to(input_path)
+            # Get the first directory component as package name
+            if len(rel_path.parts) > 1:
+                package_name = rel_path.parts[0]
+            else:
+                package_name = "unknown"
+        except ValueError:
+            # If file is not under input_path, use parent directory name
+            package_name = file_path.parent.name
+
+        key = (lang, package_name)
+        if key not in files_by_language_and_package:
+            files_by_language_and_package[key] = []
+        files_by_language_and_package[key].append(file_path)
 
     # Create small chunks for better fault tolerance
     all_chunk_tasks = []
     chunk_id = 0
 
-    for language, lang_files in files_by_language.items():
+    for (language, package_name), lang_files in files_by_language_and_package.items():
         file_chunks = split_files_into_chunks(lang_files, chunk_size)
 
         for chunk_files in file_chunks:
@@ -327,6 +357,7 @@ def preprocess_data(
                         "language": language,
                         "chunk_id": chunk_id,
                         "label": label or "",
+                        "package": package_name or "",
                     }
                 )
                 chunk_id += 1
@@ -483,8 +514,21 @@ def _process_sequential(
 
             if compiler:
                 try:
+                    # Extract package name
+                    try:
+                        rel_path = file_path.relative_to(file_path.parent.parent)
+                        package_name = (
+                            rel_path.parts[0]
+                            if len(rel_path.parts) > 1
+                            else file_path.parent.name
+                        )
+                    except (ValueError, IndexError):
+                        package_name = file_path.parent.name
+
                     code_objects = compiler.process_file(file_path)
-                    csv_writer.write_code_objects(code_objects, label=label)
+                    csv_writer.write_code_objects(
+                        code_objects, label=label, package=package_name
+                    )
                 except Exception as e:
                     logging.warning(f"Failed to process {file_path}: {e}")
                     continue
