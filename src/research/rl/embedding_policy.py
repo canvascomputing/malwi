@@ -1,98 +1,64 @@
 import torch
 import torch.nn as nn
 import gymnasium as gym
-from typing import Dict, List, Tuple, Type, Optional, Any
+from typing import Tuple
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.torch_layers import (
-    BaseFeaturesExtractor,
-    FlattenExtractor,
-)
-from stable_baselines3.common.distributions import CategoricalDistribution
-from transformers import DistilBertModel
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
-class DistilBertFeatureExtractor(BaseFeaturesExtractor):
+class IdentityFeatureExtractor(BaseFeaturesExtractor):
     """
-    Feature extractor using frozen DistilBERT for code representation.
-    Extracts [CLS] token embeddings from the last hidden layer.
-    DistilBERT handles windowing internally with max_length=512.
+    Feature extractor that passes embeddings through unchanged.
+    Used when embeddings are pre-computed.
     """
 
-    def __init__(
-        self,
-        observation_space: gym.spaces.Dict,
-        distilbert_model_path: str,
-        features_dim: int = 768,
-    ):
-        temp_model = DistilBertModel.from_pretrained(distilbert_model_path)
-        actual_features_dim = temp_model.config.hidden_size
-
-        super().__init__(observation_space, actual_features_dim)
-
-        self.distilbert = temp_model
-        for param in self.distilbert.parameters():
-            param.requires_grad = False
-
-        self.distilbert.eval()
-
-        self._features_dim = actual_features_dim
+    def __init__(self, observation_space: gym.spaces.Box, features_dim: int = None):
+        if features_dim is None:
+            features_dim = observation_space.shape[0]
+        super().__init__(observation_space, features_dim)
+        self._features_dim = features_dim
 
     @property
     def features_dim(self) -> int:
         return self._features_dim
 
-    def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        input_ids = observations["input_ids"].long()
-        attention_mask = observations["attention_mask"].long()
-
-        with torch.no_grad():
-            outputs = self.distilbert(
-                input_ids=input_ids, attention_mask=attention_mask
-            )
-
-        last_hidden_state = outputs.last_hidden_state
-        cls_embeddings = last_hidden_state[:, 0, :]
-
-        return cls_embeddings
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        return observations
 
 
-class LSTMDistilBertActorCriticPolicy(ActorCriticPolicy):
+class LSTMEmbeddingPolicy(ActorCriticPolicy):
     """
-    Custom Actor-Critic policy with LSTM memory.
+    Custom Actor-Critic policy with LSTM memory for pre-computed embeddings.
 
     Architecture:
-    1. DistilBERT processes each code sample → [CLS] embedding (frozen)
+    1. Pre-computed embeddings (256-dim) loaded from disk
     2. LSTM maintains memory across samples in a package
     3. Actor-Critic networks make decisions based on LSTM output
 
-    This allows the agent to remember previous samples when deciding on new ones.
+    This allows fast training without DistilBERT inference.
     """
 
     def __init__(
         self,
-        observation_space: gym.spaces.Dict,
+        observation_space: gym.spaces.Box,
         action_space: gym.spaces.Discrete,
         lr_schedule,
-        distilbert_model_path: str = "malwi_models",
         lstm_hidden_size: int = 256,
         lstm_num_layers: int = 1,
         *args,
         **kwargs,
     ):
-        self.distilbert_model_path = distilbert_model_path
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_num_layers = lstm_num_layers
 
-        kwargs["features_extractor_class"] = DistilBertFeatureExtractor
-        kwargs["features_extractor_kwargs"] = {
-            "distilbert_model_path": distilbert_model_path
-        }
+        kwargs["features_extractor_class"] = IdentityFeatureExtractor
+        kwargs["features_extractor_kwargs"] = {}
         kwargs["net_arch"] = {"pi": [], "vf": []}
         kwargs["ortho_init"] = False
 
         super().__init__(observation_space, action_space, lr_schedule, *args, **kwargs)
 
-        distilbert_size = self.features_extractor.features_dim
+        embedding_size = self.features_extractor.features_dim
 
         if hasattr(self, "mlp_extractor"):
 
@@ -111,10 +77,10 @@ class LSTMDistilBertActorCriticPolicy(ActorCriticPolicy):
                 def forward_critic(self, features):
                     return features
 
-            self.mlp_extractor = IdentityMLP(distilbert_size)
+            self.mlp_extractor = IdentityMLP(embedding_size)
 
         self.lstm = nn.LSTM(
-            input_size=distilbert_size,
+            input_size=embedding_size,
             hidden_size=lstm_hidden_size,
             num_layers=lstm_num_layers,
             batch_first=True,
@@ -137,16 +103,15 @@ class LSTMDistilBertActorCriticPolicy(ActorCriticPolicy):
         self.lstm_cell_state = None
 
     def extract_features(self, obs):
-        """Extract features using only the DistilBERT feature extractor."""
+        """Extract features (pass-through for embeddings)."""
         preprocessed_obs = (
-            self.obs_to_tensor(obs)[0] if not isinstance(obs, dict) else obs
+            self.obs_to_tensor(obs)[0] if not isinstance(obs, torch.Tensor) else obs
         )
         return self.features_extractor(preprocessed_obs)
 
     def _get_latent(self, obs):
         """
-        Override to bypass mlp_extractor and use LSTM directly.
-        This is called by parent class methods we're not overriding.
+        Override to use LSTM directly on embeddings.
         """
         features = self.extract_features(obs)
         batch_size = features.shape[0]

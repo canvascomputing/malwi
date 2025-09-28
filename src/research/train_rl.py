@@ -10,7 +10,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from research.rl.package_environment import PackageEnv
+from research.rl.embedding_environment import EmbeddingPackageEnv
 from research.rl.policy import LSTMDistilBertActorCriticPolicy
+from research.rl.embedding_policy import LSTMEmbeddingPolicy
 from common.messaging import (
     configure_messaging,
     info,
@@ -19,6 +21,117 @@ from common.messaging import (
     error,
     progress,
 )
+
+
+def load_and_organize_embeddings(
+    csv_path: str,
+    test_split: float = 0.0,
+    random_seed: int = 42,
+) -> Tuple[
+    Dict[str, List[np.ndarray]],
+    List[np.ndarray],
+    List[int],
+    Dict[str, List[np.ndarray]],
+    List[np.ndarray],
+    List[int],
+]:
+    """
+    Load CSV with embeddings and organize into malicious packages and benign samples.
+
+    Args:
+        csv_path: Path to training CSV with embeddings
+        test_split: Fraction of data to hold out for testing (0.0-1.0)
+        random_seed: Random seed for reproducible splits
+
+    Returns:
+        - train_malicious_packages: Training set malicious package embeddings
+        - train_benign_embeddings: Training set benign embeddings
+        - train_benign_labels: Training set benign labels
+        - test_malicious_packages: Test set malicious package embeddings
+        - test_benign_embeddings: Test set benign embeddings
+        - test_benign_labels: Test set benign labels
+    """
+    df = pd.read_csv(csv_path)
+
+    if "embedding" not in df.columns or "label" not in df.columns:
+        raise ValueError("CSV must contain 'embedding' and 'label' columns")
+
+    if "package" not in df.columns:
+        warning("'package' column not found, using empty package names")
+        df["package"] = ""
+
+    malicious_packages = defaultdict(list)
+    benign_embeddings = []
+    benign_labels = []
+
+    for idx, row in df.iterrows():
+        embedding_str = row["embedding"]
+        label_data = row["label"]
+        package_data = row.get("package", "")
+
+        if (
+            pd.isna(embedding_str)
+            or not isinstance(embedding_str, str)
+            or not embedding_str.strip()
+        ):
+            continue
+
+        embedding = np.fromstring(embedding_str, sep=",", dtype=np.float32)
+
+        if label_data == "malicious":
+            package_name = (
+                package_data
+                if package_data and not pd.isna(package_data)
+                else "unknown"
+            )
+            malicious_packages[package_name].append(embedding)
+        elif label_data == "benign":
+            benign_embeddings.append(embedding)
+            benign_labels.append(0)
+
+    if test_split <= 0.0:
+        return (
+            dict(malicious_packages),
+            benign_embeddings,
+            benign_labels,
+            {},
+            [],
+            [],
+        )
+
+    rng = np.random.RandomState(random_seed)
+
+    package_names = list(malicious_packages.keys())
+    rng.shuffle(package_names)
+
+    n_test_packages = max(1, int(len(package_names) * test_split))
+    test_package_names = package_names[:n_test_packages]
+    train_package_names = package_names[n_test_packages:]
+
+    train_malicious = {pkg: malicious_packages[pkg] for pkg in train_package_names}
+    test_malicious = {pkg: malicious_packages[pkg] for pkg in test_package_names}
+
+    n_test_benign = max(1, int(len(benign_embeddings) * test_split))
+    benign_indices = np.arange(len(benign_embeddings))
+    rng.shuffle(benign_indices)
+
+    test_benign_indices = benign_indices[:n_test_benign]
+    train_benign_indices = benign_indices[n_test_benign:]
+
+    train_benign = [benign_embeddings[i] for i in train_benign_indices]
+    train_benign_labels = [benign_labels[i] for i in train_benign_indices]
+
+    test_benign = [benign_embeddings[i] for i in test_benign_indices]
+    test_benign_labels = [benign_labels[i] for i in test_benign_indices]
+
+    return (
+        train_malicious,
+        train_benign,
+        train_benign_labels,
+        test_malicious,
+        test_benign,
+        test_benign_labels,
+    )
 
 
 def load_and_organize_data(

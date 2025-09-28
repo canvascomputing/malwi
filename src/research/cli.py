@@ -34,6 +34,7 @@ class Step(Enum):
     DOWNLOAD = "download"
     PREPROCESS = "preprocess"
     TRAIN = "train"
+    PREPROCESS_RL = "preprocess_rl"
     TRAIN_RL = "train_rl"
 
 
@@ -533,6 +534,8 @@ Examples:
             return self._preprocess_data(args)
         elif step == Step.TRAIN.value:
             return self._train_model(args)
+        elif step == Step.PREPROCESS_RL.value:
+            return self._preprocess_rl_step(args)
         elif step == Step.TRAIN_RL.value:
             return self._train_rl_step(args)
         else:
@@ -902,20 +905,23 @@ Examples:
             error(f"Unexpected error during training: {e}")
             return False
 
-    def _train_rl_step(self, args: argparse.Namespace) -> bool:
+    def _preprocess_rl_step(self, args: argparse.Namespace) -> bool:
         """
-        Execute RL training as a pipeline step.
+        Preprocess data for RL training by computing DistilBERT embeddings.
 
         Args:
             args: Parsed command line arguments
 
         Returns:
-            True if training succeeded, False otherwise
+            True if preprocessing succeeded, False otherwise
         """
-        info("🤖 Training Reinforcement Learning Agent")
+        info("🔄 Preprocessing data for RL training")
 
         try:
-            from research.train_rl import train_rl_agent
+            import shutil
+            import pandas as pd
+            import torch
+            from transformers import AutoTokenizer, DistilBertModel
 
             # Check if processed data exists
             training_csv = "training_processed.csv"
@@ -935,11 +941,150 @@ Examples:
 
             success(f"DistilBERT model found: {distilbert_path}")
 
+            # Output file
+            output_csv = "training_rl_embeddings.csv"
+
+            # Check if output already exists
+            if Path(output_csv).exists():
+                warning(f"Output file already exists: {output_csv}")
+                warning("   Will overwrite existing file")
+
+            # Load DistilBERT model and tokenizer
+            progress("Loading DistilBERT model and tokenizer...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            info(f"Using device: {device}")
+
+            tokenizer = AutoTokenizer.from_pretrained(str(distilbert_path))
+            model = DistilBertModel.from_pretrained(str(distilbert_path))
+            model.to(device)
+            model.eval()
+
+            success(f"Model loaded with hidden size: {model.config.hidden_size}")
+
+            # Load CSV
+            progress(f"Loading training data from {training_csv}...")
+            df = pd.read_csv(training_csv)
+
+            if "tokens" not in df.columns or "label" not in df.columns:
+                error("CSV must contain 'tokens' and 'label' columns")
+                return False
+
+            info(f"Loaded {len(df)} samples")
+
+            # Compute embeddings
+            progress("Computing DistilBERT embeddings...")
+            embeddings = []
+            batch_size = 32
+
+            for i in range(0, len(df), batch_size):
+                batch_tokens = df["tokens"].iloc[i : i + batch_size].tolist()
+
+                # Tokenize batch
+                encoded = tokenizer(
+                    batch_tokens,
+                    return_tensors="pt",
+                    truncation=True,
+                    padding="max_length",
+                    max_length=512,
+                )
+
+                # Move to device
+                input_ids = encoded["input_ids"].to(device)
+                attention_mask = encoded["attention_mask"].to(device)
+
+                # Get embeddings
+                with torch.no_grad():
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+                    cls_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+
+                # Store as string representations
+                for emb in cls_embeddings:
+                    embeddings.append(",".join(map(str, emb)))
+
+                if (i + batch_size) % 1000 == 0:
+                    info(
+                        f"   Processed {min(i + batch_size, len(df))}/{len(df)} samples"
+                    )
+
+            success(f"Computed embeddings for {len(embeddings)} samples")
+
+            # Add embeddings column
+            df["embedding"] = embeddings
+
+            # Save to new CSV
+            progress(f"Saving embeddings to {output_csv}...")
+            df.to_csv(output_csv, index=False)
+
+            success(f"✅ RL preprocessing completed successfully!")
+            info(f"📁 Output saved to: {output_csv}")
+            info(f"📊 Total samples: {len(df)}")
+            info(
+                f"💾 File size: {Path(output_csv).stat().st_size / 1024 / 1024:.1f} MB"
+            )
+
+            return True
+
+        except Exception as e:
+            error(f"RL preprocessing failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
+
+    def _train_rl_step(self, args: argparse.Namespace) -> bool:
+        """
+        Execute RL training as a pipeline step.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        info("🤖 Training Reinforcement Learning Agent")
+
+        try:
+            from research.train_rl import train_rl_agent
+
+            # Check which training data exists
+            embedding_csv = "training_rl_embeddings.csv"
+            training_csv = "training_processed.csv"
+
+            use_embeddings = Path(embedding_csv).exists()
+
+            if use_embeddings:
+                training_csv = embedding_csv
+                success(f"🟢 Training CSV found: {training_csv}")
+                info("   Using pre-computed embeddings for fast training")
+            elif Path(training_csv).exists():
+                success(f"🟢 Training CSV found: {training_csv}")
+                warning(
+                    "   Using tokens (slower). Run 'preprocess_rl' step for faster training with pre-computed embeddings"
+                )
+            else:
+                error(f"Training CSV not found")
+                error("   Please run 'preprocess' step first to generate training data")
+                error("   Then optionally run 'preprocess_rl' for faster training")
+                return False
+
+            # Check if DistilBERT model exists (only needed without embeddings)
+            distilbert_path = Path("malwi_models")
+            if not use_embeddings and not distilbert_path.exists():
+                error(f"DistilBERT model not found: {distilbert_path}")
+                error("   Please run 'train' step first to train DistilBERT model")
+                return False
+
+            if not use_embeddings:
+                success(f"DistilBERT model found: {distilbert_path}")
+
             # Create args object for train_rl_agent with defaults
             class RLArgs:
                 def __init__(self):
                     self.training_csv = training_csv
-                    self.distilbert_model_path = str(distilbert_path)
+                    self.use_embeddings = use_embeddings
+                    self.distilbert_model_path = (
+                        str(distilbert_path) if distilbert_path.exists() else None
+                    )
                     self.tokenizer_path = str(
                         distilbert_path
                     )  # Tokenizer is in same dir as model
