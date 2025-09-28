@@ -243,27 +243,31 @@ This ensures that:
 - **Training Data**: Requires `malwi-samples` repository cloned in parent directory
 - **RL Training**: `src/research/rl/` - Reinforcement Learning for early exit decisions using PPO
 
-## Reinforcement Learning (Early Exit)
+## Reinforcement Learning (Sequential Early Exit)
 
-malwi includes an optional RL layer built on top of the DistilBERT classifier that enables "early exit" decisions for faster inference:
+malwi includes an optional RL layer built on top of the DistilBERT classifier that enables "early exit" decisions when analyzing malicious packages:
 
 ### Architecture
-- **Environment**: `src/research/rl/environment.py` - Gymnasium-compatible environment with chunk-based code processing
-- **Policy**: `src/research/rl/policy.py` - Custom SB3 policy using frozen DistilBERT for feature extraction
+- **Environment**: `src/research/rl/package_environment.py` - Processes full code samples (one per step)
+- **Policy**: `src/research/rl/policy.py` - LSTM policy with frozen DistilBERT feature extraction
 - **Training**: `src/research/train_rl.py` - PPO-based training with package-aware sampling
 - **Evaluation**: `src/research/rl/evaluate.py` - Evaluation script for trained RL agents
 
 ### Key Features
-- **Chunk Processing**: Processes code in 128-token chunks, max 32 chunks per sample
+- **Sequential Sample Processing**: Agent sees multiple code samples from same malicious package sequentially
+- **LSTM Memory**: Remembers previous samples when making decisions about new ones
+- **No Chunking**: DistilBERT processes full samples (max 512 tokens) with internal windowing
 - **Action Space**: 3 discrete actions:
   - `CLASSIFY_BENIGN (0)` - Predict benign and stop
   - `CLASSIFY_MALICIOUS (1)` - Predict malicious and stop
-  - `CONTINUE (2)` - Read next chunk before deciding
+  - `CONTINUE (2)` - Read next sample from package
 - **Reward Structure**:
   - +10 for correct classification
   - -10 for incorrect classification
-  - -0.1 per continuation step (encourages early stopping)
-- **Package-Based Training**: Groups malicious files by package, samples varying numbers of benign files per package
+  - -0.1 per sample read (encourages early stopping)
+- **Package-Based Training**:
+  - Malicious: All samples from package processed together
+  - Benign: Random individual samples (processed to completion)
 - **Frozen DistilBERT**: Uses pre-trained DistilBERT [CLS] embeddings as frozen feature extractor
 
 ### Training

@@ -9,8 +9,8 @@ from transformers import AutoTokenizer
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from research.rl.environment import CodeSampleEnv
-from research.rl.policy import DistilBertActorCriticPolicy
+from research.rl.package_environment import PackageEnv
+from research.rl.policy import LSTMDistilBertActorCriticPolicy
 from common.messaging import (
     configure_messaging,
     info,
@@ -23,14 +23,31 @@ from common.messaging import (
 
 def load_and_organize_data(
     csv_path: str,
-) -> Tuple[Dict[str, List[str]], List[str], List[int]]:
+    test_split: float = 0.0,
+    random_seed: int = 42,
+) -> Tuple[
+    Dict[str, List[str]],
+    List[str],
+    List[int],
+    Dict[str, List[str]],
+    List[str],
+    List[int],
+]:
     """
-    Load CSV and organize into malicious packages and benign samples.
+    Load CSV and organize into malicious packages and benign samples with train/test split.
+
+    Args:
+        csv_path: Path to training CSV
+        test_split: Fraction of data to hold out for testing (0.0-1.0)
+        random_seed: Random seed for reproducible splits
 
     Returns:
-        - malicious_packages: Dict mapping package names to list of token strings
-        - benign_samples: List of benign token strings
-        - benign_labels: List of labels (all 0) for benign samples
+        - train_malicious_packages: Training set malicious packages
+        - train_benign_samples: Training set benign samples
+        - train_benign_labels: Training set benign labels
+        - test_malicious_packages: Test set malicious packages (empty if test_split=0)
+        - test_benign_samples: Test set benign samples
+        - test_benign_labels: Test set benign labels
     """
     df = pd.read_csv(csv_path)
 
@@ -70,7 +87,49 @@ def load_and_organize_data(
             benign_samples.append(tokens)
             benign_labels.append(0)
 
-    return dict(malicious_packages), benign_samples, benign_labels
+    if test_split <= 0.0:
+        return (
+            dict(malicious_packages),
+            benign_samples,
+            benign_labels,
+            {},
+            [],
+            [],
+        )
+
+    rng = np.random.RandomState(random_seed)
+
+    package_names = list(malicious_packages.keys())
+    rng.shuffle(package_names)
+
+    n_test_packages = max(1, int(len(package_names) * test_split))
+    test_package_names = package_names[:n_test_packages]
+    train_package_names = package_names[n_test_packages:]
+
+    train_malicious = {pkg: malicious_packages[pkg] for pkg in train_package_names}
+    test_malicious = {pkg: malicious_packages[pkg] for pkg in test_package_names}
+
+    n_test_benign = max(1, int(len(benign_samples) * test_split))
+    benign_indices = np.arange(len(benign_samples))
+    rng.shuffle(benign_indices)
+
+    test_benign_indices = benign_indices[:n_test_benign]
+    train_benign_indices = benign_indices[n_test_benign:]
+
+    train_benign = [benign_samples[i] for i in train_benign_indices]
+    train_benign_labels = [benign_labels[i] for i in train_benign_indices]
+
+    test_benign = [benign_samples[i] for i in test_benign_indices]
+    test_benign_labels = [benign_labels[i] for i in test_benign_indices]
+
+    return (
+        train_malicious,
+        train_benign,
+        train_benign_labels,
+        test_malicious,
+        test_benign,
+        test_benign_labels,
+    )
 
 
 def make_env(code_sample: str, label: int, tokenizer, device):
@@ -95,12 +154,23 @@ def train_rl_agent(args):
     success(f"Tokenizer loaded with vocab size: {len(tokenizer)}")
 
     info(f"Loading training data from {args.training_csv}...")
-    malicious_packages, benign_samples, benign_labels = load_and_organize_data(
-        args.training_csv
+    (
+        malicious_packages,
+        benign_samples,
+        benign_labels,
+        test_malicious_packages,
+        test_benign_samples,
+        test_benign_labels,
+    ) = load_and_organize_data(
+        args.training_csv, test_split=args.test_split, random_seed=args.seed
     )
 
-    info(f"Loaded {len(malicious_packages)} malicious packages")
-    info(f"Loaded {len(benign_samples)} benign samples")
+    info(f"Loaded {len(malicious_packages)} malicious packages (training)")
+    info(f"Loaded {len(benign_samples)} benign samples (training)")
+
+    if args.test_split > 0:
+        info(f"Loaded {len(test_malicious_packages)} malicious packages (test)")
+        info(f"Loaded {len(test_benign_samples)} benign samples (test)")
 
     total_malicious_files = sum(len(files) for files in malicious_packages.values())
     info(f"Total malicious files across all packages: {total_malicious_files}")
@@ -116,19 +186,24 @@ def train_rl_agent(args):
         else f"Malicious packages: {package_names}"
     )
 
-    info(f"Creating PPO model with DistilBERT policy...")
+    info(f"Creating PPO model with LSTM DistilBERT policy...")
 
-    dummy_env = CodeSampleEnv(
-        code_sample=benign_samples[0], label=0, tokenizer=tokenizer, device=device
+    dummy_env = PackageEnv(
+        code_samples=[benign_samples[0]],
+        label=0,
+        tokenizer=tokenizer,
+        device=device,
+        max_length=512,
     )
     vec_env = DummyVecEnv([lambda: dummy_env])
 
     model = PPO(
-        DistilBertActorCriticPolicy,
+        LSTMDistilBertActorCriticPolicy,
         vec_env,
         policy_kwargs={
             "distilbert_model_path": args.distilbert_model_path,
-            "net_arch": [256, 256],
+            "lstm_hidden_size": 256,
+            "lstm_num_layers": 1,
         },
         learning_rate=args.learning_rate,
         n_steps=args.n_steps,
@@ -163,22 +238,31 @@ def train_rl_agent(args):
         for pkg_idx, package_name in enumerate(shuffled_packages):
             package_files = malicious_packages[package_name]
 
-            info(f"  📦 Package {pkg_idx + 1}/{len(shuffled_packages)}: {package_name} ({len(package_files)} malicious files)")
+            info(
+                f"  📦 Package {pkg_idx + 1}/{len(shuffled_packages)}: {package_name} ({len(package_files)} samples)"
+            )
 
-            for file_idx, file_tokens in enumerate(package_files):
-                info(f"     🔴 Training on malicious file {file_idx + 1}/{len(package_files)}")
-                env = CodeSampleEnv(
-                    code_sample=file_tokens, label=1, tokenizer=tokenizer, device=device
-                )
-                vec_env = DummyVecEnv([lambda e=env: e])
-                model.set_env(vec_env)
+            info(
+                f"     🔴 Training on malicious package (all {len(package_files)} samples collectively)"
+            )
+            env = PackageEnv(
+                code_samples=package_files,
+                label=1,
+                tokenizer=tokenizer,
+                device=device,
+                max_length=512,
+            )
+            vec_env = DummyVecEnv([lambda e=env: e])
+            model.set_env(vec_env)
 
-                model.learn(
-                    total_timesteps=args.n_steps,
-                    reset_num_timesteps=False,
-                    progress_bar=False,
-                )
-                total_timesteps += args.n_steps
+            model.policy.reset_lstm_states()
+
+            model.learn(
+                total_timesteps=args.n_steps,
+                reset_num_timesteps=False,
+                progress_bar=False,
+            )
+            total_timesteps += args.n_steps
 
             n_benign = rng.randint(args.min_benign_samples, args.max_benign_samples + 1)
             selected_benign_indices = rng.choice(
@@ -190,12 +274,15 @@ def train_rl_agent(args):
             info(f"     🟢 Training on {n_benign} benign samples")
 
             for benign_count, benign_idx in enumerate(selected_benign_indices):
+                model.policy.reset_lstm_states()
+
                 info(f"        Benign sample {benign_count + 1}/{n_benign}")
-                env = CodeSampleEnv(
-                    code_sample=benign_samples[benign_idx],
+                env = PackageEnv(
+                    code_samples=[benign_samples[benign_idx]],
                     label=0,
                     tokenizer=tokenizer,
                     device=device,
+                    max_length=512,
                 )
                 vec_env = DummyVecEnv([lambda e=env: e])
                 model.set_env(vec_env)
@@ -219,6 +306,124 @@ def train_rl_agent(args):
     model.save(model_save_path)
     success(f"PPO model saved to {model_save_path}")
 
+    test_metrics = {}
+    if args.test_split > 0 and (
+        len(test_malicious_packages) > 0 or len(test_benign_samples) > 0
+    ):
+        progress("Evaluating on test set...")
+
+        correct = 0
+        total = 0
+        true_positives = 0
+        false_positives = 0
+        true_negatives = 0
+        false_negatives = 0
+
+        for package_name, package_files in test_malicious_packages.items():
+            env = PackageEnv(
+                code_samples=package_files,
+                label=1,
+                tokenizer=tokenizer,
+                device=device,
+                max_length=512,
+            )
+            vec_env = DummyVecEnv([lambda e=env: e])
+            model.set_env(vec_env)
+
+            model.policy.reset_lstm_states()
+
+            obs, _ = env.reset()
+            done = False
+            prediction = None
+
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info_dict = env.step(action)
+                done = terminated or truncated
+
+                if "prediction" in info_dict:
+                    prediction = info_dict["prediction"]
+
+            if prediction is not None:
+                total += 1
+                if prediction == 1:
+                    correct += 1
+                    true_positives += 1
+                else:
+                    false_negatives += 1
+
+        for benign_idx in range(len(test_benign_samples)):
+            env = PackageEnv(
+                code_samples=[test_benign_samples[benign_idx]],
+                label=0,
+                tokenizer=tokenizer,
+                device=device,
+                max_length=512,
+            )
+            vec_env = DummyVecEnv([lambda e=env: e])
+            model.set_env(vec_env)
+
+            model.policy.reset_lstm_states()
+
+            obs, _ = env.reset()
+            done = False
+            prediction = None
+
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info_dict = env.step(action)
+                done = terminated or truncated
+
+                if "prediction" in info_dict:
+                    prediction = info_dict["prediction"]
+
+            if prediction is not None:
+                total += 1
+                if prediction == 0:
+                    correct += 1
+                    true_negatives += 1
+                else:
+                    false_positives += 1
+
+        accuracy = correct / total if total > 0 else 0.0
+        precision = (
+            true_positives / (true_positives + false_positives)
+            if (true_positives + false_positives) > 0
+            else 0.0
+        )
+        recall = (
+            true_positives / (true_positives + false_negatives)
+            if (true_positives + false_negatives) > 0
+            else 0.0
+        )
+        f1 = (
+            2 * (precision * recall) / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+
+        test_metrics = {
+            "test_accuracy": accuracy,
+            "test_precision": precision,
+            "test_recall": recall,
+            "test_f1": f1,
+            "test_true_positives": true_positives,
+            "test_false_positives": false_positives,
+            "test_true_negatives": true_negatives,
+            "test_false_negatives": false_negatives,
+            "test_total": total,
+        }
+
+        success(f"Test Set Results:")
+        info(f"  Accuracy: {accuracy:.4f}")
+        info(f"  Precision: {precision:.4f}")
+        info(f"  Recall: {recall:.4f}")
+        info(f"  F1 Score: {f1:.4f}")
+        info(f"  True Positives: {true_positives}")
+        info(f"  False Positives: {false_positives}")
+        info(f"  True Negatives: {true_negatives}")
+        info(f"  False Negatives: {false_negatives}")
+
     metrics = {
         "epochs": args.epochs,
         "malicious_packages": len(malicious_packages),
@@ -232,6 +437,7 @@ def train_rl_agent(args):
         "gamma": args.gamma,
         "min_benign_samples": args.min_benign_samples,
         "max_benign_samples": args.max_benign_samples,
+        **test_metrics,
     }
 
     metrics_path = output_path / "training_metrics.txt"
@@ -306,6 +512,18 @@ if __name__ == "__main__":
         help="Number of epochs when optimizing the surrogate loss",
     )
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument(
+        "--test-split",
+        type=float,
+        default=0.2,
+        help="Fraction of data to hold out for testing (default: 0.2 = 20%)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible train/test splits",
+    )
 
     args = parser.parse_args()
     configure_messaging(quiet=False)

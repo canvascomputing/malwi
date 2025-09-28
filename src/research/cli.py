@@ -390,6 +390,13 @@ Examples:
             help="Random seed for reproducibility (default: 42)",
         )
 
+        train_rl_parser.add_argument(
+            "--test-split",
+            type=float,
+            default=0.2,
+            help="Fraction of data to hold out for testing (default: 0.2 = 20%%)",
+        )
+
         # Eval subcommand
         eval_parser = subparsers.add_parser(
             "eval",
@@ -933,10 +940,14 @@ Examples:
                 def __init__(self):
                     self.training_csv = training_csv
                     self.distilbert_model_path = str(distilbert_path)
-                    self.tokenizer_path = str(distilbert_path)  # Tokenizer is in same dir as model
+                    self.tokenizer_path = str(
+                        distilbert_path
+                    )  # Tokenizer is in same dir as model
                     self.output_path = "malwi_rl_models"
                     self.epochs = int(os.environ.get("RL_EPOCHS", "3"))
-                    self.learning_rate = float(os.environ.get("RL_LEARNING_RATE", "3e-4"))
+                    self.learning_rate = float(
+                        os.environ.get("RL_LEARNING_RATE", "3e-4")
+                    )
                     self.n_steps = int(os.environ.get("RL_N_STEPS", "2048"))
                     self.batch_size = int(os.environ.get("RL_BATCH_SIZE", "64"))
                     self.ppo_epochs = int(os.environ.get("RL_PPO_EPOCHS", "10"))
@@ -945,6 +956,7 @@ Examples:
                     self.max_benign_samples = int(os.environ.get("RL_MAX_BENIGN", "5"))
                     self.save_freq = int(os.environ.get("RL_SAVE_FREQ", "10"))
                     self.seed = int(os.environ.get("RL_SEED", "42"))
+                    self.test_split = float(os.environ.get("RL_TEST_SPLIT", "0.2"))
 
             rl_args = RLArgs()
 
@@ -959,10 +971,14 @@ Examples:
             info(f"   • Batch size: {rl_args.batch_size}")
             info(f"   • PPO epochs: {rl_args.ppo_epochs}")
             info(f"   • Gamma: {rl_args.gamma}")
-            info(f"   • Benign samples: {rl_args.min_benign_samples}-{rl_args.max_benign_samples} per package")
+            info(
+                f"   • Benign samples: {rl_args.min_benign_samples}-{rl_args.max_benign_samples} per package"
+            )
             info(f"   • Save frequency: every {rl_args.save_freq} packages")
             info(f"   • Random seed: {rl_args.seed}")
-            info("💡 Tip: Configure via environment variables (RL_EPOCHS, RL_LEARNING_RATE, etc.)")
+            info(
+                "💡 Tip: Configure via environment variables (RL_EPOCHS, RL_LEARNING_RATE, etc.)"
+            )
 
             # Train the RL agent
             progress("Starting RL agent training...")
@@ -977,6 +993,7 @@ Examples:
         except Exception as e:
             error(f"RL training failed: {e}")
             import traceback
+
             traceback.print_exc()
             return False
 
