@@ -163,7 +163,10 @@ def train_rl_agent(args):
         for pkg_idx, package_name in enumerate(shuffled_packages):
             package_files = malicious_packages[package_name]
 
-            for file_tokens in package_files:
+            info(f"  📦 Package {pkg_idx + 1}/{len(shuffled_packages)}: {package_name} ({len(package_files)} malicious files)")
+
+            for file_idx, file_tokens in enumerate(package_files):
+                info(f"     🔴 Training on malicious file {file_idx + 1}/{len(package_files)}")
                 env = CodeSampleEnv(
                     code_sample=file_tokens, label=1, tokenizer=tokenizer, device=device
                 )
@@ -184,7 +187,10 @@ def train_rl_agent(args):
                 replace=False,
             )
 
-            for benign_idx in selected_benign_indices:
+            info(f"     🟢 Training on {n_benign} benign samples")
+
+            for benign_count, benign_idx in enumerate(selected_benign_indices):
+                info(f"        Benign sample {benign_count + 1}/{n_benign}")
                 env = CodeSampleEnv(
                     code_sample=benign_samples[benign_idx],
                     label=0,
@@ -201,10 +207,7 @@ def train_rl_agent(args):
                 )
                 total_timesteps += args.n_steps
 
-            if (pkg_idx + 1) % 10 == 0:
-                info(
-                    f"  Package {pkg_idx + 1}/{len(shuffled_packages)} - Total timesteps: {total_timesteps}"
-                )
+            info(f"     ✓ Package complete - Total timesteps: {total_timesteps:,}")
 
         success(f"Epoch {epoch + 1} completed - Total timesteps: {total_timesteps}")
 
