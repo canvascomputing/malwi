@@ -918,10 +918,7 @@ Examples:
         info("🔄 Preprocessing data for RL training")
 
         try:
-            import shutil
-            import pandas as pd
-            import torch
-            from transformers import AutoTokenizer, DistilBertModel
+            from research.preprocess_rl import preprocess_rl_embeddings
 
             # Check if processed data exists
             training_csv = "training_processed.csv"
@@ -930,7 +927,7 @@ Examples:
                 error("   Please run 'preprocess' step first to generate training data")
                 return False
 
-            success(f"Training CSV found: {training_csv}")
+            success(f"🟢 Training CSV found: {training_csv}")
 
             # Check if DistilBERT model exists
             distilbert_path = Path("malwi_models")
@@ -939,7 +936,7 @@ Examples:
                 error("   Please run 'train' step first to train DistilBERT model")
                 return False
 
-            success(f"DistilBERT model found: {distilbert_path}")
+            success(f"🟢 DistilBERT model found: {distilbert_path}")
 
             # Output file
             output_csv = "training_rl_embeddings.csv"
@@ -949,80 +946,13 @@ Examples:
                 warning(f"Output file already exists: {output_csv}")
                 warning("   Will overwrite existing file")
 
-            # Load DistilBERT model and tokenizer
-            progress("Loading DistilBERT model and tokenizer...")
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            info(f"Using device: {device}")
-
-            tokenizer = AutoTokenizer.from_pretrained(str(distilbert_path))
-            model = DistilBertModel.from_pretrained(str(distilbert_path))
-            model.to(device)
-            model.eval()
-
-            success(f"Model loaded with hidden size: {model.config.hidden_size}")
-
-            # Load CSV
-            progress(f"Loading training data from {training_csv}...")
-            df = pd.read_csv(training_csv)
-
-            if "tokens" not in df.columns or "label" not in df.columns:
-                error("CSV must contain 'tokens' and 'label' columns")
-                return False
-
-            info(f"Loaded {len(df)} samples")
-
-            # Compute embeddings
-            progress("Computing DistilBERT embeddings...")
-            embeddings = []
-            batch_size = 32
-
-            for i in range(0, len(df), batch_size):
-                batch_tokens = df["tokens"].iloc[i : i + batch_size].tolist()
-
-                # Tokenize batch
-                encoded = tokenizer(
-                    batch_tokens,
-                    return_tensors="pt",
-                    truncation=True,
-                    padding="max_length",
-                    max_length=512,
-                )
-
-                # Move to device
-                input_ids = encoded["input_ids"].to(device)
-                attention_mask = encoded["attention_mask"].to(device)
-
-                # Get embeddings
-                with torch.no_grad():
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                    cls_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-
-                # Store as string representations
-                for emb in cls_embeddings:
-                    embeddings.append(",".join(map(str, emb)))
-
-                if (i + batch_size) % 1000 == 0:
-                    info(
-                        f"   Processed {min(i + batch_size, len(df))}/{len(df)} samples"
-                    )
-
-            success(f"Computed embeddings for {len(embeddings)} samples")
-
-            # Add embeddings column
-            df["embedding"] = embeddings
-
-            # Save to new CSV
-            progress(f"Saving embeddings to {output_csv}...")
-            df.to_csv(output_csv, index=False)
-
-            success(f"✅ RL preprocessing completed successfully!")
-            info(f"📁 Output saved to: {output_csv}")
-            info(f"📊 Total samples: {len(df)}")
-            info(
-                f"💾 File size: {Path(output_csv).stat().st_size / 1024 / 1024:.1f} MB"
+            # Run preprocessing
+            return preprocess_rl_embeddings(
+                input_csv=training_csv,
+                output_csv=output_csv,
+                distilbert_model_path=str(distilbert_path),
+                batch_size=32,
             )
-
-            return True
 
         except Exception as e:
             error(f"RL preprocessing failed: {e}")

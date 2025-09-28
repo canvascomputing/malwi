@@ -85,7 +85,7 @@ class TestRLTrainingSampling:
         Path(temp_file_path).unlink()
 
     def test_package_grouping_for_training(self, sample_training_data):
-        malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+        malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
             sample_training_data
         )
 
@@ -96,7 +96,7 @@ class TestRLTrainingSampling:
         assert len(malicious_packages["malware_pkg_3"]) == 1
 
     def test_all_malicious_files_in_same_package_together(self, sample_training_data):
-        malicious_packages, _, _ = load_and_organize_data(sample_training_data)
+        malicious_packages, _, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         pkg1_files = malicious_packages["malware_pkg_1"]
         assert "MAL_CODE_1A" in pkg1_files
@@ -108,7 +108,7 @@ class TestRLTrainingSampling:
         assert "MAL_CODE_2B" in pkg2_files
 
     def test_benign_samples_available_for_random_selection(self, sample_training_data):
-        _, benign_samples, benign_labels = load_and_organize_data(sample_training_data)
+        _, benign_samples, benign_labels, _, _, _ = load_and_organize_data(sample_training_data)
 
         assert len(benign_samples) == 10
 
@@ -117,7 +117,7 @@ class TestRLTrainingSampling:
             assert expected in benign_samples
 
     def test_varying_benign_sample_count_simulation(self, sample_training_data):
-        _, benign_samples, _ = load_and_organize_data(sample_training_data)
+        _, benign_samples, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         rng = np.random.RandomState(42)
 
@@ -136,7 +136,7 @@ class TestRLTrainingSampling:
         assert len(unique_counts) > 1
 
     def test_random_benign_sampling_without_replacement(self, sample_training_data):
-        _, benign_samples, _ = load_and_organize_data(sample_training_data)
+        _, benign_samples, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         rng = np.random.RandomState(42)
         n_benign = 5
@@ -149,7 +149,7 @@ class TestRLTrainingSampling:
         assert len(selected_samples) == n_benign
 
     def test_benign_sampling_handles_edge_cases(self, sample_training_data):
-        _, benign_samples, _ = load_and_organize_data(sample_training_data)
+        _, benign_samples, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         rng = np.random.RandomState(42)
 
@@ -161,7 +161,7 @@ class TestRLTrainingSampling:
         assert len(selected_indices) == len(benign_samples)
 
     def test_epoch_based_package_shuffling(self, sample_training_data):
-        malicious_packages, _, _ = load_and_organize_data(sample_training_data)
+        malicious_packages, _, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         package_names = list(malicious_packages.keys())
 
@@ -182,7 +182,7 @@ class TestRLTrainingSampling:
         assert set(shuffled_b) == set(package_names)
 
     def test_training_loop_structure_simulation(self, sample_training_data):
-        malicious_packages, benign_samples, _ = load_and_organize_data(
+        malicious_packages, benign_samples, _, _, _, _ = load_and_organize_data(
             sample_training_data
         )
 
@@ -225,7 +225,7 @@ class TestRLTrainingSampling:
         assert total_benign_episodes > 0
 
     def test_package_processing_order_varies_across_epochs(self, sample_training_data):
-        malicious_packages, _, _ = load_and_organize_data(sample_training_data)
+        malicious_packages, _, _, _, _, _ = load_and_organize_data(sample_training_data)
 
         package_names = list(malicious_packages.keys())
 
@@ -239,7 +239,7 @@ class TestRLTrainingSampling:
         assert len(unique_orders) > 1
 
     def test_labels_consistency(self, sample_training_data):
-        malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+        malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
             sample_training_data
         )
 

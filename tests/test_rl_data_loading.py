@@ -53,9 +53,14 @@ class TestRLDataLoading:
         Path(temp_file_path).unlink()
 
     def test_load_and_organize_basic(self, sample_csv_with_packages):
-        malicious_packages, benign_samples, benign_labels = load_and_organize_data(
-            sample_csv_with_packages
-        )
+        (
+            malicious_packages,
+            benign_samples,
+            benign_labels,
+            _,
+            _,
+            _,
+        ) = load_and_organize_data(sample_csv_with_packages)
 
         assert len(malicious_packages) == 2
         assert len(benign_samples) == 3
@@ -64,7 +69,7 @@ class TestRLDataLoading:
         assert all(label == 0 for label in benign_labels)
 
     def test_malicious_packages_grouped_correctly(self, sample_csv_with_packages):
-        malicious_packages, _, _ = load_and_organize_data(sample_csv_with_packages)
+        malicious_packages, _, _, _, _, _ = load_and_organize_data(sample_csv_with_packages)
 
         assert "package_1" in malicious_packages
         assert "package_2" in malicious_packages
@@ -77,7 +82,7 @@ class TestRLDataLoading:
         assert "LOAD_CONST baz" in malicious_packages["package_2"]
 
     def test_benign_samples_loaded_correctly(self, sample_csv_with_packages):
-        _, benign_samples, benign_labels = load_and_organize_data(
+        _, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
             sample_csv_with_packages
         )
 
@@ -102,7 +107,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
                 temp_file_path
             )
 
@@ -142,7 +147,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
                 temp_file_path
             )
 
@@ -171,7 +176,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
                 temp_file_path
             )
 
@@ -197,7 +202,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels = load_and_organize_data(
+            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
                 temp_file_path
             )
 
@@ -223,7 +228,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, _, _ = load_and_organize_data(temp_file_path)
+            malicious_packages, _, _, _, _, _ = load_and_organize_data(temp_file_path)
 
             assert "unknown" in malicious_packages
             assert len(malicious_packages["unknown"]) == 2
@@ -264,7 +269,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, _, _ = load_and_organize_data(temp_file_path)
+            malicious_packages, _, _, _, _, _ = load_and_organize_data(temp_file_path)
 
             assert "package_1" in malicious_packages
             assert len(malicious_packages["package_1"]) == 2
@@ -333,7 +338,7 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, _, _ = load_and_organize_data(temp_file_path)
+            malicious_packages, _, _, _, _, _ = load_and_organize_data(temp_file_path)
 
             assert len(malicious_packages) == 3
             assert len(malicious_packages["package_1"]) == 1
