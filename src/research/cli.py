@@ -34,6 +34,7 @@ class Step(Enum):
     DOWNLOAD = "download"
     PREPROCESS = "preprocess"
     TRAIN = "train"
+    TRAIN_RL = "train_rl"
 
 
 class Language(Enum):
@@ -274,6 +275,121 @@ Examples:
             help="Programming language(s) to process (default: both)",
         )
 
+        # Train RL subcommand
+        train_rl_parser = subparsers.add_parser(
+            "train_rl",
+            help="Train reinforcement learning agent for early exit decisions",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Examples:
+  # Train RL agent with default settings
+  ./research train_rl training_processed.csv
+
+  # Train with custom parameters
+  ./research train_rl training_processed.csv --epochs 10 --n-steps 4096
+
+  # Train with different PPO hyperparameters
+  ./research train_rl training_processed.csv --learning-rate 1e-4 --batch-size 128
+            """,
+        )
+
+        train_rl_parser.add_argument(
+            "training_csv",
+            type=str,
+            help="Path to preprocessed training CSV file with package column",
+        )
+
+        train_rl_parser.add_argument(
+            "--distilbert-model-path",
+            type=str,
+            default="malwi_models",
+            help="Path to pretrained DistilBERT model (default: malwi_models)",
+        )
+
+        train_rl_parser.add_argument(
+            "--tokenizer-path",
+            type=str,
+            default="malwi_models",
+            help="Path to tokenizer (default: malwi_models)",
+        )
+
+        train_rl_parser.add_argument(
+            "--output-path",
+            type=str,
+            default="malwi_rl_models",
+            help="Output directory for RL models (default: malwi_rl_models)",
+        )
+
+        train_rl_parser.add_argument(
+            "--epochs",
+            type=int,
+            default=3,
+            help="Number of training epochs (default: 3)",
+        )
+
+        train_rl_parser.add_argument(
+            "--learning-rate",
+            type=float,
+            default=3e-4,
+            help="Learning rate for PPO (default: 3e-4)",
+        )
+
+        train_rl_parser.add_argument(
+            "--n-steps",
+            type=int,
+            default=2048,
+            help="Number of steps per PPO update (default: 2048)",
+        )
+
+        train_rl_parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=64,
+            help="Batch size for PPO (default: 64)",
+        )
+
+        train_rl_parser.add_argument(
+            "--ppo-epochs",
+            type=int,
+            default=10,
+            help="Number of PPO optimization epochs per update (default: 10)",
+        )
+
+        train_rl_parser.add_argument(
+            "--gamma",
+            type=float,
+            default=0.99,
+            help="Discount factor for rewards (default: 0.99)",
+        )
+
+        train_rl_parser.add_argument(
+            "--min-benign-samples",
+            type=int,
+            default=1,
+            help="Minimum benign samples per malicious package (default: 1)",
+        )
+
+        train_rl_parser.add_argument(
+            "--max-benign-samples",
+            type=int,
+            default=5,
+            help="Maximum benign samples per malicious package (default: 5)",
+        )
+
+        train_rl_parser.add_argument(
+            "--save-freq",
+            type=int,
+            default=10,
+            help="Save model every N packages (default: 10)",
+        )
+
+        train_rl_parser.add_argument(
+            "--seed",
+            type=int,
+            default=42,
+            help="Random seed for reproducibility (default: 42)",
+        )
+
         # Eval subcommand
         eval_parser = subparsers.add_parser(
             "eval",
@@ -343,6 +459,8 @@ Examples:
         try:
             if parsed_args.command == "steps":
                 return self._handle_steps_command(parsed_args)
+            elif parsed_args.command == "train_rl":
+                return self._handle_train_rl_command(parsed_args)
             elif parsed_args.command == "eval":
                 return self._handle_eval_command(parsed_args)
             else:
@@ -408,6 +526,8 @@ Examples:
             return self._preprocess_data(args)
         elif step == Step.TRAIN.value:
             return self._train_model(args)
+        elif step == Step.TRAIN_RL.value:
+            return self._train_rl_step(args)
         else:
             error(f"Unknown step: {step}")
             return False
@@ -774,6 +894,159 @@ Examples:
         except Exception as e:
             error(f"Unexpected error during training: {e}")
             return False
+
+    def _train_rl_step(self, args: argparse.Namespace) -> bool:
+        """
+        Execute RL training as a pipeline step.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        info("🤖 Training Reinforcement Learning Agent")
+
+        try:
+            from research.train_rl import train_rl_agent
+
+            # Check if processed data exists
+            training_csv = "training_processed.csv"
+            if not Path(training_csv).exists():
+                error(f"Training CSV not found: {training_csv}")
+                error("   Please run 'preprocess' step first to generate training data")
+                return False
+
+            success(f"Training CSV found: {training_csv}")
+
+            # Check if DistilBERT model exists
+            distilbert_path = Path("malwi_models")
+            if not distilbert_path.exists():
+                error(f"DistilBERT model not found: {distilbert_path}")
+                error("   Please run 'train' step first to train DistilBERT model")
+                return False
+
+            success(f"DistilBERT model found: {distilbert_path}")
+
+            # Create args object for train_rl_agent with defaults
+            class RLArgs:
+                def __init__(self):
+                    self.training_csv = training_csv
+                    self.distilbert_model_path = str(distilbert_path)
+                    self.tokenizer_path = str(distilbert_path)  # Tokenizer is in same dir as model
+                    self.output_path = "malwi_rl_models"
+                    self.epochs = int(os.environ.get("RL_EPOCHS", "3"))
+                    self.learning_rate = float(os.environ.get("RL_LEARNING_RATE", "3e-4"))
+                    self.n_steps = int(os.environ.get("RL_N_STEPS", "2048"))
+                    self.batch_size = int(os.environ.get("RL_BATCH_SIZE", "64"))
+                    self.ppo_epochs = int(os.environ.get("RL_PPO_EPOCHS", "10"))
+                    self.gamma = float(os.environ.get("RL_GAMMA", "0.99"))
+                    self.min_benign_samples = int(os.environ.get("RL_MIN_BENIGN", "1"))
+                    self.max_benign_samples = int(os.environ.get("RL_MAX_BENIGN", "5"))
+                    self.save_freq = int(os.environ.get("RL_SAVE_FREQ", "10"))
+                    self.seed = int(os.environ.get("RL_SEED", "42"))
+
+            rl_args = RLArgs()
+
+            # Display training configuration
+            info("📋 RL Training Configuration:")
+            info(f"   • Training data: {rl_args.training_csv}")
+            info(f"   • DistilBERT model: {rl_args.distilbert_model_path}")
+            info(f"   • Output path: {rl_args.output_path}")
+            info(f"   • Epochs: {rl_args.epochs}")
+            info(f"   • Learning rate: {rl_args.learning_rate}")
+            info(f"   • PPO steps: {rl_args.n_steps}")
+            info(f"   • Batch size: {rl_args.batch_size}")
+            info(f"   • PPO epochs: {rl_args.ppo_epochs}")
+            info(f"   • Gamma: {rl_args.gamma}")
+            info(f"   • Benign samples: {rl_args.min_benign_samples}-{rl_args.max_benign_samples} per package")
+            info(f"   • Save frequency: every {rl_args.save_freq} packages")
+            info(f"   • Random seed: {rl_args.seed}")
+            info("💡 Tip: Configure via environment variables (RL_EPOCHS, RL_LEARNING_RATE, etc.)")
+
+            # Train the RL agent
+            progress("Starting RL agent training...")
+            train_rl_agent(rl_args)
+
+            success("🎉 RL agent training completed successfully!")
+            info(f"📁 Trained models saved to: {rl_args.output_path}")
+            info("💡 Use src/research/rl/evaluate.py to test the trained agent")
+
+            return True
+
+        except Exception as e:
+            error(f"RL training failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _handle_train_rl_command(self, args: argparse.Namespace) -> int:
+        """
+        Handle the train_rl subcommand to train reinforcement learning agent.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            Exit code (0 for success, non-zero for failure)
+        """
+        info("🤖 Training Reinforcement Learning Agent")
+
+        try:
+            # Import RL training function
+            from research.train_rl import train_rl_agent
+
+            # Validate input file
+            training_csv_path = Path(args.training_csv)
+            if not training_csv_path.exists():
+                error(f"Training CSV not found: {args.training_csv}")
+                error("   Please run preprocessing first to generate training data")
+                return 1
+
+            success(f"Training CSV found: {args.training_csv}")
+
+            # Validate DistilBERT model
+            distilbert_path = Path(args.distilbert_model_path)
+            if not distilbert_path.exists():
+                error(f"DistilBERT model not found: {args.distilbert_model_path}")
+                error("   Please train DistilBERT model first using 'train' command")
+                return 1
+
+            success(f"DistilBERT model found: {args.distilbert_model_path}")
+
+            # Display training configuration
+            info("📋 RL Training Configuration:")
+            info(f"   • Training data: {args.training_csv}")
+            info(f"   • DistilBERT model: {args.distilbert_model_path}")
+            info(f"   • Output path: {args.output_path}")
+            info(f"   • Epochs: {args.epochs}")
+            info(f"   • Learning rate: {args.learning_rate}")
+            info(f"   • PPO steps: {args.n_steps}")
+            info(f"   • Batch size: {args.batch_size}")
+            info(f"   • PPO epochs: {args.ppo_epochs}")
+            info(f"   • Gamma: {args.gamma}")
+            info(
+                f"   • Benign samples: {args.min_benign_samples}-{args.max_benign_samples} per package"
+            )
+            info(f"   • Save frequency: every {args.save_freq} packages")
+            info(f"   • Random seed: {args.seed}")
+
+            # Train the RL agent
+            progress("Starting RL agent training...")
+            train_rl_agent(args)
+
+            success("🎉 RL agent training completed successfully!")
+            info(f"📁 Trained models saved to: {args.output_path}")
+            info("💡 Use the evaluate.py script to test the trained agent")
+
+            return 0
+
+        except Exception as e:
+            error(f"RL training failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return 1
 
     def _handle_eval_command(self, args: argparse.Namespace) -> int:
         """
