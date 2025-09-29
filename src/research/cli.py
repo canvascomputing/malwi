@@ -36,6 +36,7 @@ class Step(Enum):
     TRAIN = "train"
     PREPROCESS_RL = "preprocess_rl"
     TRAIN_RL = "train_rl"
+    TRAIN_LSTM = "train_lstm"
 
 
 class Language(Enum):
@@ -538,6 +539,8 @@ Examples:
             return self._preprocess_rl_step(args)
         elif step == Step.TRAIN_RL.value:
             return self._train_rl_step(args)
+        elif step == Step.TRAIN_LSTM.value:
+            return self._train_lstm_step(args)
         else:
             error(f"Unknown step: {step}")
             return False
@@ -1067,6 +1070,86 @@ Examples:
 
         except Exception as e:
             error(f"RL training failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
+
+    def _train_lstm_step(self, args: argparse.Namespace) -> bool:
+        """
+        Execute LSTM training as a pipeline step.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        info("🧠 Training LSTM Model")
+
+        try:
+            from research.train_lstm import train_lstm_model
+
+            # Check if pre-computed embeddings exist
+            embedding_csv = "training_rl_embeddings.csv"
+            if not Path(embedding_csv).exists():
+                error(f"Pre-computed embeddings not found: {embedding_csv}")
+                error("   Please run 'preprocess_rl' step first to generate embeddings")
+                return False
+
+            success(f"🟢 Embeddings CSV found: {embedding_csv}")
+
+            # LSTM training configuration from environment variables
+            output_model = os.environ.get("LSTM_MODEL_PATH", "malware_lstm_model.pth")
+            epochs = int(os.environ.get("LSTM_EPOCHS", "10"))
+            batch_size = int(os.environ.get("LSTM_BATCH_SIZE", "16"))
+            learning_rate = float(os.environ.get("LSTM_LEARNING_RATE", "0.001"))
+            hidden_dim = int(os.environ.get("LSTM_HIDDEN_DIM", "128"))
+            num_layers = int(os.environ.get("LSTM_NUM_LAYERS", "2"))
+            dropout = float(os.environ.get("LSTM_DROPOUT", "0.3"))
+            max_benign_samples = int(os.environ.get("LSTM_MAX_BENIGN", "10"))
+
+            # Display training configuration
+            info("📋 LSTM Training Configuration:")
+            info(f"   • Training data: {embedding_csv}")
+            info(f"   • Output model: {output_model}")
+            info(f"   • Epochs: {epochs}")
+            info(f"   • Batch size: {batch_size}")
+            info(f"   • Learning rate: {learning_rate}")
+            info(f"   • Hidden dimension: {hidden_dim}")
+            info(f"   • LSTM layers: {num_layers}")
+            info(f"   • Dropout: {dropout}")
+            info(f"   • Max benign samples: {max_benign_samples}")
+            info(
+                "💡 Tip: Configure via environment variables (LSTM_EPOCHS, LSTM_BATCH_SIZE, etc.)"
+            )
+
+            # Train the LSTM model
+            progress("Starting LSTM training...")
+            success_result = train_lstm_model(
+                csv_path=embedding_csv,
+                output_model_path=output_model,
+                epochs=epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout,
+                max_benign_samples=max_benign_samples,
+                device="auto",
+            )
+
+            if success_result:
+                success("🎉 LSTM training completed successfully!")
+                info(f"📁 Trained model saved to: {output_model}")
+                info("💡 Use the model for faster malware sequence classification")
+                return True
+            else:
+                error("LSTM training failed")
+                return False
+
+        except Exception as e:
+            error(f"LSTM training failed: {e}")
             import traceback
 
             traceback.print_exc()

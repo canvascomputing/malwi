@@ -69,7 +69,9 @@ class TestRLDataLoading:
         assert all(label == 0 for label in benign_labels)
 
     def test_malicious_packages_grouped_correctly(self, sample_csv_with_packages):
-        malicious_packages, _, _, _, _, _ = load_and_organize_data(sample_csv_with_packages)
+        malicious_packages, _, _, _, _, _ = load_and_organize_data(
+            sample_csv_with_packages
+        )
 
         assert "package_1" in malicious_packages
         assert "package_2" in malicious_packages
@@ -107,8 +109,8 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-                temp_file_path
+            malicious_packages, benign_samples, benign_labels, _, _, _ = (
+                load_and_organize_data(temp_file_path)
             )
 
             assert len(malicious_packages) == 0
@@ -147,8 +149,8 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-                temp_file_path
+            malicious_packages, benign_samples, benign_labels, _, _, _ = (
+                load_and_organize_data(temp_file_path)
             )
 
             assert len(malicious_packages) == 1
@@ -176,8 +178,8 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-                temp_file_path
+            malicious_packages, benign_samples, benign_labels, _, _, _ = (
+                load_and_organize_data(temp_file_path)
             )
 
             assert len(malicious_packages) == 0
@@ -202,8 +204,8 @@ class TestRLDataLoading:
             temp_file_path = f.name
 
         try:
-            malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-                temp_file_path
+            malicious_packages, benign_samples, benign_labels, _, _, _ = (
+                load_and_organize_data(temp_file_path)
             )
 
             assert len(malicious_packages) >= 1

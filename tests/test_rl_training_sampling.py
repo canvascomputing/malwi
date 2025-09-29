@@ -85,8 +85,8 @@ class TestRLTrainingSampling:
         Path(temp_file_path).unlink()
 
     def test_package_grouping_for_training(self, sample_training_data):
-        malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-            sample_training_data
+        malicious_packages, benign_samples, benign_labels, _, _, _ = (
+            load_and_organize_data(sample_training_data)
         )
 
         assert len(malicious_packages) == 3
@@ -108,7 +108,9 @@ class TestRLTrainingSampling:
         assert "MAL_CODE_2B" in pkg2_files
 
     def test_benign_samples_available_for_random_selection(self, sample_training_data):
-        _, benign_samples, benign_labels, _, _, _ = load_and_organize_data(sample_training_data)
+        _, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
+            sample_training_data
+        )
 
         assert len(benign_samples) == 10
 
@@ -239,8 +241,8 @@ class TestRLTrainingSampling:
         assert len(unique_orders) > 1
 
     def test_labels_consistency(self, sample_training_data):
-        malicious_packages, benign_samples, benign_labels, _, _, _ = load_and_organize_data(
-            sample_training_data
+        malicious_packages, benign_samples, benign_labels, _, _, _ = (
+            load_and_organize_data(sample_training_data)
         )
 
         assert len(benign_samples) == len(benign_labels)
