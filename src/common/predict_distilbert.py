@@ -202,11 +202,18 @@ def _get_windowed_predictions(
         }
 
         with torch.no_grad():
-            outputs = HF_MODEL_INSTANCE(**model_inputs)
+            outputs = HF_MODEL_INSTANCE(**model_inputs, output_hidden_states=True)
 
         if hasattr(outputs, "logits"):
             logits = outputs.logits
             probabilities = F.softmax(logits, dim=-1).cpu()[0]
+
+            # Extract CLS token embedding for LSTM analysis
+            cls_embedding = None
+            if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
+                # Get CLS token (first token) embedding from last layer
+                last_layer_hidden_states = outputs.hidden_states[-1]
+                cls_embedding = last_layer_hidden_states[:, 0, :].cpu().numpy()[0]
 
             # Get label mapping from model config
             if (
@@ -240,6 +247,7 @@ def _get_windowed_predictions(
                     "label": predicted_label,
                     "probabilities": probabilities.tolist(),
                     "labels": labels_dict,
+                    "embedding": cls_embedding,  # CLS token embedding for LSTM analysis
                 }
             )
 
@@ -339,6 +347,9 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
                 "label": best_window["label"],
                 "probabilities": best_window["probabilities"],
                 "labels": best_window.get("labels", {}),
+                "embedding": best_window.get(
+                    "embedding"
+                ),  # CLS embedding from best window
                 "prediction_debug": prediction_debug_info,
             }
 
@@ -360,11 +371,21 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
             }
 
             with torch.no_grad():
-                outputs = HF_MODEL_INSTANCE(**model_inputs)
+                outputs = HF_MODEL_INSTANCE(**model_inputs, output_hidden_states=True)
 
             if hasattr(outputs, "logits"):
                 logits = outputs.logits
                 probabilities = F.softmax(logits, dim=-1).cpu()[0]
+
+                # Extract CLS token embedding for LSTM analysis
+                cls_embedding = None
+                if (
+                    hasattr(outputs, "hidden_states")
+                    and outputs.hidden_states is not None
+                ):
+                    # Get CLS token (first token) embedding from last layer
+                    last_layer_hidden_states = outputs.hidden_states[-1]
+                    cls_embedding = last_layer_hidden_states[:, 0, :].cpu().numpy()[0]
 
                 # Get label mapping from model config
                 if (
@@ -399,6 +420,7 @@ def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
                     "label": predicted_label,
                     "probabilities": probabilities.tolist(),
                     "labels": labels_dict,
+                    "embedding": cls_embedding,  # CLS token embedding for LSTM analysis
                     "prediction_debug": prediction_debug_info,
                 }
 

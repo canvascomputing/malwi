@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from common.mapping import FUNCTION_MAPPING
 from common.predict_distilbert import get_model_version_string
-from common.messaging import get_message_manager, file_error
+from common.messaging import get_message_manager, file_error, warning, info, progress
 from common.files import collect_files_by_extension
 from common.config import EXTENSION_COMMENT_PREFIX, EXTENSION_TO_LANGUAGE
 from common.malwi_object import MalwiObject, disassemble_file_ast
@@ -360,6 +360,7 @@ class MalwiReport:
     version: str = field(
         default_factory=lambda: get_model_version_string(__version__)
     )  # Malwi version with model hash
+    lstm_analysis: Optional[Dict] = None  # LSTM sequence analysis results if performed
 
     def _generate_report_data(self) -> Dict[str, Any]:
         processed_objects_count = len(self.all_objects)
@@ -392,6 +393,23 @@ class MalwiReport:
             "statistics": summary_statistics,
             "details": [],
         }
+
+        # Add LSTM analysis if available
+        if self.lstm_analysis:
+            report_data["lstm_analysis"] = {
+                "overall_prediction": self.lstm_analysis.get("overall", {}).get(
+                    "prediction", "unknown"
+                ),
+                "overall_confidence": self.lstm_analysis.get("overall", {}).get(
+                    "confidence", 0.0
+                ),
+                "files_analyzed": self.lstm_analysis.get("overall", {}).get(
+                    "total_sequences", 0
+                ),
+                "malicious_sequences": self.lstm_analysis.get("overall", {}).get(
+                    "malicious_sequences", 0
+                ),
+            }
 
         # Only show objects that are in labelled_objects (harmful labels above threshold)
         for obj in self.labelled_objects:
@@ -702,14 +720,32 @@ class MalwiReport:
         cls,
         distilbert_model_path: Optional[str] = None,
         tokenizer_path: Optional[str] = None,
+        lstm_model_path: Optional[str] = None,
     ) -> None:
-        """Load ML models into memory for batch processing."""
+        """Load ML models into memory for batch processing.
+
+        Args:
+            distilbert_model_path: Path to DistilBERT model
+            tokenizer_path: Path to tokenizer
+            lstm_model_path: Optional path to LSTM model for sequence analysis
+        """
         from common.predict_distilbert import initialize_models
 
+        # Load DistilBERT model
         initialize_models(
             model_path=distilbert_model_path,
             tokenizer_path=tokenizer_path,
         )
+
+        # Optionally pre-load LSTM model if path provided
+        if lstm_model_path and Path(lstm_model_path).exists():
+            try:
+                from common.predict_lstm import initialize_lstm_model
+
+                initialize_lstm_model(lstm_model_path)
+                info(f"Pre-loaded LSTM model from {lstm_model_path}")
+            except Exception as e:
+                warning(f"Could not pre-load LSTM model: {e}")
 
     @classmethod
     def create(
@@ -722,6 +758,7 @@ class MalwiReport:
         triage: bool = False,
         triage_provider=None,
         cache=None,
+        lstm_analysis: bool = False,
     ) -> "MalwiReport":
         """
         Create a MalwiReport by processing files from the given input path.
@@ -736,6 +773,7 @@ class MalwiReport:
             triage: If True, interactively review each finding before reporting
             triage_provider: TriageProvider instance for classification decisions
             cache: Cache instance for storing/retrieving prediction results
+            lstm_analysis: If True, run LSTM sequence analysis on malicious findings
 
         Returns:
             MalwiReport containing analysis results
@@ -889,8 +927,56 @@ class MalwiReport:
                 )
             activities = list(function_tokens)
 
+        # Run LSTM sequence analysis if requested and there are malicious findings
+        lstm_results = None
+        if lstm_analysis and malicious_objects:
+            try:
+                from common.predict_lstm import (
+                    run_lstm_sequence_analysis,
+                    initialize_lstm_model,
+                )
+
+                if not silent:
+                    progress("Running LSTM sequence analysis...")
+
+                # LSTM model should already be pre-loaded if path was provided
+                # Only initialize if not already loaded
+                from common.predict_lstm import _lstm_model
+
+                if _lstm_model is None:
+                    initialize_lstm_model()
+
+                # Run LSTM analysis on all malicious objects
+                # Objects should now have embeddings stored from DistilBERT predictions
+                lstm_results = run_lstm_sequence_analysis(
+                    objects=malicious_objects,
+                )
+
+                # Update confidence if LSTM provides higher confidence
+                if lstm_results and "overall" in lstm_results:
+                    lstm_confidence = lstm_results["overall"].get("confidence", 0.0)
+                    if lstm_results["overall"]["prediction"] == "malicious":
+                        # Use LSTM confidence if it's higher
+                        confidence = max(confidence, lstm_confidence)
+                        if not silent:
+                            info(
+                                f"LSTM confidence: {lstm_confidence:.2f} (using: {confidence:.2f})"
+                            )
+                    elif not silent:
+                        # LSTM disagrees - log for informational purposes
+                        warning(
+                            f"LSTM prediction differs: {lstm_results['overall']['prediction']}"
+                        )
+
+            except Exception as e:
+                if not silent:
+                    warning(f"LSTM analysis failed: {e}")
+                lstm_results = None
+
         duration = time.time() - start_time
-        return cls(
+
+        # Store LSTM results in the report if available
+        report = cls(
             all_objects=all_objects,
             labelled_objects=malicious_objects,
             threshold=malicious_threshold,
@@ -905,3 +991,9 @@ class MalwiReport:
             duration=duration,
             all_file_types=all_file_types,
         )
+
+        # Store LSTM results as an attribute if available
+        if lstm_results:
+            report.lstm_analysis = lstm_results
+
+        return report

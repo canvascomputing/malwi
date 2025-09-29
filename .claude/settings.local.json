@@ -18,9 +18,7 @@
       "Bash(find:*)",
       "Bash(cp:*)",
       "Bash(./cli scan:*)",
-      "Bash(python -c \"import tests.test_cli_entry\")",
-      "Read(//Users/mav/dev/malwi-samples/python/**)",
-      "Read(//Users/mav/dev/malwi-samples/**)"
+      "Bash(python -c \"import tests.test_cli_entry\")"
     ]
   },
   "enableAllProjectMcpServers": false

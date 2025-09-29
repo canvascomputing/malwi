@@ -112,6 +112,9 @@ class MalwiObject:
     source_code: Optional[str] = None  # Specific source code for this object
     location: Optional[Tuple[int, int]] = None  # Start and end line numbers
     _embedding_count: Optional[int] = None  # Cached embedding count
+    embedding: Optional[any] = (
+        None  # Pre-computed DistilBERT embedding for LSTM inference
+    )
 
     def __init__(
         self,
@@ -134,6 +137,7 @@ class MalwiObject:
         self.byte_code = byte_code
         self.source_code = source_code
         self.location = location
+        self.embedding = None  # Initialize embedding storage
 
     @classmethod
     def all_tokens(cls, language: str = "python") -> List[str]:
@@ -289,6 +293,9 @@ class MalwiObject:
 
         if prediction and "labels" in prediction:
             self.labels = prediction["labels"]
+            # Store embedding for LSTM analysis if available
+            if "embedding" in prediction and prediction["embedding"] is not None:
+                self.embedding = prediction["embedding"]
         elif prediction and "probabilities" in prediction:
             # Backward compatibility: convert old format to new labels format
             benign_prob = prediction["probabilities"][0]
@@ -298,6 +305,10 @@ class MalwiObject:
                 self.labels["malicious"] = malicious_prob
             else:
                 self.labels["benign"] = benign_prob
+
+            # Store embedding for LSTM analysis if available
+            if "embedding" in prediction and prediction["embedding"] is not None:
+                self.embedding = prediction["embedding"]
 
             # Cache the result if cache is available and write_to_cache is True
             if cache is not None and self.labels and write_to_cache:

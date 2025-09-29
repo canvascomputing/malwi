@@ -26,6 +26,10 @@ from common.messaging import (
     progress,
 )
 
+# Label constants for clarity and maintainability
+BENIGN_LABEL = 0
+MALICIOUS_LABEL = 1
+
 
 class MalwareSequenceDataset(Dataset):
     """Dataset for malware sequences with pre-computed embeddings."""
@@ -55,28 +59,15 @@ class MalwareSequenceDataset(Dataset):
         self.sequences = []
         self.labels = []
 
-        # Add malicious sequences (one per package)
+        # Add malicious sequences (one per package) - FIXED: Only malicious embeddings
         for package_name, embeddings in malicious_packages.items():
-            # Add some random benign samples to the sequence
-            n_benign = self.rng.randint(1, max_benign_samples + 1)
-            selected_benign = self.rng.choice(
-                len(benign_embeddings),
-                size=min(n_benign, len(benign_embeddings)),
-                replace=False,
-            )
-
-            # Create sequence: benign samples + malicious samples
-            sequence = []
-            for idx in selected_benign:
-                sequence.append(benign_embeddings[idx])
-            for emb in embeddings:
-                sequence.append(emb)
-
+            # Create sequence with ONLY malicious embeddings
+            sequence = list(embeddings)  # Only malicious content
             self.sequences.append(sequence)
-            self.labels.append(1)  # Malicious
+            self.labels.append(MALICIOUS_LABEL)
 
-        # Add some purely benign sequences
-        n_benign_sequences = len(malicious_packages) // 2
+        # Add equal number of purely benign sequences - FIXED: Balanced dataset
+        n_benign_sequences = len(malicious_packages)  # Same number as malicious!
         for _ in range(n_benign_sequences):
             n_samples = self.rng.randint(1, max_benign_samples + 1)
             selected_benign = self.rng.choice(
@@ -87,7 +78,7 @@ class MalwareSequenceDataset(Dataset):
 
             sequence = [benign_embeddings[idx] for idx in selected_benign]
             self.sequences.append(sequence)
-            self.labels.append(0)  # Benign
+            self.labels.append(BENIGN_LABEL)
 
     def __len__(self):
         return len(self.sequences)
