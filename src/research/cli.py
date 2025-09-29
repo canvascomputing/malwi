@@ -1100,7 +1100,9 @@ Examples:
             success(f"🟢 Embeddings CSV found: {embedding_csv}")
 
             # LSTM training configuration from environment variables
-            output_model = os.environ.get("LSTM_MODEL_PATH", "malware_lstm_model.pth")
+            output_model = os.environ.get(
+                "LSTM_MODEL_PATH", "malwi_models/malware_lstm_model.pth"
+            )
             epochs = int(os.environ.get("LSTM_EPOCHS", "10"))
             batch_size = int(os.environ.get("LSTM_BATCH_SIZE", "16"))
             learning_rate = float(os.environ.get("LSTM_LEARNING_RATE", "0.001"))

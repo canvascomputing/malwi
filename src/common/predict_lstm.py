@@ -37,7 +37,7 @@ def initialize_lstm_model(model_path: Optional[str] = None) -> None:
     global _lstm_model, _lstm_model_path, _lstm_device
 
     if model_path is None:
-        model_path = "malware_lstm_model.pth"
+        model_path = "malwi_models/malware_lstm_model.pth"
 
     if not Path(model_path).exists():
         print(f"Warning: LSTM model not found at {model_path}", file=sys.stderr)

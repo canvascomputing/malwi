@@ -77,7 +77,7 @@ uv run python -m src.research.cli steps train_lstm
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
-| Model Output | `LSTM_MODEL_PATH` | `malware_lstm_model.pth` | Path to save trained model |
+| Model Output | `LSTM_MODEL_PATH` | `malwi_models/malware_lstm_model.pth` | Path to save trained model |
 | Epochs | `LSTM_EPOCHS` | `10` | Number of training epochs |
 | Batch Size | `LSTM_BATCH_SIZE` | `16` | Training batch size |
 | Learning Rate | `LSTM_LEARNING_RATE` | `0.001` | Adam optimizer learning rate |
@@ -171,7 +171,7 @@ Based on the architecture and training approach:
 🧠 Training LSTM Model
 📋 LSTM Training Configuration:
    • Training data: training_rl_embeddings.csv
-   • Output model: malware_lstm_model.pth
+   • Output model: malwi_models/malware_lstm_model.pth
    • Epochs: 10
    • Batch size: 16
    • Learning rate: 0.001
@@ -196,7 +196,7 @@ Based on the architecture and training approach:
 ✅ New best model saved with F1: 1.0000
 ...
 ✅ Training completed! Best validation F1: 1.0000
-📁 Model saved to: malware_lstm_model.pth
+📁 Model saved to: malwi_models/malware_lstm_model.pth
 ```
 
 ## Next Steps

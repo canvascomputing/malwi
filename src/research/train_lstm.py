@@ -406,8 +406,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-model",
         type=str,
-        default="malware_lstm_model.pth",
-        help="Path to save trained model (default: malware_lstm_model.pth)",
+        default="malwi_models/malware_lstm_model.pth",
+        help="Path to save trained model (default: malwi_models/malware_lstm_model.pth)",
     )
     parser.add_argument(
         "--epochs",
