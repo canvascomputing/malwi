@@ -1,39 +1,29 @@
 """
-LSTM prediction module for sequence-based malware detection.
-
-This module provides LSTM-based prediction capabilities to analyze sequences
-of code objects, complementing the DistilBERT predictions for improved malware detection.
+LSTM prediction module for malware detection.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Any
 from collections import defaultdict
-
-# Import messaging utilities consistent with predict_distilbert
 import sys
-import os
 
-# Label constants for consistency with training
+# Label constants - Binary classification
 BENIGN_LABEL = 0
 MALICIOUS_LABEL = 1
 PREDICTION_THRESHOLD = 0.5
 
-# Singleton pattern for LSTM model (similar to DistilBERT)
+# Singleton pattern for LSTM model
 _lstm_model = None
 _lstm_model_path = None
 _lstm_device = None
 
 
 def initialize_lstm_model(model_path: Optional[str] = None) -> None:
-    """
-    Initialize the LSTM model (singleton pattern).
-
-    Args:
-        model_path: Path to trained LSTM model file
-    """
+    """Initialize the LSTM model."""
     global _lstm_model, _lstm_model_path, _lstm_device
 
     if model_path is None:
@@ -46,12 +36,27 @@ def initialize_lstm_model(model_path: Optional[str] = None) -> None:
     _lstm_model_path = model_path
     _lstm_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load model
-    _lstm_model = MalwareLSTM()
-    state_dict = torch.load(_lstm_model_path, map_location=_lstm_device)
-    _lstm_model.load_state_dict(state_dict)
-    _lstm_model.to(_lstm_device)
-    _lstm_model.eval()
+    try:
+        state_dict = torch.load(_lstm_model_path, map_location=_lstm_device)
+
+        from research.train_lstm import MalwareLSTM
+
+        _lstm_model = MalwareLSTM()
+        _lstm_model.load_state_dict(state_dict)
+        _lstm_model.to(_lstm_device)
+        _lstm_model.eval()
+        print(f"Successfully loaded LSTM model from {model_path}", file=sys.stderr)
+
+    except RuntimeError as e:
+        print(
+            f"Warning: LSTM model incompatible with current architecture",
+            file=sys.stderr,
+        )
+        print(
+            f"LSTM analysis will be disabled. To enable, retrain with: uv run python -m src.research.train_lstm training_rl_embeddings.csv",
+            file=sys.stderr,
+        )
+        _lstm_model = None
 
 
 def _ensure_lstm_initialized() -> bool:
@@ -61,92 +66,8 @@ def _ensure_lstm_initialized() -> bool:
     return _lstm_model is not None
 
 
-class MalwareLSTM(nn.Module):
-    """LSTM model for malware detection on embedding sequences."""
-
-    def __init__(
-        self,
-        embedding_dim: int = 256,
-        hidden_dim: int = 128,
-        num_layers: int = 2,
-        dropout: float = 0.3,
-        num_classes: int = 2,
-    ):
-        """
-        Initialize LSTM model.
-
-        Args:
-            embedding_dim: Dimension of input embeddings (from DistilBERT)
-            hidden_dim: Hidden dimension of LSTM
-            num_layers: Number of LSTM layers
-            dropout: Dropout rate
-            num_classes: Number of output classes (2 for binary classification)
-        """
-        super().__init__()
-
-        self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-
-        # LSTM layers
-        self.lstm = nn.LSTM(
-            input_size=embedding_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True,
-        )
-
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),  # *2 for bidirectional
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-    def forward(self, sequences, attention_mask):
-        """
-        Forward pass.
-
-        Args:
-            sequences: Padded sequences [batch_size, seq_len, embedding_dim]
-            attention_mask: Attention mask [batch_size, seq_len]
-
-        Returns:
-            logits: Classification logits [batch_size, num_classes]
-        """
-        batch_size, seq_len, _ = sequences.shape
-
-        # LSTM forward pass
-        lstm_out, (hidden, cell) = self.lstm(sequences)
-
-        # Use attention mask to get the last valid output for each sequence
-        # Find the last non-padded position for each sequence
-        lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
-
-        # Gather the last valid LSTM output for each sequence
-        batch_indices = torch.arange(batch_size, device=sequences.device)
-        last_outputs = lstm_out[batch_indices, lengths]
-
-        # Classification
-        logits = self.classifier(last_outputs)
-
-        return logits
-
-
 def get_sequence_lstm_prediction(embeddings: List[np.ndarray]) -> Dict[str, Any]:
-    """
-    Get LSTM prediction for a sequence of embeddings.
-
-    Args:
-        embeddings: List of embedding arrays (e.g., from DistilBERT CLS tokens)
-
-    Returns:
-        Dictionary containing prediction results
-    """
+    """Get LSTM prediction for a sequence of embeddings."""
     prediction_result = {
         "status": "pending",
         "prediction": "unknown",
@@ -158,10 +79,11 @@ def get_sequence_lstm_prediction(embeddings: List[np.ndarray]) -> Dict[str, Any]
         prediction_result["message"] = "No embeddings provided"
         return prediction_result
 
-    # Ensure model is initialized
     if not _ensure_lstm_initialized():
-        prediction_result["status"] = "error"
-        prediction_result["message"] = "LSTM model not available"
+        prediction_result["status"] = "disabled"
+        prediction_result["message"] = "LSTM model not available - inference disabled"
+        prediction_result["prediction"] = "unknown"
+        prediction_result["confidence"] = 0.0
         return prediction_result
 
     try:
@@ -181,18 +103,23 @@ def get_sequence_lstm_prediction(embeddings: List[np.ndarray]) -> Dict[str, Any]
             logits = _lstm_model(sequence, attention_mask)
             probs = torch.softmax(logits, dim=1)
 
-            malicious_prob = probs[0, MALICIOUS_LABEL].item()
+            # Binary prediction
             benign_prob = probs[0, BENIGN_LABEL].item()
+            malicious_prob = probs[0, MALICIOUS_LABEL].item()
 
-            prediction_result["status"] = "success"
-            prediction_result["prediction"] = (
+            prediction = (
                 "malicious" if malicious_prob > PREDICTION_THRESHOLD else "benign"
             )
-            prediction_result["confidence"] = max(malicious_prob, benign_prob)
+            confidence = max(benign_prob, malicious_prob)
+
+            prediction_result["status"] = "success"
+            prediction_result["prediction"] = prediction
+            prediction_result["confidence"] = confidence
             prediction_result["probabilities"] = {
                 "benign": benign_prob,
                 "malicious": malicious_prob,
             }
+            prediction_result["sequence_length"] = len(embeddings)
 
     except Exception as e:
         prediction_result["status"] = "error"
@@ -206,21 +133,19 @@ def analyze_object_sequences_with_lstm(
     group_by_file: bool = True,
     max_sequence_length: int = 50,
 ) -> Dict[str, Any]:
-    """
-    Analyze sequences of MalwiObjects using LSTM.
-
-    Args:
-        objects: List of MalwiObjects with embeddings
-        group_by_file: If True, group by file path; otherwise treat as one sequence
-        max_sequence_length: Maximum number of objects in a sequence
-
-    Returns:
-        Dictionary with analysis results
-    """
+    """Analyze sequences of MalwiObjects using LSTM."""
     if not _ensure_lstm_initialized():
         return {
-            "status": "error",
-            "message": "LSTM model not available",
+            "status": "disabled",
+            "message": "LSTM model not available - analysis disabled",
+            "sequences": {},
+            "overall": {
+                "prediction": "unknown",
+                "confidence": 0.0,
+                "malicious_sequences": 0,
+                "benign_sequences": 0,
+                "total_sequences": 0,
+            },
         }
 
     if group_by_file:
@@ -235,6 +160,7 @@ def analyze_object_sequences_with_lstm(
 
     results = {"sequences": {}, "overall": {}}
     total_malicious = 0
+    total_benign = 0
     max_confidence = 0.0
 
     for file_path, file_objects in objects_by_file.items():
@@ -247,105 +173,53 @@ def analyze_object_sequences_with_lstm(
         if embeddings:
             prediction = get_sequence_lstm_prediction(embeddings)
             if prediction["status"] == "success":
-                is_malicious = prediction["prediction"] == "malicious"
                 results["sequences"][file_path] = {
                     "prediction": prediction["prediction"],
                     "confidence": prediction["confidence"],
+                    "probabilities": prediction["probabilities"],
                     "num_objects": len(embeddings),
                 }
-                if is_malicious:
+
+                if prediction["prediction"] == "malicious":
                     total_malicious += 1
                     max_confidence = max(max_confidence, prediction["confidence"])
+                else:  # benign
+                    total_benign += 1
 
-    # Overall verdict
+    # Determine overall verdict
+    if total_malicious > 0:
+        overall_prediction = "malicious"
+        overall_confidence = max_confidence
+    else:
+        overall_prediction = "benign"
+        overall_confidence = 1.0 - (max_confidence if max_confidence > 0 else 0)
+
     results["overall"] = {
-        "prediction": "malicious" if total_malicious > 0 else "benign",
-        "confidence": max_confidence if total_malicious > 0 else 1.0,
+        "prediction": overall_prediction,
+        "confidence": overall_confidence,
         "malicious_sequences": total_malicious,
+        "benign_sequences": total_benign,
         "total_sequences": len(results["sequences"]),
     }
 
     return results
 
 
-def compute_embedding_for_object(obj, model_path: str = None) -> Optional[np.ndarray]:
-    """
-    Compute DistilBERT embedding for a MalwiObject.
-
-    Args:
-        obj: MalwiObject instance
-        model_path: Path to DistilBERT model (uses default if None)
-
-    Returns:
-        256-dimensional embedding array or None if computation fails
-    """
-    try:
-        # Import here to avoid circular dependencies
-        from transformers import AutoTokenizer, DistilBertModel
-        import torch
-
-        # Get token string from object
-        token_string = obj.to_token_string(map_special_tokens=True)
-
-        if not token_string or not token_string.strip():
-            return None
-
-        # Load model and tokenizer
-        if model_path is None:
-            model_path = "malwi_models"  # Default path
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = DistilBertModel.from_pretrained(model_path)
-        model.to(device)
-        model.eval()
-
-        # Tokenize and get embedding
-        encoded = tokenizer(
-            token_string,
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length",
-            max_length=512,
-        )
-
-        input_ids = encoded["input_ids"].to(device)
-        attention_mask = encoded["attention_mask"].to(device)
-
-        with torch.no_grad():
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            # Get CLS token embedding
-            cls_embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-
-        return cls_embedding[0]  # Return first (and only) embedding
-
-    except Exception as e:
-        print(
-            f"Warning: Failed to compute embedding for {obj.name}: {e}", file=sys.stderr
-        )
-        return None
-
-
-def run_lstm_sequence_analysis(
-    objects: List,
-) -> Dict[str, Any]:
-    """
-    Run LSTM analysis on a list of objects.
-
-    Args:
-        objects: List of MalwiObjects to analyze (must have embeddings pre-computed)
-
-    Returns:
-        Dictionary with analysis results
-    """
+def run_lstm_sequence_analysis(objects: List) -> Dict[str, Any]:
+    """Run LSTM analysis on a list of objects."""
     if not objects:
         return {"status": "error", "message": "No objects to analyze"}
 
     if not _ensure_lstm_initialized():
-        return {"status": "error", "message": "LSTM model not available"}
+        return {
+            "status": "disabled",
+            "message": "LSTM model not available - analysis disabled",
+            "objects_analyzed": 0,
+            "objects_skipped": len(objects) if objects else 0,
+        }
 
     try:
-        # Filter objects with embeddings (should already be computed during DistilBERT prediction)
+        # Filter objects with embeddings
         objects_with_embeddings = [
             obj
             for obj in objects

@@ -7,15 +7,13 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from research.train_lstm import (
-    MalwareSequenceDataset,
+    MalwareDataset,
     MalwareLSTM,
-    collate_fn,
-    load_embeddings_data,
     train_lstm_model,
 )
 
 
-class TestMalwareSequenceDataset:
+class TestMalwareDataset:
     @pytest.fixture
     def sample_data(self):
         """Create sample malicious packages and benign embeddings."""
@@ -42,7 +40,7 @@ class TestMalwareSequenceDataset:
         """Test basic dataset creation."""
         malicious_packages, benign_embeddings = sample_data
 
-        dataset = MalwareSequenceDataset(
+        dataset = MalwareDataset(
             malicious_packages=malicious_packages,
             benign_embeddings=benign_embeddings,
             max_benign_samples=2,
@@ -62,10 +60,10 @@ class TestMalwareSequenceDataset:
         """Test that malicious sequences have the correct structure."""
         malicious_packages, benign_embeddings = sample_data
 
-        dataset = MalwareSequenceDataset(
+        dataset = MalwareDataset(
             malicious_packages=malicious_packages,
             benign_embeddings=benign_embeddings,
-            max_benign_samples=1,
+            max_benign_samples=20,  # Allow enough benign samples for mixed sequences
             random_seed=42,
         )
 
@@ -87,35 +85,35 @@ class TestMalwareSequenceDataset:
         """Test dataset __getitem__ method."""
         malicious_packages, benign_embeddings = sample_data
 
-        dataset = MalwareSequenceDataset(
+        dataset = MalwareDataset(
             malicious_packages=malicious_packages,
             benign_embeddings=benign_embeddings,
             max_benign_samples=2,
             random_seed=42,
         )
 
-        sequence_tensor, label_tensor = dataset[0]
+        sequence, label = dataset[0]
 
-        # Check tensor types and shapes
-        assert isinstance(sequence_tensor, torch.Tensor)
-        assert isinstance(label_tensor, torch.Tensor)
-        assert sequence_tensor.dtype == torch.float32
-        assert label_tensor.dtype == torch.long
-        assert sequence_tensor.shape[1] == 4  # Embedding dimension
-        assert label_tensor.shape == torch.Size([])  # Scalar
+        # Check types
+        assert isinstance(sequence, list)
+        assert isinstance(label, int)
+        # Check that sequence contains numpy arrays
+        for emb in sequence:
+            assert isinstance(emb, np.ndarray)
+            assert emb.shape[0] == 4  # Embedding dimension
 
     def test_reproducible_sampling(self, sample_data):
         """Test that sampling is reproducible with fixed seed."""
         malicious_packages, benign_embeddings = sample_data
 
-        dataset1 = MalwareSequenceDataset(
+        dataset1 = MalwareDataset(
             malicious_packages=malicious_packages,
             benign_embeddings=benign_embeddings,
             max_benign_samples=2,
             random_seed=42,
         )
 
-        dataset2 = MalwareSequenceDataset(
+        dataset2 = MalwareDataset(
             malicious_packages=malicious_packages,
             benign_embeddings=benign_embeddings,
             max_benign_samples=2,
@@ -183,135 +181,18 @@ class TestMalwareLSTM:
         assert logits.shape == (batch_size, 2)
 
 
-class TestCollateFn:
-    def test_collate_basic(self):
-        """Test collate function with variable-length sequences."""
-        # Create sample batch data
-        seq1 = torch.randn(3, 4)  # Length 3
-        seq2 = torch.randn(2, 4)  # Length 2
-        seq3 = torch.randn(4, 4)  # Length 4
-
-        batch = [
-            (seq1, torch.tensor(1)),
-            (seq2, torch.tensor(0)),
-            (seq3, torch.tensor(1)),
-        ]
-
-        padded_sequences, attention_mask, labels = collate_fn(batch)
-
-        # Check shapes
-        assert padded_sequences.shape == (3, 4, 4)  # batch_size, max_len, embedding_dim
-        assert attention_mask.shape == (3, 4)
-        assert labels.shape == (3,)
-
-        # Check padding correctness
-        assert torch.equal(padded_sequences[0, :3], seq1)
-        assert torch.equal(padded_sequences[1, :2], seq2)
-        assert torch.equal(padded_sequences[2, :4], seq3)
-
-        # Check attention mask
-        expected_mask = torch.tensor(
-            [
-                [True, True, True, False],
-                [True, True, False, False],
-                [True, True, True, True],
-            ]
-        )
-        assert torch.equal(attention_mask, expected_mask)
-
-    def test_collate_same_length(self):
-        """Test collate function when all sequences have same length."""
-        seq1 = torch.randn(3, 4)
-        seq2 = torch.randn(3, 4)
-
-        batch = [
-            (seq1, torch.tensor(1)),
-            (seq2, torch.tensor(0)),
-        ]
-
-        padded_sequences, attention_mask, labels = collate_fn(batch)
-
-        # No padding should be needed
-        assert padded_sequences.shape == (2, 3, 4)
-        assert torch.all(attention_mask)  # All True
-
-
-class TestLoadEmbeddingsData:
-    @pytest.fixture
-    def sample_embedding_csv(self):
-        """Create a sample CSV with embeddings."""
-        emb1 = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
-        emb2 = np.array([0.5, 0.6, 0.7, 0.8], dtype=np.float32)
-        emb3 = np.array([0.9, 1.0, 1.1, 1.2], dtype=np.float32)
-
-        csv_content = [
-            ["tokens", "hash", "language", "filepath", "label", "package", "embedding"],
-            [
-                "LOAD_CONST foo",
-                "hash1",
-                "python",
-                "/pkg1/file1.py",
-                "malicious",
-                "package_1",
-                ",".join(map(str, emb1)),
-            ],
-            [
-                "LOAD_CONST bar",
-                "hash2",
-                "python",
-                "/pkg1/file2.py",
-                "malicious",
-                "package_1",
-                ",".join(map(str, emb2)),
-            ],
-            [
-                "LOAD_CONST benign",
-                "hash3",
-                "python",
-                "/benign.py",
-                "benign",
-                "",
-                ",".join(map(str, emb3)),
-            ],
-        ]
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".csv", delete=False, newline=""
-        ) as f:
-            writer = csv.writer(f)
-            writer.writerows(csv_content)
-            temp_file_path = f.name
-
-        yield temp_file_path
-        Path(temp_file_path).unlink()
-
-    def test_load_embeddings_data(self, sample_embedding_csv):
-        """Test loading embeddings data from CSV."""
-        malicious_packages, benign_embeddings = load_embeddings_data(
-            sample_embedding_csv
-        )
-
-        assert len(malicious_packages) == 1
-        assert "package_1" in malicious_packages
-        assert len(malicious_packages["package_1"]) == 2
-
-        assert len(benign_embeddings) == 1
-        assert isinstance(benign_embeddings[0], np.ndarray)
-
-
 class TestTrainLSTMModel:
     @pytest.fixture
     def sample_embedding_csv(self):
-        """Create a larger sample CSV for training."""
-        # Create more realistic training data
+        """Create a sample CSV for training."""
         csv_content = [
             ["tokens", "hash", "language", "filepath", "label", "package", "embedding"]
         ]
 
         # Add malicious packages
-        for pkg_id in range(3):
+        for pkg_id in range(2):
             for file_id in range(2):
-                emb = np.random.rand(4).astype(np.float32)
+                emb = np.random.rand(8).astype(np.float32)  # Match hidden_dim
                 csv_content.append(
                     [
                         f"MAL_CODE_{pkg_id}_{file_id}",
@@ -325,8 +206,8 @@ class TestTrainLSTMModel:
                 )
 
         # Add benign samples
-        for sample_id in range(10):
-            emb = np.random.rand(4).astype(np.float32)
+        for sample_id in range(8):
+            emb = np.random.rand(8).astype(np.float32)  # Match hidden_dim
             csv_content.append(
                 [
                     f"BENIGN_{sample_id}",
@@ -357,14 +238,15 @@ class TestTrainLSTMModel:
         try:
             success = train_lstm_model(
                 csv_path=sample_embedding_csv,
-                output_model_path=model_path,
+                output_model=model_path,
                 epochs=1,  # Short training for testing
                 batch_size=2,
                 learning_rate=0.01,
+                embedding_dim=8,  # Match test data
                 hidden_dim=8,
                 num_layers=1,
                 max_benign_samples=3,
-                device="cpu",
+                use_focal_loss=False,
             )
 
             assert success
@@ -376,25 +258,17 @@ class TestTrainLSTMModel:
 
     def test_train_lstm_model_missing_file(self):
         """Test error handling for missing CSV file."""
-        success = train_lstm_model(
-            csv_path="nonexistent.csv",
-            output_model_path="test_model.pth",
-            epochs=1,
-            device="cpu",
-        )
+        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as f:
+            model_path = f.name
 
-        assert not success
+        try:
+            success = train_lstm_model(
+                csv_path="nonexistent.csv",
+                output_model=model_path,
+                epochs=1,
+            )
 
-    @patch("research.train_lstm.load_embeddings_data")
-    def test_train_lstm_model_no_data(self, mock_load):
-        """Test error handling when no data is loaded."""
-        mock_load.return_value = ({}, [])  # Empty data
-
-        success = train_lstm_model(
-            csv_path="dummy.csv",
-            output_model_path="test_model.pth",
-            epochs=1,
-            device="cpu",
-        )
-
-        assert not success
+            assert not success
+        finally:
+            if Path(model_path).exists():
+                Path(model_path).unlink()

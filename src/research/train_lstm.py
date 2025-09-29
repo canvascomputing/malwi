@@ -1,8 +1,7 @@
 """
-Train LSTM model on pre-computed embeddings for malware detection.
+LSTM training for malware detection.
 
-This module trains a simpler LSTM-based classifier using pre-computed DistilBERT embeddings
-from preprocess_rl.py, avoiding the overhead of reinforcement learning.
+This module implements training strategies for sequence-based malware detection.
 """
 
 import argparse
@@ -10,12 +9,15 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+from collections import Counter
+import math
 
 from common.messaging import (
     configure_messaging,
@@ -26,94 +28,19 @@ from common.messaging import (
     progress,
 )
 
-# Label constants for clarity and maintainability
+# Label constants - Binary classification
 BENIGN_LABEL = 0
 MALICIOUS_LABEL = 1
 
 
-class MalwareSequenceDataset(Dataset):
-    """Dataset for malware sequences with pre-computed embeddings."""
-
-    def __init__(
-        self,
-        malicious_packages: Dict[str, List[np.ndarray]],
-        benign_embeddings: List[np.ndarray],
-        max_benign_samples: int = 10,
-        random_seed: int = 42,
-    ):
-        """
-        Initialize dataset with malicious packages and benign samples.
-
-        Args:
-            malicious_packages: Dict mapping package names to lists of embeddings
-            benign_embeddings: List of benign sample embeddings
-            max_benign_samples: Maximum number of benign samples to include per sequence
-            random_seed: Random seed for reproducible sampling
-        """
-        self.malicious_packages = malicious_packages
-        self.benign_embeddings = benign_embeddings
-        self.max_benign_samples = max_benign_samples
-        self.rng = np.random.RandomState(random_seed)
-
-        # Build sequences: one per malicious package + some benign sequences
-        self.sequences = []
-        self.labels = []
-
-        # Add malicious sequences (one per package) - FIXED: Only malicious embeddings
-        for package_name, embeddings in malicious_packages.items():
-            # Create sequence with ONLY malicious embeddings
-            sequence = list(embeddings)  # Only malicious content
-            self.sequences.append(sequence)
-            self.labels.append(MALICIOUS_LABEL)
-
-        # Add equal number of purely benign sequences - FIXED: Balanced dataset
-        n_benign_sequences = len(malicious_packages)  # Same number as malicious!
-        for _ in range(n_benign_sequences):
-            n_samples = self.rng.randint(1, max_benign_samples + 1)
-            selected_benign = self.rng.choice(
-                len(benign_embeddings),
-                size=min(n_samples, len(benign_embeddings)),
-                replace=False,
-            )
-
-            sequence = [benign_embeddings[idx] for idx in selected_benign]
-            self.sequences.append(sequence)
-            self.labels.append(BENIGN_LABEL)
-
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, idx):
-        sequence = self.sequences[idx]
-        label = self.labels[idx]
-
-        # Convert to tensor
-        sequence_tensor = torch.stack([torch.from_numpy(emb) for emb in sequence])
-
-        return sequence_tensor, torch.tensor(label, dtype=torch.long)
-
-
-def collate_fn(batch):
-    """Collate function to handle variable-length sequences."""
-    sequences, labels = zip(*batch)
-
-    # Pad sequences to same length
-    padded_sequences = pad_sequence(sequences, batch_first=True, padding_value=0.0)
-
-    # Create attention mask (1 for real tokens, 0 for padding)
-    lengths = torch.tensor([len(seq) for seq in sequences])
-    batch_size, max_len = padded_sequences.shape[:2]
-    attention_mask = torch.arange(max_len).expand(
-        batch_size, max_len
-    ) < lengths.unsqueeze(1)
-
-    labels = torch.stack(labels)
-
-    return padded_sequences, attention_mask, labels
+# Using LSTM without additional attention layers
+# LSTMs capture sequence patterns through their gating mechanisms
 
 
 class MalwareLSTM(nn.Module):
-    """LSTM model for malware detection on embedding sequences."""
+    """
+    LSTM model for sequence-based malware detection.
+    """
 
     def __init__(
         self,
@@ -121,25 +48,23 @@ class MalwareLSTM(nn.Module):
         hidden_dim: int = 128,
         num_layers: int = 2,
         dropout: float = 0.3,
-        num_classes: int = 2,
+        num_classes: int = 2,  # Binary: Benign, Malicious
     ):
-        """
-        Initialize LSTM model.
-
-        Args:
-            embedding_dim: Dimension of input embeddings (from DistilBERT)
-            hidden_dim: Hidden dimension of LSTM
-            num_layers: Number of LSTM layers
-            dropout: Dropout rate
-            num_classes: Number of output classes (2 for binary classification)
-        """
         super().__init__()
 
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
-        # LSTM layers
+        # Embedding dropout to prevent over-reliance on individual embeddings
+        self.embedding_dropout = nn.Dropout(0.2)
+
+        # Noise injection for robustness
+        self.noise_factor = 0.1
+
+        # LSTMs process sequences inherently
+
+        # Bidirectional LSTM
         self.lstm = nn.LSTM(
             input_size=embedding_dim,
             hidden_size=hidden_dim,
@@ -149,330 +74,405 @@ class MalwareLSTM(nn.Module):
             bidirectional=True,
         )
 
-        # Classification head
+        # Using temporal pooling instead of attention layers
+
+        # Temporal pooling: combine max, mean, and weighted pooling
+        self.temporal_weights = nn.Linear(hidden_dim * 2, 1)
+
+        # Classification head with multiple pathways
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),  # *2 for bidirectional
+            nn.Linear(
+                hidden_dim * 4, hidden_dim * 2
+            ),  # 2 pooling methods × 2 (bidirectional)
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.5),
             nn.Linear(hidden_dim, num_classes),
         )
 
-    def forward(self, sequences, attention_mask):
-        """
-        Forward pass.
-
-        Args:
-            sequences: Padded sequences [batch_size, seq_len, embedding_dim]
-            attention_mask: Attention mask [batch_size, seq_len]
-
-        Returns:
-            logits: Classification logits [batch_size, num_classes]
-        """
+    def forward(self, sequences, attention_mask, training=True):
         batch_size, seq_len, _ = sequences.shape
+
+        # LSTM processes sequences inherently
+
+        # Apply embedding dropout and noise during training
+        if training:
+            sequences = self.embedding_dropout(sequences)
+            # Add Gaussian noise to prevent over-reliance on exact values
+            noise = torch.randn_like(sequences) * self.noise_factor
+            sequences = sequences + noise
 
         # LSTM forward pass
         lstm_out, (hidden, cell) = self.lstm(sequences)
 
-        # Use attention mask to get the last valid output for each sequence
-        # Find the last non-padded position for each sequence
-        lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
+        # Simplified temporal pooling on LSTM outputs without max pooling (reduces shortcut learning)
+        # 1. Mean pooling (considers all positions equally)
+        sum_pooled = (lstm_out * attention_mask.unsqueeze(-1)).sum(dim=1)
+        mean_pooled = sum_pooled / attention_mask.sum(dim=1, keepdim=True)
 
-        # Gather the last valid LSTM output for each sequence
-        batch_indices = torch.arange(batch_size, device=sequences.device)
-        last_outputs = lstm_out[batch_indices, lengths]
+        # 2. Weighted pooling (learns position importance)
+        weights = self.temporal_weights(lstm_out)
+        weights = weights.masked_fill(~attention_mask.unsqueeze(-1), -float("inf"))
+        weights = F.softmax(weights, dim=1)
+        weighted_pooled = (lstm_out * weights).sum(dim=1)
+
+        # Combine pooling strategies (excluding max pooling)
+        combined_features = torch.cat([mean_pooled, weighted_pooled], dim=-1)
 
         # Classification
-        logits = self.classifier(last_outputs)
+        logits = self.classifier(combined_features)
 
         return logits
 
 
-def load_embeddings_data(
-    csv_path: str,
-) -> Tuple[Dict[str, List[np.ndarray]], List[np.ndarray]]:
-    """Load pre-computed embeddings from CSV."""
-    from research.train_rl import load_and_organize_embeddings
+class MalwareDataset(Dataset):
+    """
+    Binary dataset with package-aware malware detection.
 
-    progress(f"Loading embeddings from {csv_path}...")
+    Strategy:
+    - Malicious sequences: Create mixed sequences with malicious package content + random benign samples
+    - Benign sequences: Pure benign sequences from benign packages
+    """
 
-    # Load with train/test split disabled
-    train_mal, train_benign, _, _, _, _ = load_and_organize_embeddings(
-        csv_path, test_split=0.0
-    )
+    def __init__(
+        self,
+        malicious_packages: Dict[str, List[np.ndarray]],
+        benign_packages: Dict[str, List[np.ndarray]],
+        max_benign_samples: int = 100,
+        malicious_ratio: float = 0.3,  # 30% malicious content in mixed sequences
+        random_seed: int = 42,
+    ):
+        super().__init__()
 
-    info(
-        f"Loaded {len(train_mal)} malicious packages and {len(train_benign)} benign samples"
-    )
+        self.malicious_packages = malicious_packages
+        self.benign_packages = benign_packages
+        self.max_benign_samples = max_benign_samples
+        self.malicious_ratio = malicious_ratio
+        self.rng = np.random.RandomState(random_seed)
 
-    return train_mal, train_benign
+        self.sequences = []
+        self.labels = []
+        self.sequence_types = []  # Track sequence composition for analysis
+
+        # Get all benign embeddings for sampling
+        all_benign_embeds = []
+        for package_embeds in benign_packages.values():
+            all_benign_embeds.extend(package_embeds)
+
+        # 1. Create Mixed Malicious Sequences
+        # Use entire malicious packages + random benign samples
+        for package_name, malicious_embeds in malicious_packages.items():
+            if not malicious_embeds:
+                continue
+
+            # Calculate how many benign samples to add
+            num_mal = len(malicious_embeds)
+            num_ben_needed = int(
+                num_mal * (1 - self.malicious_ratio) / self.malicious_ratio
+            )
+            num_ben_needed = min(
+                num_ben_needed,
+                len(all_benign_embeds),
+                max(0, self.max_benign_samples - num_mal),
+            )
+
+            if num_ben_needed > 0:
+                # Sample random benign embeddings
+                selected_benign_indices = self.rng.choice(
+                    len(all_benign_embeds), size=num_ben_needed, replace=False
+                )
+                selected_benign = [
+                    all_benign_embeds[i] for i in selected_benign_indices
+                ]
+
+                # Create mixed sequence
+                sequence = malicious_embeds + selected_benign
+                self.rng.shuffle(sequence)
+
+                self.sequences.append(sequence)
+                self.labels.append(MALICIOUS_LABEL)
+                self.sequence_types.append(
+                    f"mixed_package_{num_mal}mal_{num_ben_needed}ben"
+                )
+
+        # 2. Create Pure Benign Sequences
+        # Use random samples from all benign embeddings (shuffle across packages)
+        num_benign_sequences_needed = len(self.sequences)  # Balance dataset
+
+        for _ in range(num_benign_sequences_needed):
+            if not all_benign_embeds:
+                break
+
+            # Create benign sequence with random samples from all benign packages
+            num_samples = self.rng.randint(
+                10, min(self.max_benign_samples, len(all_benign_embeds)) + 1
+            )
+
+            selected_indices = self.rng.choice(
+                len(all_benign_embeds), size=num_samples, replace=False
+            )
+            sequence = [all_benign_embeds[i] for i in selected_indices]
+
+            self.sequences.append(sequence)
+            self.labels.append(BENIGN_LABEL)
+            self.sequence_types.append(f"benign_random_{num_samples}samples")
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        return self.sequences[idx], self.labels[idx]
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal loss to focus on hard examples and prevent over-reliance
+    on easy classifications.
+    """
+
+    def __init__(self, alpha=1, gamma=2, reduction="mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
 
 
 def train_lstm_model(
     csv_path: str,
-    output_model_path: str,
-    epochs: int = 10,
+    output_model: str = "malwi_models/malware_lstm_model.pth",
+    epochs: int = 20,
     batch_size: int = 16,
     learning_rate: float = 0.001,
+    embedding_dim: int = 256,
     hidden_dim: int = 128,
     num_layers: int = 2,
     dropout: float = 0.3,
-    max_benign_samples: int = 10,
+    max_benign_samples: int = 100,
+    use_focal_loss: bool = True,
     device: str = "auto",
 ) -> bool:
     """
-    Train LSTM model on pre-computed embeddings.
-
-    Args:
-        csv_path: Path to CSV with pre-computed embeddings
-        output_model_path: Path to save trained model
-        epochs: Number of training epochs
-        batch_size: Batch size for training
-        learning_rate: Learning rate for optimizer
-        hidden_dim: Hidden dimension of LSTM
-        num_layers: Number of LSTM layers
-        dropout: Dropout rate
-        max_benign_samples: Maximum benign samples per sequence
-        device: Device to use ('auto', 'cuda', 'cpu')
-
-    Returns:
-        True if training succeeded, False otherwise
+    Train LSTM model for malware detection.
     """
+    configure_messaging(quiet=False)
+
+    info("🧠 Training LSTM Model for Malware Detection")
+
+    # Load embeddings
+    progress("Loading embeddings...")
     try:
-        # Set device
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        embeddings_df = pd.read_csv(csv_path)
+    except FileNotFoundError:
+        error(f"CSV file not found: {csv_path}")
+        return False
+    except Exception as e:
+        error(f"Failed to load CSV file: {e}")
+        return False
+
+    # Process embeddings - packages are labeled consistently (no mixed packages exist)
+    malicious_packages = {}
+    benign_packages = {}
+
+    for _, row in embeddings_df.iterrows():
+        embedding = np.array([float(x) for x in row["embedding"].split(",")])
+        package = row["package"]
+        label = row["label"]
+
+        if label == "malicious":
+            if package not in malicious_packages:
+                malicious_packages[package] = []
+            malicious_packages[package].append(embedding)
+        else:  # benign
+            if package not in benign_packages:
+                benign_packages[package] = []
+            benign_packages[package].append(embedding)
+
+    info(
+        f"Loaded {len(malicious_packages)} malicious packages and {len(benign_packages)} benign packages"
+    )
+
+    # Check if we have enough data
+    if len(malicious_packages) == 0 or len(benign_packages) == 0:
+        error("Insufficient data: need both malicious packages and benign packages")
+        return False
+
+    # Create dataset with package-aware approach
+    dataset = MalwareDataset(
+        malicious_packages,
+        benign_packages,
+        max_benign_samples=max_benign_samples,
+    )
+
+    # Analyze dataset composition
+    sequence_type_counts = Counter(dataset.sequence_types)
+
+    info("Dataset composition:")
+    for seq_type, count in sequence_type_counts.items():
+        info(f"  • {seq_type}: {count}")
+
+    # Split dataset
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
+
+    # Create data loaders with custom collate
+    def collate_fn(batch):
+        sequences, labels = zip(*batch)
+        sequences = [torch.from_numpy(np.array(seq)).float() for seq in sequences]
+        padded = pad_sequence(sequences, batch_first=True, padding_value=0.0)
+        labels = torch.tensor(labels, dtype=torch.long)
+
+        # Create attention mask
+        lengths = torch.tensor([len(seq) for seq in sequences])
+        max_len = padded.size(1)
+        attention_mask = torch.arange(max_len).unsqueeze(0) < lengths.unsqueeze(1)
+
+        return padded, attention_mask, labels
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
+
+    # Initialize model
+    if device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
         device = torch.device(device)
-        info(f"Using device: {device}")
+    model = MalwareLSTM(
+        embedding_dim=embedding_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+        num_classes=2,  # Binary: Benign, Malicious
+    )
+    model.to(device)
 
-        # Load data
-        malicious_packages, benign_embeddings = load_embeddings_data(csv_path)
-
-        if not malicious_packages or not benign_embeddings:
-            error("No data loaded. Check CSV file and ensure it has embeddings.")
-            return False
-
-        # Determine embedding dimension
-        first_embedding = next(iter(malicious_packages.values()))[0]
-        embedding_dim = first_embedding.shape[0]
-        info(f"Embedding dimension: {embedding_dim}")
-
-        # Create dataset and dataloader
-        progress("Creating dataset...")
-        dataset = MalwareSequenceDataset(
-            malicious_packages=malicious_packages,
-            benign_embeddings=benign_embeddings,
-            max_benign_samples=max_benign_samples,
-        )
-
-        info(f"Created dataset with {len(dataset)} sequences")
-        info(f"Malicious sequences: {sum(dataset.labels)}")
-        info(f"Benign sequences: {len(dataset.labels) - sum(dataset.labels)}")
-
-        # Split into train/validation
-        train_size = int(0.8 * len(dataset))
-        val_size = len(dataset) - train_size
-        train_dataset, val_dataset = torch.utils.data.random_split(
-            dataset, [train_size, val_size]
-        )
-
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
-        )
-
-        # Create model
-        progress("Initializing model...")
-        model = MalwareLSTM(
-            embedding_dim=embedding_dim,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-        ).to(device)
-
-        info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-        # Training setup
+    # Loss and optimizer
+    if use_focal_loss:
+        criterion = FocalLoss(alpha=1, gamma=2)
+        info("Using Focal Loss to focus on hard examples")
+    else:
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
-        best_val_f1 = 0.0
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=5, T_mult=2
+    )
 
-        # Training loop
-        progress("Starting training...")
-        for epoch in range(epochs):
-            # Training phase
-            model.train()
-            train_loss = 0.0
-            train_preds = []
-            train_labels = []
+    # Training loop
+    best_val_f1 = 0.0
 
-            for batch_idx, (sequences, attention_mask, labels) in enumerate(
-                train_loader
-            ):
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+        train_preds = []
+        train_labels = []
+
+        for sequences, attention_mask, labels in train_loader:
+            sequences = sequences.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = labels.to(device)
+
+            optimizer.zero_grad()
+            logits = model(sequences, attention_mask, training=True)
+
+            # Classification loss
+            loss = criterion(logits, labels)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            train_loss += loss.item()
+            preds = torch.argmax(logits, dim=1)
+            train_preds.extend(preds.cpu().numpy())
+            train_labels.extend(labels.cpu().numpy())
+
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        val_preds = []
+        val_labels = []
+
+        with torch.no_grad():
+            for sequences, attention_mask, labels in val_loader:
                 sequences = sequences.to(device)
                 attention_mask = attention_mask.to(device)
                 labels = labels.to(device)
 
-                optimizer.zero_grad()
-
-                logits = model(sequences, attention_mask)
+                logits = model(sequences, attention_mask, training=False)
                 loss = criterion(logits, labels)
 
-                loss.backward()
-                optimizer.step()
-
-                train_loss += loss.item()
-
-                # Collect predictions
+                val_loss += loss.item()
                 preds = torch.argmax(logits, dim=1)
-                train_preds.extend(preds.cpu().numpy())
-                train_labels.extend(labels.cpu().numpy())
+                val_preds.extend(preds.cpu().numpy())
+                val_labels.extend(labels.cpu().numpy())
 
-            # Validation phase
-            model.eval()
-            val_loss = 0.0
-            val_preds = []
-            val_labels = []
+        # Calculate metrics
+        # Binary classification - direct comparison
+        train_acc = accuracy_score(train_labels, train_preds)
+        train_f1 = f1_score(train_labels, train_preds, zero_division=0)
+        val_acc = accuracy_score(val_labels, val_preds)
+        val_f1 = f1_score(val_labels, val_preds, zero_division=0)
 
-            with torch.no_grad():
-                for sequences, attention_mask, labels in val_loader:
-                    sequences = sequences.to(device)
-                    attention_mask = attention_mask.to(device)
-                    labels = labels.to(device)
+        info(f"Epoch {epoch + 1}/{epochs}:")
+        info(
+            f"  Train Loss: {train_loss / len(train_loader):.4f}, Acc: {train_acc:.4f}, F1: {train_f1:.4f}"
+        )
 
-                    logits = model(sequences, attention_mask)
-                    loss = criterion(logits, labels)
+        info(
+            f"  Val Loss: {val_loss / len(val_loader):.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
+        )
 
-                    val_loss += loss.item()
+        scheduler.step()
 
-                    preds = torch.argmax(logits, dim=1)
-                    val_preds.extend(preds.cpu().numpy())
-                    val_labels.extend(labels.cpu().numpy())
+        # Save best model
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            torch.save(model.state_dict(), output_model)
+            success(f"New best model saved with F1: {val_f1:.4f}")
 
-            # Calculate metrics
-            train_acc = accuracy_score(train_labels, train_preds)
-            train_f1 = f1_score(train_labels, train_preds, average="binary")
-
-            val_acc = accuracy_score(val_labels, val_preds)
-            val_f1 = f1_score(val_labels, val_preds, average="binary")
-            val_precision = precision_score(val_labels, val_preds, average="binary")
-            val_recall = recall_score(val_labels, val_preds, average="binary")
-
-            # Learning rate scheduling
-            scheduler.step()
-
-            # Print epoch results
-            info(f"Epoch {epoch + 1}/{epochs}:")
-            info(
-                f"  Train Loss: {train_loss / len(train_loader):.4f}, Acc: {train_acc:.4f}, F1: {train_f1:.4f}"
-            )
-            info(
-                f"  Val Loss: {val_loss / len(val_loader):.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}"
-            )
-            info(f"  Val Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
-
-            # Save best model
-            if val_f1 > best_val_f1:
-                best_val_f1 = val_f1
-                torch.save(model.state_dict(), output_model_path)
-                success(f"New best model saved with F1: {val_f1:.4f}")
-
-        success(f"✅ Training completed! Best validation F1: {best_val_f1:.4f}")
-        success(f"📁 Model saved to: {output_model_path}")
-
-        return True
-
-    except Exception as e:
-        error(f"Training failed: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
+    success(f"Training completed! Best validation F1: {best_val_f1:.4f}")
+    return True
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train LSTM model on pre-computed embeddings for malware detection"
+        description="Train LSTM model for malware detection"
     )
+    parser.add_argument("csv_path", help="Path to embeddings CSV")
+    parser.add_argument("--output-model", default="malwi_models/malware_lstm_model.pth")
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument(
-        "csv_path",
-        type=str,
-        help="Path to CSV file with pre-computed embeddings from preprocess_rl.py",
-    )
-    parser.add_argument(
-        "--output-model",
-        type=str,
-        default="malwi_models/malware_lstm_model.pth",
-        help="Path to save trained model (default: malwi_models/malware_lstm_model.pth)",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=10,
-        help="Number of training epochs (default: 10)",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="Batch size for training (default: 16)",
-    )
-    parser.add_argument(
-        "--learning-rate",
-        type=float,
-        default=0.001,
-        help="Learning rate for optimizer (default: 0.001)",
-    )
-    parser.add_argument(
-        "--hidden-dim",
-        type=int,
-        default=128,
-        help="Hidden dimension of LSTM (default: 128)",
-    )
-    parser.add_argument(
-        "--num-layers",
-        type=int,
-        default=2,
-        help="Number of LSTM layers (default: 2)",
-    )
-    parser.add_argument(
-        "--dropout",
-        type=float,
-        default=0.3,
-        help="Dropout rate (default: 0.3)",
-    )
-    parser.add_argument(
-        "--max-benign-samples",
-        type=int,
-        default=10,
-        help="Maximum benign samples per sequence (default: 10)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cuda", "cpu"],
-        help="Device to use for training (default: auto)",
+        "--use-focal-loss", action="store_true", help="Use focal loss for hard examples"
     )
 
     args = parser.parse_args()
-    configure_messaging(quiet=False)
 
     success_result = train_lstm_model(
-        csv_path=args.csv_path,
-        output_model_path=args.output_model,
+        args.csv_path,
+        output_model=args.output_model,
         epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        max_benign_samples=args.max_benign_samples,
-        device=args.device,
+        use_focal_loss=args.use_focal_loss,
     )
 
     exit(0 if success_result else 1)

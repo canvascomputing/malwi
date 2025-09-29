@@ -1130,7 +1130,7 @@ Examples:
             progress("Starting LSTM training...")
             success_result = train_lstm_model(
                 csv_path=embedding_csv,
-                output_model_path=output_model,
+                output_model=output_model,
                 epochs=epochs,
                 batch_size=batch_size,
                 learning_rate=learning_rate,

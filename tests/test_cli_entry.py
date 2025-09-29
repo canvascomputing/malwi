@@ -367,6 +367,7 @@ class TestBatchMode:
         args.triage = False
         args.triage_llm = False
         args.triage_ui = False
+        args.lstm_analysis = False
 
         # Mock the process_files function and report
         mock_report = MagicMock()
@@ -387,6 +388,7 @@ class TestBatchMode:
                     triage=args.triage,
                     triage_provider=None,
                     cache=None,
+                    lstm_analysis=False,
                 )
 
                 # Verify result
@@ -657,6 +659,7 @@ class TestPyPICommand:
                     triage=False,
                     triage_provider=None,
                     cache=None,
+                    lstm_analysis=False,
                 )
 
                 # Verify result output
@@ -822,6 +825,7 @@ class TestPyPICommand:
                     triage=False,
                     triage_provider=None,
                     cache=None,
+                    lstm_analysis=False,
                 )
 
     @patch("cli.pypi.scan_pypi_package")
