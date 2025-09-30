@@ -37,6 +37,7 @@ class Step(Enum):
     PREPROCESS_RL = "preprocess_rl"
     TRAIN_RL = "train_rl"
     TRAIN_LSTM = "train_lstm"
+    TRAIN_LONGFORMER = "train_longformer"
 
 
 class Language(Enum):
@@ -399,6 +400,105 @@ Examples:
             help="Fraction of data to hold out for testing (default: 0.2 = 20%%)",
         )
 
+        # Train Longformer subcommand
+        train_longformer_parser = subparsers.add_parser(
+            "train_longformer",
+            help="Train Longformer model for package-level malware detection",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Examples:
+  # Train Longformer with default settings
+  ./research train_longformer training_data.csv
+
+  # Train with custom parameters
+  ./research train_longformer training_data.csv --max-length 2048 --batch-size 4 --epochs 5
+
+  # Train with validation split
+  ./research train_longformer training_data.csv --val-csv validation_data.csv --label-aggregation majority
+            """,
+        )
+
+        train_longformer_parser.add_argument(
+            "csv_path",
+            type=str,
+            help="Path to training CSV file with tokens, label, package columns",
+        )
+
+        train_longformer_parser.add_argument(
+            "--output-model",
+            type=str,
+            default="malwi_models/longformer_model",
+            help="Path to save trained model (default: malwi_models/longformer_model)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--tokenizer-path",
+            type=str,
+            default="malwi_models",
+            help="Path to tokenizer directory (default: malwi_models)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--val-csv",
+            type=str,
+            help="Path to validation CSV file (optional)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--max-length",
+            type=int,
+            default=4096,
+            help="Maximum sequence length (default: 4096)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=2,
+            help="Batch size (default: 2)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--epochs",
+            type=int,
+            default=3,
+            help="Number of training epochs (default: 3)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--learning-rate",
+            type=float,
+            default=2e-5,
+            help="Learning rate (default: 2e-5)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--gradient-accumulation-steps",
+            type=int,
+            default=4,
+            help="Gradient accumulation steps (default: 4)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--no-fp16",
+            action="store_true",
+            help="Disable mixed precision training",
+        )
+
+        train_longformer_parser.add_argument(
+            "--device",
+            type=str,
+            help="Device to use (cuda/cpu, auto-detected if not specified)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--label-aggregation",
+            type=str,
+            default="any_positive",
+            choices=["majority", "any_positive", "weighted"],
+            help="Label aggregation strategy (default: any_positive)",
+        )
+
         # Eval subcommand
         eval_parser = subparsers.add_parser(
             "eval",
@@ -470,6 +570,8 @@ Examples:
                 return self._handle_steps_command(parsed_args)
             elif parsed_args.command == "train_rl":
                 return self._handle_train_rl_command(parsed_args)
+            elif parsed_args.command == "train_longformer":
+                return self._handle_train_longformer_command(parsed_args)
             elif parsed_args.command == "eval":
                 return self._handle_eval_command(parsed_args)
             else:
@@ -541,6 +643,8 @@ Examples:
             return self._train_rl_step(args)
         elif step == Step.TRAIN_LSTM.value:
             return self._train_lstm_step(args)
+        elif step == Step.TRAIN_LONGFORMER.value:
+            return self._train_longformer_step(args)
         else:
             error(f"Unknown step: {step}")
             return False
@@ -1485,6 +1589,191 @@ Examples:
         except Exception as e:
             error(f"Evaluation failed: {e}")
             return 1
+
+    def _handle_train_longformer_command(self, args: argparse.Namespace) -> int:
+        """
+        Handle the train_longformer subcommand.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            Exit code (0 for success, non-zero for failure)
+        """
+        info("🔬 Training Longformer Model for Package-Level Detection")
+
+        try:
+            # Import Longformer training function
+            from research.train_longformer import train_longformer
+            from research.train_longformer import LongformerTrainingConfig
+
+            # Validate input file
+            csv_path = Path(args.csv_path)
+            if not csv_path.exists():
+                error(f"Training CSV not found: {args.csv_path}")
+                error("   Please run preprocessing first to generate training data")
+                return 1
+
+            success(f"Training CSV found: {args.csv_path}")
+
+            # Validate tokenizer
+            tokenizer_path = Path(args.tokenizer_path)
+            if not tokenizer_path.exists():
+                error(f"Tokenizer not found: {args.tokenizer_path}")
+                error("   Please train DistilBERT model first to generate tokenizer")
+                return 1
+
+            success(f"Tokenizer found: {args.tokenizer_path}")
+
+            # Display training configuration
+            info("📋 Longformer Training Configuration:")
+            info(f"   • Input CSV: {args.csv_path}")
+            info(f"   • Output Model: {args.output_model}")
+            info(f"   • Tokenizer: {args.tokenizer_path}")
+            info(f"   • Max Length: {args.max_length}")
+            info(f"   • Batch Size: {args.batch_size}")
+            info(f"   • Epochs: {args.epochs}")
+            info(f"   • Learning Rate: {args.learning_rate}")
+            info(f"   • Gradient Accumulation: {args.gradient_accumulation_steps}")
+            info(f"   • Mixed Precision: {not args.no_fp16}")
+            info(f"   • Label Aggregation: {args.label_aggregation}")
+            if args.val_csv:
+                info(f"   • Validation CSV: {args.val_csv}")
+
+            # Create training configuration
+            config = LongformerTrainingConfig(
+                max_length=args.max_length,
+                batch_size=args.batch_size,
+                epochs=args.epochs,
+                learning_rate=args.learning_rate,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                fp16=not args.no_fp16,
+                label_aggregation_strategy=args.label_aggregation,
+            )
+
+            # Train the model
+            progress("Starting Longformer training...")
+            success_result = train_longformer(
+                csv_path=args.csv_path,
+                output_model=args.output_model,
+                tokenizer_path=args.tokenizer_path,
+                config=config,
+                val_csv=args.val_csv,
+                device=args.device,
+            )
+
+            if success_result:
+                success("🎉 Longformer training completed successfully!")
+                info(f"📁 Trained model saved to: {args.output_model}")
+                info("💡 Use the model for package-level malware detection")
+                return 0
+            else:
+                error("Longformer training failed")
+                return 1
+
+        except Exception as e:
+            error(f"Longformer training failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return 1
+
+    def _train_longformer_step(self, args: argparse.Namespace) -> bool:
+        """
+        Execute Longformer training as a pipeline step.
+
+        Args:
+            args: Parsed command line arguments
+
+        Returns:
+            True if training succeeded, False otherwise
+        """
+        info("🔬 Training Longformer Model")
+
+        try:
+            from research.train_longformer import train_longformer
+            from research.train_longformer import LongformerTrainingConfig
+
+            # Check if training data exists
+            training_csv = "training_processed.csv"
+            if not Path(training_csv).exists():
+                error(f"Training data not found: {training_csv}")
+                error("   Please run 'preprocess' step first to generate training data")
+                return False
+
+            success(f"🟢 Training data found: {training_csv}")
+
+            # Check if tokenizer exists
+            tokenizer_path = "malwi_models"
+            if not Path(tokenizer_path).exists():
+                error(f"Tokenizer not found: {tokenizer_path}")
+                error("   Please run 'train' step first to generate tokenizer")
+                return False
+
+            success(f"🟢 Tokenizer found: {tokenizer_path}")
+
+            # Longformer training configuration from environment variables
+            output_model = os.environ.get(
+                "LONGFORMER_MODEL_PATH", "malwi_models/longformer_model"
+            )
+            epochs = int(os.environ.get("LONGFORMER_EPOCHS", "3"))
+            batch_size = int(os.environ.get("LONGFORMER_BATCH_SIZE", "2"))
+            learning_rate = float(os.environ.get("LONGFORMER_LEARNING_RATE", "2e-5"))
+            max_length = int(os.environ.get("LONGFORMER_MAX_LENGTH", "4096"))
+            gradient_accumulation_steps = int(
+                os.environ.get("LONGFORMER_GRADIENT_ACCUMULATION_STEPS", "4")
+            )
+            label_aggregation = os.environ.get(
+                "LONGFORMER_LABEL_AGGREGATION", "any_positive"
+            )
+
+            info("🔧 Longformer Configuration:")
+            info(f"   • Model Path: {output_model}")
+            info(f"   • Epochs: {epochs}")
+            info(f"   • Batch Size: {batch_size}")
+            info(f"   • Learning Rate: {learning_rate}")
+            info(f"   • Max Length: {max_length}")
+            info(f"   • Gradient Accumulation: {gradient_accumulation_steps}")
+            info(f"   • Label Aggregation: {label_aggregation}")
+            info(
+                "💡 Tip: Configure via environment variables (LONGFORMER_EPOCHS, LONGFORMER_BATCH_SIZE, etc.)"
+            )
+
+            # Create training configuration
+            config = LongformerTrainingConfig(
+                max_length=max_length,
+                batch_size=batch_size,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                label_aggregation_strategy=label_aggregation,
+            )
+
+            # Train the Longformer model
+            progress("Starting Longformer training...")
+            success_result = train_longformer(
+                csv_path=training_csv,
+                output_model=output_model,
+                tokenizer_path=tokenizer_path,
+                config=config,
+                device="auto",
+            )
+
+            if success_result:
+                success("🎉 Longformer training completed successfully!")
+                info(f"📁 Trained model saved to: {output_model}")
+                info("💡 Use the model for package-level malware detection")
+                return True
+            else:
+                error("Longformer training failed")
+                return False
+
+        except Exception as e:
+            error(f"Longformer training failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
 
 
 def main():

@@ -119,7 +119,7 @@ def run_batch_scan(child_folder: Path, args, cache=None) -> dict:
             triage=use_triage,
             triage_provider=triage_provider,
             cache=cache,
-            lstm_analysis=args.lstm_analysis,
+            deep_analysis=args.deep_analysis,
         )
 
         # Generate output based on format
@@ -169,7 +169,7 @@ def process_batch_mode(input_path: Path, args, cache=None) -> None:
         MalwiReport.load_models_into_memory(
             distilbert_model_path=args.model_path,
             tokenizer_path=args.tokenizer_path,
-            lstm_model_path=args.lstm_model_path,
+            deep_model_path=args.deep_model_path,
         )
     except Exception as e:
         model_warning("ML", e)
@@ -271,7 +271,7 @@ def scan_command(args):
         MalwiReport.load_models_into_memory(
             distilbert_model_path=args.model_path,
             tokenizer_path=args.tokenizer_path,
-            lstm_model_path=args.lstm_model_path,
+            deep_model_path=args.deep_model_path,
         )
     except Exception as e:
         model_warning("ML", e)
@@ -338,7 +338,7 @@ def scan_command(args):
         triage=use_triage,
         triage_provider=triage_provider,
         cache=cache,
-        lstm_analysis=args.lstm_analysis,
+        deep_analysis=args.deep_analysis,
     )
 
     # Clean up the real-time display
@@ -465,17 +465,18 @@ def setup_scan_parser(subparsers):
         help="Specify the DistilBert model path",
         default=None,
     )
+    # Deep analysis arguments
     developer_group.add_argument(
-        "--lstm-model-path",
-        metavar="PATH",
-        help="Specify the LSTM model path for sequence analysis",
-        default=None,
+        "--deep-analysis",
+        action="store_true",
+        help="Enable deep analysis with Longformer on malicious findings (cross-file package analysis)",
+        default=False,
     )
     developer_group.add_argument(
-        "--lstm-analysis",
-        action="store_true",
-        help="Enable LSTM sequence analysis on malicious findings",
-        default=False,
+        "--deep-model-path",
+        metavar="PATH",
+        help="Specify the Longformer model path for deep analysis",
+        default=None,
     )
     developer_group.add_argument(
         "--cache",
