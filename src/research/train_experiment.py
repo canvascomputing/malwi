@@ -112,16 +112,18 @@ class UnifiedMalwareDetector(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
+        hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Forward pass through unified model.
+        Forward pass through unified model with optional state persistence.
 
         Args:
             input_ids: Tokenized sequences [batch_size, seq_len]
             attention_mask: Padding mask [batch_size, seq_len]
+            hidden_state: Optional tuple of (hidden, cell) states from previous window
 
         Returns:
-            Logits for binary classification [batch_size, 2]
+            Tuple of (logits, (hidden, cell)) for classification and state carryover
         """
         # 1. DistilBERT: Tokens → Contextual Embeddings
         with torch.amp.autocast("cuda"):  # Mixed precision for memory efficiency
@@ -132,10 +134,12 @@ class UnifiedMalwareDetector(nn.Module):
                 distilbert_outputs.last_hidden_state
             )  # [batch_size, seq_len, hidden_dim]
 
-        # 2. LSTM: Embeddings → Sequential Patterns
-        lstm_outputs, (hidden, cell) = self.lstm(
-            token_embeddings
-        )  # [batch_size, seq_len, lstm_dim*2]
+        # 2. LSTM: Embeddings → Sequential Patterns (with state carryover)
+        if hidden_state is not None:
+            lstm_outputs, (hidden, cell) = self.lstm(token_embeddings, hidden_state)
+        else:
+            lstm_outputs, (hidden, cell) = self.lstm(token_embeddings)
+        # lstm_outputs: [batch_size, seq_len, lstm_dim*2]
 
         # 3. Attention-based Pooling (exclude padding tokens)
         seq_mask = attention_mask.unsqueeze(-1).float()  # [batch_size, seq_len, 1]
@@ -165,7 +169,40 @@ class UnifiedMalwareDetector(nn.Module):
         # 5. Classification
         logits = self.classifier(combined_features)
 
-        return logits
+        return logits, (hidden, cell)
+
+    def forward_package(
+        self,
+        package_windows: List[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> torch.Tensor:
+        """
+        Process a complete package with multiple windows, maintaining LSTM state.
+
+        Args:
+            package_windows: List of (input_ids, attention_mask) tuples for each window
+
+        Returns:
+            Final classification logits for the package
+        """
+        hidden_state = None
+        all_logits = []
+
+        # Process each window sequentially, maintaining state
+        for input_ids, attention_mask in package_windows:
+            # Add batch dimension if needed
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+                attention_mask = attention_mask.unsqueeze(0)
+
+            # Forward pass with state carryover
+            logits, hidden_state = self.forward(input_ids, attention_mask, hidden_state)
+            all_logits.append(logits)
+
+        # Aggregate logits from all windows (average or max pooling)
+        # Using average for stability
+        final_logits = torch.stack(all_logits).mean(dim=0)
+
+        return final_logits
 
 
 class UnifiedDataset(Dataset):

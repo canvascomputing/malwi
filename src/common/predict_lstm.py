@@ -66,8 +66,16 @@ def _ensure_lstm_initialized() -> bool:
     return _lstm_model is not None
 
 
-def get_sequence_lstm_prediction(embeddings: List[np.ndarray]) -> Dict[str, Any]:
-    """Get LSTM prediction for a sequence of embeddings."""
+def get_sequence_lstm_prediction(
+    embeddings: List[np.ndarray], use_stateful: bool = False
+) -> Dict[str, Any]:
+    """
+    Get LSTM prediction for a sequence of embeddings.
+
+    Args:
+        embeddings: List of embedding arrays
+        use_stateful: Whether to use stateful processing across windows
+    """
     prediction_result = {
         "status": "pending",
         "prediction": "unknown",
@@ -88,42 +96,152 @@ def get_sequence_lstm_prediction(embeddings: List[np.ndarray]) -> Dict[str, Any]
 
     try:
         with torch.no_grad():
-            # Convert embeddings to tensor
-            sequence = torch.stack(
-                [torch.from_numpy(emb).float() for emb in embeddings]
-            )
-            sequence = sequence.unsqueeze(0)  # Add batch dimension
-            sequence = sequence.to(_lstm_device)
+            if use_stateful and hasattr(_lstm_model, "forward_package"):
+                # Use stateful package processing
+                prediction_result = _get_stateful_package_prediction(embeddings)
+            else:
+                # Standard single-window processing
+                # Convert embeddings to tensor
+                sequence = torch.stack(
+                    [torch.from_numpy(emb).float() for emb in embeddings]
+                )
+                sequence = sequence.unsqueeze(0)  # Add batch dimension
+                sequence = sequence.to(_lstm_device)
 
-            # Create attention mask
-            attention_mask = torch.ones(1, len(embeddings), dtype=torch.bool)
-            attention_mask = attention_mask.to(_lstm_device)
+                # Create attention mask
+                attention_mask = torch.ones(1, len(embeddings), dtype=torch.bool)
+                attention_mask = attention_mask.to(_lstm_device)
 
-            # Get prediction
-            logits = _lstm_model(sequence, attention_mask)
-            probs = torch.softmax(logits, dim=1)
+                # Get prediction - handle new return format (logits, hidden_state)
+                output = _lstm_model(
+                    sequence, attention_mask, hidden_state=None, training=False
+                )
+                # Handle both old format (logits only) and new format (logits, state)
+                if isinstance(output, tuple):
+                    logits, _ = output  # New stateful format
+                else:
+                    logits = output  # Old format for backward compatibility
+                probs = torch.softmax(logits, dim=1)
 
-            # Binary prediction
-            benign_prob = probs[0, BENIGN_LABEL].item()
-            malicious_prob = probs[0, MALICIOUS_LABEL].item()
+                # Binary prediction
+                benign_prob = probs[0, BENIGN_LABEL].item()
+                malicious_prob = probs[0, MALICIOUS_LABEL].item()
 
-            prediction = (
-                "malicious" if malicious_prob > PREDICTION_THRESHOLD else "benign"
-            )
-            confidence = max(benign_prob, malicious_prob)
+                prediction = (
+                    "malicious" if malicious_prob > PREDICTION_THRESHOLD else "benign"
+                )
+                confidence = max(benign_prob, malicious_prob)
 
-            prediction_result["status"] = "success"
-            prediction_result["prediction"] = prediction
-            prediction_result["confidence"] = confidence
-            prediction_result["probabilities"] = {
-                "benign": benign_prob,
-                "malicious": malicious_prob,
-            }
-            prediction_result["sequence_length"] = len(embeddings)
+                prediction_result["status"] = "success"
+                prediction_result["prediction"] = prediction
+                prediction_result["confidence"] = confidence
+                prediction_result["probabilities"] = {
+                    "benign": benign_prob,
+                    "malicious": malicious_prob,
+                }
+                prediction_result["sequence_length"] = len(embeddings)
 
     except Exception as e:
         prediction_result["status"] = "error"
         prediction_result["message"] = str(e)
+
+    return prediction_result
+
+
+def _get_stateful_package_prediction(
+    embeddings: List[np.ndarray], window_size: int = 100, window_stride: int = 50
+) -> Dict[str, Any]:
+    """
+    Get LSTM prediction using stateful processing across windows.
+
+    Args:
+        embeddings: List of embedding arrays for the entire package
+        window_size: Size of each window
+        window_stride: Overlap between windows
+    """
+    prediction_result = {
+        "status": "pending",
+        "prediction": "unknown",
+        "confidence": 0.0,
+    }
+
+    try:
+        with torch.no_grad():
+            # Split embeddings into windows
+            windows = []
+            masks = []
+
+            for start in range(0, len(embeddings), window_stride):
+                end = min(start + window_size, len(embeddings))
+                window_embeddings = embeddings[start:end]
+
+                # Pad if needed
+                if len(window_embeddings) < window_size:
+                    padding = [
+                        np.zeros_like(embeddings[0])
+                        for _ in range(window_size - len(window_embeddings))
+                    ]
+                    window_embeddings = window_embeddings + padding
+
+                # Convert to tensor
+                window_tensor = torch.stack(
+                    [
+                        torch.from_numpy(emb).float()
+                        for emb in window_embeddings[:window_size]
+                    ]
+                )
+                windows.append(window_tensor)
+
+                # Create mask
+                mask = torch.ones(window_size, dtype=torch.bool)
+                if end - start < window_size:
+                    mask[end - start :] = False
+                masks.append(mask)
+
+                # Stop if we've reached the end
+                if end >= len(embeddings):
+                    break
+
+            # Process with forward_package if available
+            if hasattr(_lstm_model, "forward_package"):
+                # Send windows to device
+                windows = [w.to(_lstm_device) for w in windows]
+                masks = [m.to(_lstm_device) for m in masks]
+
+                # Get prediction using stateful processing
+                final_logits = _lstm_model.forward_package(
+                    windows, masks, training=False
+                )
+                probs = torch.softmax(final_logits, dim=1)
+
+                # Binary prediction
+                benign_prob = probs[0, BENIGN_LABEL].item()
+                malicious_prob = probs[0, MALICIOUS_LABEL].item()
+
+                prediction = (
+                    "malicious" if malicious_prob > PREDICTION_THRESHOLD else "benign"
+                )
+                confidence = max(benign_prob, malicious_prob)
+
+                prediction_result["status"] = "success"
+                prediction_result["prediction"] = prediction
+                prediction_result["confidence"] = confidence
+                prediction_result["probabilities"] = {
+                    "benign": benign_prob,
+                    "malicious": malicious_prob,
+                }
+                prediction_result["sequence_length"] = len(embeddings)
+                prediction_result["num_windows"] = len(windows)
+                prediction_result["processing_mode"] = "stateful"
+            else:
+                # Fallback to standard processing
+                return get_sequence_lstm_prediction(
+                    embeddings[:window_size], use_stateful=False
+                )
+
+    except Exception as e:
+        prediction_result["status"] = "error"
+        prediction_result["message"] = f"Stateful processing error: {str(e)}"
 
     return prediction_result
 

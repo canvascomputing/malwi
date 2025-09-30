@@ -93,10 +93,20 @@ class MalwareLSTM(nn.Module):
             nn.Linear(hidden_dim, num_classes),
         )
 
-    def forward(self, sequences, attention_mask, training=True):
-        batch_size, seq_len, _ = sequences.shape
+    def forward(self, sequences, attention_mask, hidden_state=None, training=True):
+        """
+        Forward pass with optional hidden state for sequential window processing.
 
-        # LSTM processes sequences inherently
+        Args:
+            sequences: Input embeddings [batch_size, seq_len, embedding_dim]
+            attention_mask: Padding mask [batch_size, seq_len]
+            hidden_state: Optional tuple of (hidden, cell) from previous window
+            training: Whether in training mode
+
+        Returns:
+            Tuple of (logits, (hidden, cell)) for classification and state persistence
+        """
+        batch_size, seq_len, _ = sequences.shape
 
         # Apply embedding dropout and noise during training
         if training:
@@ -105,8 +115,11 @@ class MalwareLSTM(nn.Module):
             noise = torch.randn_like(sequences) * self.noise_factor
             sequences = sequences + noise
 
-        # LSTM forward pass
-        lstm_out, (hidden, cell) = self.lstm(sequences)
+        # LSTM forward pass with optional state carryover
+        if hidden_state is not None:
+            lstm_out, (hidden, cell) = self.lstm(sequences, hidden_state)
+        else:
+            lstm_out, (hidden, cell) = self.lstm(sequences)
 
         # Simplified temporal pooling on LSTM outputs without max pooling (reduces shortcut learning)
         # 1. Mean pooling (considers all positions equally)
@@ -125,7 +138,39 @@ class MalwareLSTM(nn.Module):
         # Classification
         logits = self.classifier(combined_features)
 
-        return logits
+        return logits, (hidden, cell)
+
+    def forward_package(self, package_sequences, attention_masks, training=True):
+        """
+        Process a complete package with multiple sequences/windows, maintaining LSTM state.
+
+        Args:
+            package_sequences: List of embedding sequences for each window
+            attention_masks: List of attention masks for each window
+            training: Whether in training mode
+
+        Returns:
+            Final classification logits for the entire package
+        """
+        hidden_state = None
+        all_logits = []
+
+        # Process each window sequentially with state carryover
+        for sequences, mask in zip(package_sequences, attention_masks):
+            # Ensure batch dimension
+            if sequences.dim() == 2:
+                sequences = sequences.unsqueeze(0)
+                mask = mask.unsqueeze(0)
+
+            # Forward pass with state persistence
+            logits, hidden_state = self.forward(sequences, mask, hidden_state, training)
+            all_logits.append(logits)
+
+        # Aggregate logits from all windows
+        # Using mean pooling for stability (could also use max or weighted)
+        final_logits = torch.stack(all_logits).mean(dim=0)
+
+        return final_logits
 
 
 class MalwareDataset(Dataset):
@@ -393,7 +438,10 @@ def train_lstm_model(
             labels = labels.to(device)
 
             optimizer.zero_grad()
-            logits = model(sequences, attention_mask, training=True)
+            # Updated to handle new return format (logits, hidden_state)
+            logits, _ = model(
+                sequences, attention_mask, hidden_state=None, training=True
+            )
 
             # Classification loss
             loss = criterion(logits, labels)
@@ -419,7 +467,10 @@ def train_lstm_model(
                 attention_mask = attention_mask.to(device)
                 labels = labels.to(device)
 
-                logits = model(sequences, attention_mask, training=False)
+                # Updated to handle new return format (logits, hidden_state)
+                logits, _ = model(
+                    sequences, attention_mask, hidden_state=None, training=False
+                )
                 loss = criterion(logits, labels)
 
                 val_loss += loss.item()
