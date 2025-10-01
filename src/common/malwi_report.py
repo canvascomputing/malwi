@@ -942,8 +942,13 @@ class MalwiReport:
                     initialize_longformer_model,
                 )
 
+                # Replace the last file listing with analyzing indicator
                 if not silent:
-                    progress("Running deep analysis...")
+                    # Move up one line and clear it (removes the file listing)
+                    print("\033[1A\033[2K", file=sys.stderr, end="")
+                    # Show analyzing indicator with newline so cursor moves down
+                    print("     └── 🧠 analyzing", file=sys.stderr)
+                    sys.stderr.flush()
 
                 # Longformer model should already be pre-loaded if path was provided
                 # Only initialize if not already loaded
@@ -961,16 +966,19 @@ class MalwiReport:
                     package_name=Path(str(input_path)).name if input_path else None,
                 )
 
+                # Clear the analyzing indicator
+                if not silent:
+                    # Move up to the analyzing line and clear it
+                    print("\033[1A\033[2K", file=sys.stderr, end="")
+                    sys.stderr.flush()
+
                 # Update confidence if deep analysis provides higher confidence
                 if deep_results and "overall" in deep_results:
                     deep_confidence = deep_results["overall"].get("confidence", 0.0)
                     if deep_results["overall"]["prediction"] == "malicious":
                         # Use deep analysis confidence if it's higher
                         confidence = max(confidence, deep_confidence)
-                        if not silent:
-                            info(
-                                f"Deep analysis confidence: {deep_confidence:.2f} (using: {confidence:.2f})"
-                            )
+                        pass  # Deep analysis agrees with primary analysis
                     elif not silent:
                         # Deep analysis disagrees - log for informational purposes
                         warning(
