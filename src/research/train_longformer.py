@@ -158,6 +158,7 @@ def train_longformer(
         model_config = LongformerConfig.from_pretrained(
             "allenai/longformer-base-4096",
             num_labels=NUM_LABELS,
+            vocab_size=actual_vocab_size,  # Match tokenizer vocab size
             attention_window=512,
             problem_type="multi_label_classification",
             classifier_dropout=0.1,
@@ -167,7 +168,11 @@ def train_longformer(
         model = LongformerForSequenceClassification.from_pretrained(
             "allenai/longformer-base-4096",
             config=model_config,
+            ignore_mismatched_sizes=True,
         )
+
+        # Resize token embeddings to match tokenizer vocab size
+        model.resize_token_embeddings(actual_vocab_size)
 
         info(
             f"Model vocab_size: {model.config.vocab_size}, Tokenizer vocab_size: {actual_vocab_size}"
@@ -314,6 +319,16 @@ def train_longformer(
                 save_model(
                     model, output_model, epoch + 1, epoch_stats, tokenizer_vocab_size
                 )
+
+        # Save final model (ensure model is always saved)
+        info("Saving final trained model...")
+        save_model(
+            model,
+            output_model,
+            config.epochs,
+            training_stats[-1] if training_stats else {},
+            tokenizer_vocab_size,
+        )
 
         # Save final training statistics
         output_dir = Path(output_model)
