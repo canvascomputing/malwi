@@ -499,6 +499,14 @@ Examples:
             help="Label aggregation strategy (default: any_positive)",
         )
 
+        train_longformer_parser.add_argument(
+            "--model-size",
+            type=str,
+            default="small",
+            choices=["small", "base"],
+            help="Model size configuration (small: faster training, base: standard Longformer) (default: small)",
+        )
+
         # Eval subcommand
         eval_parser = subparsers.add_parser(
             "eval",
@@ -1637,6 +1645,7 @@ Examples:
             info(f"   • Gradient Accumulation: {args.gradient_accumulation_steps}")
             info(f"   • Mixed Precision: {not args.no_fp16}")
             info(f"   • Label Aggregation: {args.label_aggregation}")
+            info(f"   • Model Size: {args.model_size}")
             if args.val_csv:
                 info(f"   • Validation CSV: {args.val_csv}")
 
@@ -1649,6 +1658,7 @@ Examples:
                 gradient_accumulation_steps=args.gradient_accumulation_steps,
                 fp16=not args.no_fp16,
                 label_aggregation_strategy=args.label_aggregation,
+                model_size=args.model_size,
             )
 
             # Train the model
@@ -1726,6 +1736,7 @@ Examples:
             label_aggregation = os.environ.get(
                 "LONGFORMER_LABEL_AGGREGATION", "any_positive"
             )
+            model_size = os.environ.get("LONGFORMER_MODEL_SIZE", "small")
 
             info("🔧 Longformer Configuration:")
             info(f"   • Model Path: {output_model}")
@@ -1735,8 +1746,9 @@ Examples:
             info(f"   • Max Length: {max_length}")
             info(f"   • Gradient Accumulation: {gradient_accumulation_steps}")
             info(f"   • Label Aggregation: {label_aggregation}")
+            info(f"   • Model Size: {model_size}")
             info(
-                "💡 Tip: Configure via environment variables (LONGFORMER_EPOCHS, LONGFORMER_BATCH_SIZE, etc.)"
+                "💡 Tip: Configure via environment variables (LONGFORMER_EPOCHS, LONGFORMER_BATCH_SIZE, LONGFORMER_MODEL_SIZE, etc.)"
             )
 
             # Create training configuration
@@ -1747,6 +1759,7 @@ Examples:
                 learning_rate=learning_rate,
                 gradient_accumulation_steps=gradient_accumulation_steps,
                 label_aggregation_strategy=label_aggregation,
+                model_size=model_size,
             )
 
             # Train the Longformer model

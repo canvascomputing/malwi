@@ -50,6 +50,7 @@ class LongformerTrainingConfig:
         gradient_accumulation_steps: int = 4,
         fp16: bool = True,
         label_aggregation_strategy: str = "any_positive",
+        model_size: str = "small",
     ):
         self.max_length = max_length
         self.batch_size = batch_size
@@ -60,6 +61,7 @@ class LongformerTrainingConfig:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.fp16 = fp16
         self.label_aggregation_strategy = label_aggregation_strategy
+        self.model_size = model_size
 
     def __repr__(self):
         return f"LongformerTrainingConfig({self.__dict__})"
@@ -155,14 +157,33 @@ def train_longformer(
         progress("Initializing Longformer model...")
 
         # Create Longformer config for sequence classification
-        model_config = LongformerConfig.from_pretrained(
-            "allenai/longformer-base-4096",
-            num_labels=NUM_LABELS,
-            vocab_size=actual_vocab_size,  # Match tokenizer vocab size
-            attention_window=512,
-            problem_type="multi_label_classification",
-            classifier_dropout=0.1,
-        )
+        # Configure model size based on training config
+        if config.model_size == "small":
+            # Smaller model for faster training
+            model_config = LongformerConfig.from_pretrained(
+                "allenai/longformer-base-4096",
+                num_labels=NUM_LABELS,
+                vocab_size=actual_vocab_size,  # Match tokenizer vocab size
+                hidden_size=256,  # Smaller hidden size (vs 768)
+                num_attention_heads=4,  # Fewer attention heads (256/64 = 4 vs 12)
+                num_hidden_layers=4,  # Fewer layers (vs 12)
+                intermediate_size=1024,  # Smaller FFN (vs 3072)
+                attention_window=512,
+                problem_type="multi_label_classification",
+                classifier_dropout=0.1,
+            )
+        elif config.model_size == "base":
+            # Standard Longformer configuration
+            model_config = LongformerConfig.from_pretrained(
+                "allenai/longformer-base-4096",
+                num_labels=NUM_LABELS,
+                vocab_size=actual_vocab_size,  # Match tokenizer vocab size
+                attention_window=512,
+                problem_type="multi_label_classification",
+                classifier_dropout=0.1,
+            )
+        else:
+            raise ValueError(f"Unknown model_size: {config.model_size}. Must be 'small' or 'base'")
 
         # Load model with standard Longformer config
         model = LongformerForSequenceClassification.from_pretrained(
@@ -179,7 +200,10 @@ def train_longformer(
         )
 
         info(
-            f"Initialized Longformer with max_length={config.max_length}, vocab_size={model.config.vocab_size}, num_labels={NUM_LABELS}"
+            f"Initialized Longformer ({config.model_size}) with max_length={config.max_length}, vocab_size={model.config.vocab_size}, num_labels={NUM_LABELS}"
+        )
+        info(
+            f"Model architecture: hidden_size={model.config.hidden_size}, layers={model.config.num_hidden_layers}, heads={model.config.num_attention_heads}"
         )
 
         # Store for saving config later
@@ -606,6 +630,13 @@ if __name__ == "__main__":
         choices=["majority", "any_positive", "weighted"],
         help="Label aggregation strategy (default: any_positive)",
     )
+    parser.add_argument(
+        "--model-size",
+        type=str,
+        default="small",
+        choices=["small", "base"],
+        help="Model size configuration (small: faster training, base: standard Longformer) (default: small)",
+    )
 
     args = parser.parse_args()
     configure_messaging(quiet=False)
@@ -619,6 +650,7 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         fp16=not args.no_fp16,
         label_aggregation_strategy=args.label_aggregation,
+        model_size=args.model_size,
     )
 
     # Run training
