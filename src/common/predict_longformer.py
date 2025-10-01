@@ -66,49 +66,21 @@ def initialize_longformer_model(
             _longformer_config = json.load(f)
 
         # Initialize custom trained tokenizer to match training
-        print(
-            f"Loading custom trained tokenizer from {tokenizer_path}...",
-            file=sys.stderr,
-        )
         try:
             _longformer_tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-            print(
-                f"Successfully loaded custom tokenizer (vocab_size={len(_longformer_tokenizer)})",
-                file=sys.stderr,
-            )
         except Exception as e:
-            print(
-                f"Error loading tokenizer from {tokenizer_path}: {e}", file=sys.stderr
-            )
-            print("Falling back to DistilBERT tokenizer...", file=sys.stderr)
+            # Fallback to DistilBERT tokenizer if custom tokenizer not found
             _longformer_tokenizer = AutoTokenizer.from_pretrained(
                 "distilbert-base-uncased"
-            )
-            print(
-                f"Using DistilBERT tokenizer (vocab_size={len(_longformer_tokenizer)})",
-                file=sys.stderr,
             )
 
         # Initialize model with exact config from saved model
         saved_vocab_size = _longformer_config.get("vocab_size", 30523)
         max_pos = _longformer_config.get("max_position_embeddings", 4098)
 
-        print(
-            f"Saved model vocab_size: {saved_vocab_size}, tokenizer vocab_size: {len(_longformer_tokenizer)}",
-            file=sys.stderr,
-        )
-
         # Load the model directly from the saved directory
-        print(f"Loading model from {model_path}...", file=sys.stderr)
         _longformer_model = LongformerForSequenceClassification.from_pretrained(
-            model_path, local_files_only=True
-        )
-
-        print(
-            f"Model vocab_size: {_longformer_model.config.vocab_size}", file=sys.stderr
-        )
-        print(
-            f"Model max_position_embeddings: {_longformer_model.config.max_position_embeddings}", file=sys.stderr
+            model_path, local_files_only=True, ignore_mismatched_sizes=True
         )
         _longformer_model.to(_longformer_device)
         _longformer_model.eval()
