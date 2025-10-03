@@ -268,7 +268,24 @@ def run_training(args):
     """Train DistilBERT model with CSV containing all categories."""
     disable_progress_bar()
 
+    # Set random seeds for reproducibility
+    import random
+    import torch
+
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+
+    # Enable deterministic algorithms
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     progress("Starting DistilBERT model training...")
+    info("Random seeds set to 42 for reproducibility")
 
     # Load data from unified CSV
     training_asts, training_labels = load_asts_from_csv(

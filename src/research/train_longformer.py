@@ -90,11 +90,28 @@ def train_longformer(
         True if training succeeded, False otherwise
     """
     try:
+        # Set random seeds for reproducibility
+        import random
+        import numpy as np
+
+        torch.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+        if torch.backends.mps.is_available():
+            torch.mps.manual_seed(42)
+        np.random.seed(42)
+        random.seed(42)
+
+        # Enable deterministic algorithms
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
         # Use default config if not provided
         if config is None:
             config = LongformerTrainingConfig()
 
         info(f"Training configuration: {config}")
+        info("Random seeds set to 42 for reproducibility")
 
         # Setup device
         if device is None:
@@ -543,6 +560,10 @@ def save_model(
         "model_type": "longformer",
         "max_position_embeddings": model.config.max_position_embeddings,
         "hidden_size": model.config.hidden_size,
+        "num_attention_heads": model.config.num_attention_heads,
+        "num_hidden_layers": model.config.num_hidden_layers,
+        "intermediate_size": model.config.intermediate_size,
+        "attention_window": model.config.attention_window if isinstance(model.config.attention_window, list) else [model.config.attention_window] * model.config.num_hidden_layers,
         "vocab_size": tokenizer_vocab_size or model.config.vocab_size,
         "num_labels": len(LABEL_TO_ID),
         "label_to_id": LABEL_TO_ID,

@@ -85,9 +85,50 @@ def initialize_longformer_model(
         saved_vocab_size = _longformer_config.get("vocab_size", 30523)
         max_pos = _longformer_config.get("max_position_embeddings", 4098)
 
-        # Load the model directly from the saved directory
+        # Reconstruct the exact config used during training
+        hidden_size = _longformer_config.get("hidden_size", 256)
+
+        # Infer architecture params based on hidden size if not saved
+        # hidden_size=768 → base model, hidden_size=256 → small model
+        if hidden_size == 768:
+            # Base Longformer configuration
+            default_heads = 12
+            default_layers = 12
+            default_intermediate = 3072
+        else:
+            # Small model configuration
+            default_heads = 4
+            default_layers = 4
+            default_intermediate = 1024
+
+        num_layers = _longformer_config.get("num_hidden_layers", default_layers)
+
+        config = LongformerConfig(
+            vocab_size=saved_vocab_size,
+            max_position_embeddings=max_pos,
+            hidden_size=hidden_size,
+            num_attention_heads=_longformer_config.get("num_attention_heads", default_heads),
+            num_hidden_layers=num_layers,
+            intermediate_size=_longformer_config.get("intermediate_size", default_intermediate),
+            attention_window=_longformer_config.get("attention_window", [512] * num_layers),
+            num_labels=_longformer_config.get("num_labels", NUM_LABELS),
+            id2label=_longformer_config.get("id_to_label", ID_TO_LABEL),
+            label2id=_longformer_config.get("label_to_id", LABEL_TO_ID),
+            problem_type="multi_label_classification",
+        )
+
+        # Load model with exact matching config
+        # Set seed BEFORE loading to ensure deterministic random initialization
+        torch.manual_seed(42)
+        if torch.backends.mps.is_available():
+            torch.mps.manual_seed(42)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
         _longformer_model = LongformerForSequenceClassification.from_pretrained(
-            model_path, local_files_only=True, ignore_mismatched_sizes=True
+            model_path,
+            config=config,
+            local_files_only=True,
+            ignore_mismatched_sizes=True,  # This causes random init of token_type_embeddings
         )
         _longformer_model.to(_longformer_device)
         _longformer_model.eval()
@@ -290,8 +331,9 @@ def predict_package_malware(
             "detailed_analysis": {},
         }
 
-        # Process each label
-        for label_idx, label_name in ID_TO_LABEL.items():
+        # Process each label (sorted for determinism)
+        for label_idx in sorted(ID_TO_LABEL.keys()):
+            label_name = ID_TO_LABEL[label_idx]
             prob = float(final_probabilities[0, label_idx])
             pred = bool(final_predictions[0, label_idx])
 
@@ -362,8 +404,17 @@ def run_deep_analysis(
 
     # Convert MalwiObjects to format expected by predict function
     # Use the same method as DistilBERT: obj.to_token_string(map_special_tokens=True)
+    # IMPORTANT: Sort objects by (filepath, name) for deterministic ordering
+    sorted_objects = sorted(
+        malwi_objects,
+        key=lambda obj: (
+            obj.file_path if hasattr(obj, "file_path") else "",
+            obj.name if hasattr(obj, "name") else "",
+        ),
+    )
+
     code_objects = []
-    for obj in malwi_objects:
+    for obj in sorted_objects:
         # Get tokens using the exact same method as DistilBERT
         tokens = (
             obj.to_token_string(map_special_tokens=True)
