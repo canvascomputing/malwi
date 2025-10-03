@@ -57,7 +57,14 @@ def initialize_longformer_model(
         return
 
     _longformer_model_path = model_path
-    _longformer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Use same device selection logic as DistilBERT
+    if torch.cuda.is_available():
+        _longformer_device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        _longformer_device = torch.device("mps")
+    else:
+        _longformer_device = torch.device("cpu")
 
     try:
         # Load model configuration
