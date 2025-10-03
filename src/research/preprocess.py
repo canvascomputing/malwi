@@ -27,6 +27,52 @@ from common.messaging import (
     progress,
     configure_messaging,
 )
+from research.longformer_constants import LABEL_TO_ID
+
+
+def _extract_package_name(file_path: Path, input_path: Path) -> str:
+    """
+    Extract package name from file path relative to input path.
+
+    Strategy:
+    - For malwi-samples structure (input_path/.../label/package/...):
+      If first dir is a label category, use the second directory as package name
+    - For benign repos (input_path/repo_name/...):
+      Use the first directory as package name
+    - Fallback to "unknown" if extraction fails
+
+    Args:
+        file_path: Full path to the source file
+        input_path: Base input directory for preprocessing
+
+    Returns:
+        Package name string
+    """
+    try:
+        # Get relative path from input_path
+        rel_path = file_path.relative_to(input_path)
+
+        # rel_path.parts includes filename as last element
+        # For path like: malicious/package_name/file.py -> ['malicious', 'package_name', 'file.py']
+        # For path like: repo_name/src/file.py -> ['repo_name', 'src', 'file.py']
+        parts = rel_path.parts
+        num_dirs = len(parts) - 1  # Subtract 1 for filename
+
+        if num_dirs == 0:
+            # File directly in input_path
+            return "unknown"
+
+        # Check if first directory is a label category (from longformer_constants)
+        if parts[0] in LABEL_TO_ID and num_dirs >= 2:
+            # Structure: malicious/package_name/... - use 2nd dir (index 1)
+            return parts[1]
+        else:
+            # Structure: repo_name/... - use 1st dir (index 0)
+            return parts[0]
+
+    except (ValueError, IndexError):
+        # Fallback: use parent directory name
+        return file_path.parent.name if file_path.parent.name else "unknown"
 
 
 def _process_single_file_with_compiler(
@@ -302,7 +348,7 @@ def preprocess_data(
     # Check if we should use parallel processing
     if not use_parallel or len(files) <= 10:
         info("Using sequential processing...")
-        _process_sequential(files, output_path, label=label)
+        _process_sequential(files, output_path, label=label, input_path=input_path)
         return
 
     # Use all available CPUs by default
@@ -322,20 +368,8 @@ def preprocess_data(
         else:
             continue
 
-        # Extract package name from parent folder
-        # For path like .../malwi-samples/python/malicious/package_name/file.py
-        # We want "package_name" as the package identifier
-        try:
-            # Get relative path from input_path
-            rel_path = file_path.relative_to(input_path)
-            # Get the first directory component as package name
-            if len(rel_path.parts) > 1:
-                package_name = rel_path.parts[0]
-            else:
-                package_name = "unknown"
-        except ValueError:
-            # If file is not under input_path, use parent directory name
-            package_name = file_path.parent.name
+        # Extract package name using helper function
+        package_name = _extract_package_name(file_path, input_path)
 
         key = (lang, package_name)
         if key not in files_by_language_and_package:
@@ -479,7 +513,7 @@ def preprocess_data(
 
 
 def _process_sequential(
-    files: List[Path], output_path: Path, label: str = None
+    files: List[Path], output_path: Path, label: str = None, input_path: Path = None
 ) -> None:
     """Process files sequentially with optional label."""
     from research.csv_writer import CSVWriter
@@ -514,16 +548,8 @@ def _process_sequential(
 
             if compiler:
                 try:
-                    # Extract package name
-                    try:
-                        rel_path = file_path.relative_to(file_path.parent.parent)
-                        package_name = (
-                            rel_path.parts[0]
-                            if len(rel_path.parts) > 1
-                            else file_path.parent.name
-                        )
-                    except (ValueError, IndexError):
-                        package_name = file_path.parent.name
+                    # Extract package name using helper function
+                    package_name = _extract_package_name(file_path, input_path)
 
                     code_objects = compiler.process_file(file_path)
                     csv_writer.write_code_objects(

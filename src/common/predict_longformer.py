@@ -107,10 +107,16 @@ def initialize_longformer_model(
             vocab_size=saved_vocab_size,
             max_position_embeddings=max_pos,
             hidden_size=hidden_size,
-            num_attention_heads=_longformer_config.get("num_attention_heads", default_heads),
+            num_attention_heads=_longformer_config.get(
+                "num_attention_heads", default_heads
+            ),
             num_hidden_layers=num_layers,
-            intermediate_size=_longformer_config.get("intermediate_size", default_intermediate),
-            attention_window=_longformer_config.get("attention_window", [512] * num_layers),
+            intermediate_size=_longformer_config.get(
+                "intermediate_size", default_intermediate
+            ),
+            attention_window=_longformer_config.get(
+                "attention_window", [512] * num_layers
+            ),
             num_labels=_longformer_config.get("num_labels", NUM_LABELS),
             id2label=_longformer_config.get("id_to_label", ID_TO_LABEL),
             label2id=_longformer_config.get("label_to_id", LABEL_TO_ID),

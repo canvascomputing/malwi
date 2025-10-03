@@ -1,11 +1,12 @@
 import pytest
 import tempfile
 import csv
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from research.csv_writer import CSVWriter
-from research.preprocess import _process_single_file_with_compiler
+from research.preprocess import _process_single_file_with_compiler, preprocess_data
 from common.malwi_object import MalwiObject
 from common.bytecode import ASTCompiler
 
@@ -217,3 +218,124 @@ def simple_function():
 
         finally:
             Path(csv_file_path).unlink()
+
+    def test_package_extraction_from_directory_structure(self):
+        """Test that package names are correctly extracted from different directory structures."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create structure: python/malicious/package_name/file.py
+            test_structure = temp_path / "python" / "malicious" / "evil_package"
+            test_structure.mkdir(parents=True, exist_ok=True)
+
+            test_file = test_structure / "test.py"
+            test_file.write_text("def malicious_func():\n    pass")
+
+            # Create output CSV
+            output_csv = temp_path / "output.csv"
+
+            # Run preprocessing on the python directory
+            preprocess_data(
+                input_path=temp_path / "python",
+                output_path=output_csv,
+                label="malicious",
+                num_processes=1,
+                chunk_size=10,
+                use_parallel=True,
+            )
+
+            # Verify package column contains "evil_package"
+            with open(output_csv, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+            assert len(rows) > 0, "Should have processed at least one code object"
+
+            # All rows should have package="evil_package"
+            for row in rows:
+                assert row["package"] == "evil_package", (
+                    f"Expected package='evil_package', got '{row['package']}'"
+                )
+
+    def test_package_extraction_benign_repo_structure(self):
+        """Test package extraction from benign repo structure (repo_name/src/file.py)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create structure: repo_name/src/file.py
+            test_structure = temp_path / "my_repo" / "src"
+            test_structure.mkdir(parents=True, exist_ok=True)
+
+            test_file = test_structure / "utils.py"
+            test_file.write_text("def helper():\n    return 42")
+
+            # Create output CSV
+            output_csv = temp_path / "output.csv"
+
+            # Run preprocessing on the repo
+            preprocess_data(
+                input_path=temp_path,
+                output_path=output_csv,
+                label="benign",
+                num_processes=1,
+                chunk_size=10,
+                use_parallel=True,
+            )
+
+            # Verify package column contains "my_repo"
+            with open(output_csv, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+            assert len(rows) > 0, "Should have processed at least one code object"
+
+            # All rows should have package="my_repo"
+            for row in rows:
+                assert row["package"] == "my_repo", (
+                    f"Expected package='my_repo', got '{row['package']}'"
+                )
+
+    def test_package_extraction_deep_nested_structure(self):
+        """Test package extraction from deeply nested structure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            # Create structure: python/malicious/deep_package/subdir/another/file.py
+            test_structure = (
+                temp_path
+                / "python"
+                / "malicious"
+                / "deep_package"
+                / "subdir"
+                / "another"
+            )
+            test_structure.mkdir(parents=True, exist_ok=True)
+
+            test_file = test_structure / "nested.py"
+            test_file.write_text("def nested_func():\n    x = 1")
+
+            # Create output CSV
+            output_csv = temp_path / "output.csv"
+
+            # Run preprocessing on the python directory
+            preprocess_data(
+                input_path=temp_path / "python",
+                output_path=output_csv,
+                label="malicious",
+                num_processes=1,
+                chunk_size=10,
+                use_parallel=True,
+            )
+
+            # Verify package column contains "deep_package" (not "subdir" or "another")
+            with open(output_csv, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+            assert len(rows) > 0, "Should have processed at least one code object"
+
+            # All rows should have package="deep_package"
+            for row in rows:
+                assert row["package"] == "deep_package", (
+                    f"Expected package='deep_package', got '{row['package']}'"
+                )

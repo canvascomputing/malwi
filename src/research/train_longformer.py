@@ -200,7 +200,9 @@ def train_longformer(
                 classifier_dropout=0.1,
             )
         else:
-            raise ValueError(f"Unknown model_size: {config.model_size}. Must be 'small' or 'base'")
+            raise ValueError(
+                f"Unknown model_size: {config.model_size}. Must be 'small' or 'base'"
+            )
 
         # Load model with standard Longformer config
         model = LongformerForSequenceClassification.from_pretrained(
@@ -563,7 +565,9 @@ def save_model(
         "num_attention_heads": model.config.num_attention_heads,
         "num_hidden_layers": model.config.num_hidden_layers,
         "intermediate_size": model.config.intermediate_size,
-        "attention_window": model.config.attention_window if isinstance(model.config.attention_window, list) else [model.config.attention_window] * model.config.num_hidden_layers,
+        "attention_window": model.config.attention_window
+        if isinstance(model.config.attention_window, list)
+        else [model.config.attention_window] * model.config.num_hidden_layers,
         "vocab_size": tokenizer_vocab_size or model.config.vocab_size,
         "num_labels": len(LABEL_TO_ID),
         "label_to_id": LABEL_TO_ID,
