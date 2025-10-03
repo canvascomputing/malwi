@@ -383,7 +383,7 @@ def run_deep_analysis(
     """
     Run deep analysis on a collection of MalWi objects.
 
-    This is the main entry point for deep analysis, replacing the LSTM analysis.
+    This is the main entry point for deep analysis using Longformer.
 
     Args:
         malwi_objects: List of MalwiObject instances
@@ -447,7 +447,3 @@ def run_deep_analysis(
     results["overall"]["analysis_type"] = "deep_longformer"
 
     return results
-
-
-# Backwards compatibility alias
-run_lstm_analysis = run_deep_analysis

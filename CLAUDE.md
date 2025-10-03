@@ -17,7 +17,7 @@ malwi is an AI-powered Python malware scanner that detects zero-day vulnerabilit
 # Uses uv package manager (basic dependencies)
 uv sync
 
-# Install with training dependencies (required for RL training)
+# Install with training dependencies
 uv sync --group training
 ```
 
@@ -46,21 +46,9 @@ uv run ruff format .
 # Data preprocessing only (parallel by default)
 ./cmds/preprocess_data.sh
 
-# Reinforcement Learning Training (requires preprocessed data with package column)
-# First, ensure training dependencies are installed
-uv sync --group training
-
-# Option 1: Direct subcommand with full control
-uv run python -m src.research.cli train_rl training_processed.csv
-uv run python -m src.research.cli train_rl training_processed.csv --epochs 10 --n-steps 4096
-uv run python -m src.research.cli train_rl training_processed.csv --learning-rate 1e-4 --batch-size 128
-
-# Option 2: Pipeline step (uses environment variables for configuration)
-uv run python -m src.research.cli steps train_rl
-RL_EPOCHS=10 RL_LEARNING_RATE=1e-4 uv run python -m src.research.cli steps train_rl
-
-# Evaluate trained RL agent
-uv run python -m src.research.rl.evaluate malwi_rl_models/ppo_model.zip --test-csv training_processed.csv
+# Longformer Training (requires preprocessed data)
+uv run python -m src.research.cli train_longformer training_processed.csv
+uv run python -m src.research.cli train_longformer training_processed.csv --epochs 5 --batch-size 2
 ```
 
 **Performance Tuning:**
@@ -239,91 +227,8 @@ This ensures that:
 - **AST Compilation**: `src/common/bytecode.py` - Language-independent bytecode generation (renamed from ast_to_malwicode.py)
 - **File Operations**: `src/common/files.py` - File copying and utility functions
 - **Mapping System**: JSON configs in `src/common/syntax_mapping/` define bytecode-to-token mappings
-- **Models**: Pre-trained DistilBERT model stored in `malwi-models/`
+- **Models**: Pre-trained DistilBERT and Longformer models
 - **Training Data**: Requires `malwi-samples` repository cloned in parent directory
-- **RL Training**: `src/research/rl/` - Reinforcement Learning for early exit decisions using PPO
-
-## Reinforcement Learning (Sequential Early Exit)
-
-malwi includes an optional RL layer built on top of the DistilBERT classifier that enables "early exit" decisions when analyzing malicious packages:
-
-### Architecture
-- **Environment**: `src/research/rl/package_environment.py` - Processes full code samples (one per step)
-- **Policy**: `src/research/rl/policy.py` - LSTM policy with frozen DistilBERT feature extraction
-- **Training**: `src/research/train_rl.py` - PPO-based training with package-aware sampling
-- **Evaluation**: `src/research/rl/evaluate.py` - Evaluation script for trained RL agents
-
-### Key Features
-- **Sequential Sample Processing**: Agent sees multiple code samples from same malicious package sequentially
-- **LSTM Memory**: Remembers previous samples when making decisions about new ones
-- **No Chunking**: DistilBERT processes full samples (max 512 tokens) with internal windowing
-- **Action Space**: 3 discrete actions:
-  - `CLASSIFY_BENIGN (0)` - Predict benign and stop
-  - `CLASSIFY_MALICIOUS (1)` - Predict malicious and stop
-  - `CONTINUE (2)` - Read next sample from package
-- **Reward Structure**:
-  - +10 for correct classification
-  - -10 for incorrect classification
-  - -0.1 per sample read (encourages early stopping)
-- **Package-Based Training**:
-  - Malicious: All samples from package processed together
-  - Benign: Random individual samples (processed to completion)
-- **Frozen DistilBERT**: Uses pre-trained DistilBERT [CLS] embeddings as frozen feature extractor
-
-### Training
-
-**Direct Subcommand (Recommended):**
-```bash
-# Basic training
-uv run python -m src.research.cli train_rl training_processed.csv
-
-# Advanced options
-uv run python -m src.research.cli train_rl training_processed.csv \
-  --epochs 10 \
-  --learning-rate 1e-4 \
-  --n-steps 4096 \
-  --batch-size 128 \
-  --min-benign-samples 2 \
-  --max-benign-samples 8
-```
-
-**Pipeline Step (Environment Variables):**
-```bash
-# Basic training as pipeline step
-uv run python -m src.research.cli steps train_rl
-
-# Configure via environment variables
-RL_EPOCHS=10 \
-RL_LEARNING_RATE=1e-4 \
-RL_N_STEPS=4096 \
-RL_BATCH_SIZE=128 \
-RL_MIN_BENIGN=2 \
-RL_MAX_BENIGN=8 \
-uv run python -m src.research.cli steps train_rl
-```
-
-**Environment Variables:**
-- `RL_EPOCHS` - Training epochs (default: 3)
-- `RL_LEARNING_RATE` - PPO learning rate (default: 3e-4)
-- `RL_N_STEPS` - Steps per PPO update (default: 2048)
-- `RL_BATCH_SIZE` - Batch size (default: 64)
-- `RL_PPO_EPOCHS` - PPO optimization epochs (default: 10)
-- `RL_GAMMA` - Discount factor (default: 0.99)
-- `RL_MIN_BENIGN` - Min benign samples per package (default: 1)
-- `RL_MAX_BENIGN` - Max benign samples per package (default: 5)
-- `RL_SAVE_FREQ` - Save frequency in packages (default: 10)
-- `RL_SEED` - Random seed (default: 42)
-
-### Framework
-- **Stable-Baselines3**: Professional RL framework with PPO algorithm
-- **Gymnasium**: Standard RL environment interface
-- **PPO Hyperparameters**:
-  - Learning rate: 3e-4
-  - Steps per update: 2048
-  - Batch size: 64
-  - PPO epochs: 10
-  - Gamma: 0.99
-  - GAE lambda: 0.95
 
 ## Triage Functionality
 
