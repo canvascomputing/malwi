@@ -51,7 +51,7 @@ class TestMalwiObject:
         assert malwi_obj.source_code is not None
         assert isinstance(malwi_obj.source_code, str)
 
-    @patch("common.malwi_object.get_node_text_prediction")
+    @patch("common.malwi_object.predict_distilbert")
     def test_predict(self, mock_predict, malwi_obj):
         """Test maliciousness prediction."""
         mock_predict.return_value = {"probabilities": [0.3, 0.7]}

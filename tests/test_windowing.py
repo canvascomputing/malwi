@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 # The path to the module needs to match your project structure.
 # I've kept it as it was in the file you provided.
-from common.predict_distilbert import get_node_text_prediction, initialize_models
+from common.predict_distilbert import predict, initialize_models
 
 
 class TestWindowingPrediction(unittest.TestCase):
@@ -79,7 +79,7 @@ class TestWindowingPrediction(unittest.TestCase):
 
         long_text_input = "A" * 2000
         initialize_models()
-        result = get_node_text_prediction(long_text_input)
+        result = predict(long_text_input)
 
         # --- 3. Assert the Results ---
 
