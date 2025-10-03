@@ -20,9 +20,7 @@ from common.mapping import (
 from common.config import FILE_LARGE_THRESHOLD, FILE_PATHOLOGICAL_THRESHOLD
 
 # Import moved to avoid circular dependency
-from common.predict_distilbert import (
-    get_node_text_prediction,
-)
+from common.predict_distilbert import predict as predict_distilbert
 from common.files import read_json_from_file
 
 
@@ -276,20 +274,78 @@ class MalwiObject:
             # Tokenizer not available or other error - return 0
             return 0
 
-    def predict(self, cache=None, write_to_cache=True) -> Optional[dict]:
+    def predict(
+        self, predictor=None, threshold: float = 0.7, cache=None, write_to_cache=True
+    ):
+        """
+        Predict labels for this code object.
+
+        Args:
+            predictor: Optional Predictor instance (DistilBERTPredictor or LongformerPredictor)
+                      If None, uses legacy DistilBERT prediction (backward compatibility)
+            threshold: Classification threshold (default: 0.7)
+            cache: Optional cache for storing results
+            write_to_cache: Whether to write results to cache
+
+        Returns:
+            If predictor provided: AggregatedPredictionResult
+            If predictor is None: Dict with prediction results (legacy)
+        """
         # Check cache first if available
         if cache is not None:
             cached_labels = cache.get_cached_labels(self)
             if cached_labels is not None:
                 self.labels = cached_labels
-                # Return a mock prediction dict for compatibility
-                return {"labels": cached_labels}
 
-        # Use the merged to_token_string method which includes warnings and handles all cases
+                # Return format depends on whether predictor was provided
+                if predictor is not None:
+                    from common.prediction import AggregatedPredictionResult
+
+                    detected_labels = {
+                        label: conf >= threshold
+                        for label, conf in cached_labels.items()
+                    }
+                    predicted_label = (
+                        max(cached_labels.items(), key=lambda x: x[1])[0]
+                        if cached_labels
+                        else "unknown"
+                    )
+                    confidence = (
+                        cached_labels[predicted_label]
+                        if predicted_label != "unknown"
+                        else 0.0
+                    )
+
+                    return AggregatedPredictionResult(
+                        labels=cached_labels,
+                        predicted_label=predicted_label,
+                        confidence=confidence,
+                        windows_processed=1,
+                        model_type=predictor.model_type,
+                        threshold=threshold,
+                        detected_labels=detected_labels,
+                    )
+                else:
+                    # Legacy mode - return dict
+                    return {"labels": cached_labels}
+
+        # New predictor mode
+        if predictor is not None:
+            # Let predictor handle the prediction
+            result = predictor.predict_object(self, threshold=threshold)
+
+            # Update labels from aggregated result
+            self.labels = result.labels
+
+            # Cache the result if cache is available and write_to_cache is True
+            if cache is not None and self.labels and write_to_cache:
+                cache.cache_labels(self, self.labels)
+
+            return result
+
+        # Legacy mode - use predict_distilbert
         token_string = self.to_token_string(map_special_tokens=True)
-
-        # Always make a prediction - all code should be analyzed
-        prediction = get_node_text_prediction(token_string)
+        prediction = predict_distilbert(token_string)
 
         if prediction and "labels" in prediction:
             self.labels = prediction["labels"]

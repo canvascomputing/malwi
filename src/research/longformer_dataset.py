@@ -87,12 +87,14 @@ class LongformerPackageDataset(Dataset):
 
         info(f"Loaded {len(self.package_data)} packages for training")
         info(f"Generated {len(self.training_samples)} training windows")
-        info(
-            f"Average CodeObjects per package: {sum(len(objs) for objs in self.package_data.values()) / len(self.package_data):.1f}"
-        )
-        info(
-            f"Average windows per package: {len(self.training_samples) / len(self.package_data):.1f}"
-        )
+
+        if len(self.package_data) > 0:
+            info(
+                f"Average CodeObjects per package: {sum(len(objs) for objs in self.package_data.values()) / len(self.package_data):.1f}"
+            )
+            info(
+                f"Average windows per package: {len(self.training_samples) / len(self.package_data):.1f}"
+            )
 
     def _load_and_group_data(self) -> Dict[str, List[Dict]]:
         """
@@ -597,7 +599,7 @@ def create_longformer_dataloaders(
             num_workers=0,  # Avoid multiprocessing issues with tokenizer
             collate_fn=longformer_collate_fn,
         )
-    elif val_split > 0:
+    elif val_split is not None and val_split > 0:
         # Split training dataset
         total_size = len(train_dataset)
         val_size = int(total_size * val_split)

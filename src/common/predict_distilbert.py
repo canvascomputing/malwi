@@ -258,7 +258,17 @@ def _get_windowed_predictions(
     return window_results
 
 
-def get_node_text_prediction(text_input: str) -> Dict[str, Any]:
+def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
+    """
+    Predict malware labels for tokenized code input.
+
+    Args:
+        text_input: Space-separated token string to analyze
+        threshold: Classification threshold for label detection (default: 0.7)
+
+    Returns:
+        Dict with prediction results including labels, probabilities, and debug info
+    """
     prediction_debug_info: Dict[str, Any] = {
         "tokenization_performed": False,
         "windowing_performed": False,
