@@ -5,7 +5,7 @@ This module provides ready-to-use predictor classes that implement the
 unified prediction API.
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
 import torch
 import torch.nn.functional as F
 

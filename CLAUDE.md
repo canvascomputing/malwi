@@ -69,11 +69,8 @@ uv run python -m src.research.preprocess '../malwi-samples' output.csv --chunk-s
 uv run python util/regenerate_test_data.py
 ```
 
-**Repository Pinning:**
+**Repository Management:**
 ```bash
-# Update pinned repository commits for reproducible training
-uv run python util/pin_repositories.py
-
 # Update model commit hash for releases
 python util/update_model_commit.py
 
@@ -372,10 +369,10 @@ def main():
 
 malwi uses pinned repository commits to ensure reproducible training data:
 
-- **Pinned Repositories**: All 533 training repositories are pinned to specific commit hashes in `util/pinned_repositories.json`
-- **Automatic Verification**: Training data downloads use pinned commits by default  
-- **Cache Optimization**: Repository caches include commit hashes in directory names (e.g., `pymatting_a60fdb63`)
-- **Fallback Support**: Missing repositories fall back to latest commits with warnings
+- **Pinned Repositories**: All training repositories are pinned to specific commit hashes in `util/repository_urls.json`
+- **Automatic Verification**: Training data downloads use pinned commits by default
+- **Cache Optimization**: Repository caches include commit hashes in directory names (e.g., `pymatting_afd2dec0`)
+- **Fallback Support**: Can use latest commits with `--use-latest` flag for non-reproducible builds
 
 **Benefits:**
 - Identical training data across different machines and time periods
