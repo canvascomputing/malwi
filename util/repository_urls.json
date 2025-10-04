@@ -2070,10 +2070,6 @@
         "commit": "f4fe4afaa98c055188c15515f278579d8eff4a5d"
       },
       {
-        "url": "https://github.com/ytdl-org/youtube-dl/",
-        "commit": "a084c80f7bac9ae343075a97cc0fb2c1c96ade89"
-      },
-      {
         "url": "https://github.com/zappa/Zappa",
         "commit": "99c8fbb028c9543ef39f400ae694ad7df48c22a5"
       },
