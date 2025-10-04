@@ -38,6 +38,7 @@ class WindowPredictionResult:
     labels: Dict[str, float]  # label_name -> confidence score
     predicted_label: str  # Highest confidence label
     confidence: float  # Confidence of predicted label
+    attention_weights: Optional[List[float]] = None  # Attention weights per token
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -52,6 +53,9 @@ class AggregatedPredictionResult:
     model_type: ModelType
     threshold: float
     detected_labels: Dict[str, bool]  # label_name -> is_above_threshold
+    top_attention_tokens: Optional[List[tuple[str, float]]] = (
+        None  # (token, weight) pairs
+    )
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def is_harmful(self, exclude_labels: Optional[List[str]] = None) -> bool:

@@ -25,6 +25,7 @@ def process_single_file(
     maliciousness_threshold: Optional[float] = None,
     cache=None,
     triage_mode: bool = False,
+    extract_attention: bool = False,
 ) -> tuple[List[MalwiObject], List[MalwiObject]]:
     """
     Process a single file and return all objects and malicious objects.
@@ -34,6 +35,7 @@ def process_single_file(
         maliciousness_threshold: Threshold for classifying objects as malicious
         cache: Cache instance for storing/retrieving prediction results
         triage_mode: If True, don't write to cache yet (wait for triage decision)
+        extract_attention: Whether to extract attention weights (slower if True)
 
     Returns:
         Tuple of (all_objects, malicious_objects)
@@ -57,7 +59,11 @@ def process_single_file(
         for obj in objects:
             all_objects.append(obj)
             # In triage mode, don't write to cache yet
-            obj.predict(cache=cache, write_to_cache=not triage_mode)
+            obj.predict(
+                cache=cache,
+                write_to_cache=not triage_mode,
+                extract_attention=extract_attention,
+            )
             # Check if object has any threatening label above threshold
             if maliciousness_threshold is not None and obj.labels:
                 # Only include objects with harmful labels in labelled_objects
@@ -123,6 +129,23 @@ def format_object_for_display(obj: MalwiObject, comment_prefix: str = "#") -> st
 
     output_parts.append(f"{comment_prefix} {'=' * 70}")
     output_parts.append("")
+
+    # Add top 5 attention tokens if available
+    if obj.attention:
+        output_parts.append(f"{comment_prefix} {'─' * 70}")
+        output_parts.append(f"{comment_prefix} TOP 5 ATTENTION TOKENS")
+        output_parts.append(f"{comment_prefix} {'─' * 70}")
+
+        # Sort by weight and take top 5
+        sorted_attention = sorted(
+            obj.attention.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+
+        for rank, (token, weight) in enumerate(sorted_attention, 1):
+            output_parts.append(f"{comment_prefix} {rank}. {token:30s} {weight:.6f}")
+
+        output_parts.append(f"{comment_prefix} {'─' * 70}")
+        output_parts.append("")
 
     # Add the source code
     if (
@@ -714,6 +737,28 @@ class MalwiReport:
                             )
 
                         output_parts.append(f"{comment_prefix} {'─' * 70}")
+
+                        # Add top 5 attention tokens if available
+                        if obj.attention:
+                            output_parts.append("")
+                            output_parts.append(f"{comment_prefix} {'─' * 70}")
+                            output_parts.append(
+                                f"{comment_prefix} TOP 5 ATTENTION TOKENS"
+                            )
+                            output_parts.append(f"{comment_prefix} {'─' * 70}")
+
+                            # Sort by weight and take top 5
+                            sorted_attention = sorted(
+                                obj.attention.items(), key=lambda x: x[1], reverse=True
+                            )[:5]
+
+                            for rank, (token, weight) in enumerate(sorted_attention, 1):
+                                output_parts.append(
+                                    f"{comment_prefix} {rank}. {token:30s} {weight:.6f}"
+                                )
+
+                            output_parts.append(f"{comment_prefix} {'─' * 70}")
+
                         output_parts.append("")
 
                     output_parts.append("")
@@ -765,6 +810,7 @@ class MalwiReport:
         triage_provider=None,
         cache=None,
         deep_analysis: bool = False,
+        extract_attention: bool = False,
     ) -> "MalwiReport":
         """
         Create a MalwiReport by processing files from the given input path.
@@ -869,6 +915,7 @@ class MalwiReport:
                     maliciousness_threshold=malicious_threshold,
                     cache=cache,
                     triage_mode=triage,
+                    extract_attention=extract_attention,
                 )
                 all_objects.extend(file_all_objects)
 

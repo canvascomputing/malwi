@@ -120,6 +120,9 @@ def run_batch_scan(child_folder: Path, args, cache=None) -> dict:
             triage_provider=triage_provider,
             cache=cache,
             deep_analysis=args.deep_analysis,
+            extract_attention=(
+                args.format == "tokens"
+            ),  # Only extract attention for tokens format
         )
 
         # Generate output based on format
@@ -339,6 +342,9 @@ def scan_command(args):
         triage_provider=triage_provider,
         cache=cache,
         deep_analysis=args.deep_analysis,
+        extract_attention=(
+            args.format == "tokens"
+        ),  # Only extract attention for tokens format
     )
 
     # Clean up the real-time display

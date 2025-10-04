@@ -363,6 +363,7 @@ def pypi_command(args):
             triage_provider=triage_provider,
             cache=cache,
             deep_analysis=args.deep_analysis,
+            extract_attention=False,  # PyPI scanning doesn't need attention (not using tokens format)
         )
         all_reports.append(report)
 

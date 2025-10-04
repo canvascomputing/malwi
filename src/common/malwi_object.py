@@ -113,6 +113,7 @@ class MalwiObject:
     embedding: Optional[any] = (
         None  # Pre-computed DistilBERT embedding for LSTM inference
     )
+    attention: Optional[Dict[str, float]] = None  # Dict of token -> attention weight
 
     def __init__(
         self,
@@ -136,6 +137,7 @@ class MalwiObject:
         self.source_code = source_code
         self.location = location
         self.embedding = None  # Initialize embedding storage
+        self.attention = None  # Initialize attention weights storage
 
     @classmethod
     def all_tokens(cls, language: str = "python") -> List[str]:
@@ -275,7 +277,12 @@ class MalwiObject:
             return 0
 
     def predict(
-        self, predictor=None, threshold: float = 0.7, cache=None, write_to_cache=True
+        self,
+        predictor=None,
+        threshold: float = 0.7,
+        cache=None,
+        write_to_cache=True,
+        extract_attention: bool = False,
     ):
         """
         Predict labels for this code object.
@@ -285,6 +292,7 @@ class MalwiObject:
                       If None, uses legacy DistilBERT prediction (backward compatibility)
             threshold: Classification threshold (default: 0.7)
             cache: Optional cache for storing results
+            extract_attention: Whether to extract attention weights (default: False, slower if True)
             write_to_cache: Whether to write results to cache
 
         Returns:
@@ -345,13 +353,18 @@ class MalwiObject:
 
         # Legacy mode - use predict_distilbert
         token_string = self.to_token_string(map_special_tokens=True)
-        prediction = predict_distilbert(token_string)
+        prediction = predict_distilbert(
+            token_string, threshold=threshold, extract_attention=extract_attention
+        )
 
         if prediction and "labels" in prediction:
             self.labels = prediction["labels"]
             # Store embedding for LSTM analysis if available
             if "embedding" in prediction and prediction["embedding"] is not None:
                 self.embedding = prediction["embedding"]
+            # Store attention weights if available
+            if "attention" in prediction and prediction["attention"] is not None:
+                self.attention = prediction["attention"]
         elif prediction and "probabilities" in prediction:
             # Backward compatibility: convert old format to new labels format
             benign_prob = prediction["probabilities"][0]

@@ -165,8 +165,52 @@ def initialize_models(
         _models_initialized = False
 
 
+def _extract_cls_attention_weights(
+    outputs: Any, input_ids: torch.Tensor, attention_mask: torch.Tensor
+) -> Optional[Dict[str, float]]:
+    """
+    Extract attention weights from model outputs for the [CLS] token.
+
+    Args:
+        outputs: Model outputs with attentions
+        input_ids: Input token IDs
+        attention_mask: Attention mask (1 for real tokens, 0 for padding)
+
+    Returns:
+        Dictionary mapping tokens to their attention weights, or None if unavailable
+    """
+    if not hasattr(outputs, "attentions") or outputs.attentions is None:
+        return None
+
+    # Get last layer attention: (batch, heads, seq_len, seq_len)
+    last_layer_attn = outputs.attentions[-1]
+
+    # Get [CLS] token attention (first token): (batch, heads, seq_len)
+    cls_attn = last_layer_attn[0, :, 0, :]
+
+    # Average across attention heads: (seq_len,)
+    cls_attn_avg = cls_attn.mean(dim=0).cpu().numpy()
+
+    # Convert input_ids to tokens
+    tokens = get_thread_tokenizer().convert_ids_to_tokens(input_ids)
+
+    # Create token -> weight dictionary, filtering out padding
+    attention_weights = {}
+    for idx, (token, weight) in enumerate(zip(tokens, cls_attn_avg)):
+        if attention_mask[idx].item() == 1:  # Non-padding token
+            # Aggregate weights for duplicate tokens
+            if token in attention_weights:
+                attention_weights[token] += float(weight)
+            else:
+                attention_weights[token] = float(weight)
+
+    return attention_weights
+
+
 def _get_windowed_predictions(
-    input_ids: torch.Tensor, attention_mask: torch.Tensor
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    extract_attention: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Run inference on multiple sliding windows of a single long input.
@@ -202,7 +246,11 @@ def _get_windowed_predictions(
         }
 
         with torch.no_grad():
-            outputs = HF_MODEL_INSTANCE(**model_inputs, output_hidden_states=True)
+            outputs = HF_MODEL_INSTANCE(
+                **model_inputs,
+                output_hidden_states=True,
+                output_attentions=extract_attention,
+            )
 
         if hasattr(outputs, "logits"):
             logits = outputs.logits
@@ -240,6 +288,13 @@ def _get_windowed_predictions(
             prediction_idx = torch.argmax(probabilities).item()
             predicted_label = label_map.get(prediction_idx, f"unknown_{prediction_idx}")
 
+            # Extract attention weights for this window (only if requested)
+            attention_weights = None
+            if extract_attention:
+                attention_weights = _extract_cls_attention_weights(
+                    outputs, window_input_ids, window_attention_mask
+                )
+
             window_results.append(
                 {
                     "window_index": len(window_results),
@@ -248,6 +303,7 @@ def _get_windowed_predictions(
                     "probabilities": probabilities.tolist(),
                     "labels": labels_dict,
                     "embedding": cls_embedding,  # CLS token embedding for LSTM analysis
+                    "attention": attention_weights,  # Token attention weights
                 }
             )
 
@@ -258,13 +314,16 @@ def _get_windowed_predictions(
     return window_results
 
 
-def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
+def predict(
+    text_input: str, threshold: float = 0.7, extract_attention: bool = False
+) -> Dict[str, Any]:
     """
     Predict malware labels for tokenized code input.
 
     Args:
         text_input: Space-separated token string to analyze
         threshold: Classification threshold for label detection (default: 0.7)
+        extract_attention: Whether to extract attention weights (default: False, slower if True)
 
     Returns:
         Dict with prediction results including labels, probabilities, and debug info
@@ -326,7 +385,9 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
         if num_tokens > max_length:
             prediction_debug_info["windowing_performed"] = True
 
-            window_predictions = _get_windowed_predictions(input_ids, attention_mask)
+            window_predictions = _get_windowed_predictions(
+                input_ids, attention_mask, extract_attention
+            )
 
             prediction_debug_info["window_count"] = len(window_predictions)
             prediction_debug_info["aggregation_strategy"] = "max_malicious_probability"
@@ -351,6 +412,16 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
 
             best_window = max(window_predictions, key=get_max_threat_score)
 
+            # Aggregate attention weights across all windows
+            aggregated_attention = {}
+            for window in window_predictions:
+                if window.get("attention"):
+                    for token, weight in window["attention"].items():
+                        if token in aggregated_attention:
+                            aggregated_attention[token] += weight
+                        else:
+                            aggregated_attention[token] = weight
+
             return {
                 "status": "success",
                 "index": best_window["index"],
@@ -360,6 +431,7 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
                 "embedding": best_window.get(
                     "embedding"
                 ),  # CLS embedding from best window
+                "attention": aggregated_attention if aggregated_attention else None,
                 "prediction_debug": prediction_debug_info,
             }
 
@@ -381,7 +453,11 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
             }
 
             with torch.no_grad():
-                outputs = HF_MODEL_INSTANCE(**model_inputs, output_hidden_states=True)
+                outputs = HF_MODEL_INSTANCE(
+                    **model_inputs,
+                    output_hidden_states=True,
+                    output_attentions=extract_attention,
+                )
 
             if hasattr(outputs, "logits"):
                 logits = outputs.logits
@@ -424,6 +500,15 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
                     prediction_idx, f"unknown_{prediction_idx}"
                 )
 
+                # Extract attention weights (only if requested)
+                attention_weights = None
+                if extract_attention:
+                    attention_weights = _extract_cls_attention_weights(
+                        outputs,
+                        padded_inputs["input_ids"][0],
+                        padded_inputs["attention_mask"][0],
+                    )
+
                 return {
                     "status": "success",
                     "index": prediction_idx,
@@ -431,6 +516,7 @@ def predict(text_input: str, threshold: float = 0.7) -> Dict[str, Any]:
                     "probabilities": probabilities.tolist(),
                     "labels": labels_dict,
                     "embedding": cls_embedding,  # CLS token embedding for LSTM analysis
+                    "attention": attention_weights,  # Token attention weights
                     "prediction_debug": prediction_debug_info,
                 }
 

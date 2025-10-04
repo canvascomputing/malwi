@@ -487,9 +487,7 @@ def unpack_archives_recursively(directory_to_scan, repo_name_being_scanned=None)
                 logging.debug(
                     f"Skipping file {filepath} due to EOFError (possibly corrupted): {e_eof}"
                 )
-            except (
-                Exception
-            ) as e_unpack:  # General catch-all for other issues in this file's processing
+            except Exception as e_unpack:  # General catch-all for other issues in this file's processing
                 logging.error(f"Failed to unpack or process {filepath}: {e_unpack}")
     return list(set(extracted_package_roots))
 
@@ -592,7 +590,6 @@ def main():
     else:
         USE_PINNED_COMMITS = True
         logging.info("Using pinned commits for reproducible training")
-
 
     logging.info(
         f"Initializing script, using cache directory: {os.path.abspath(REPO_CACHE_DIR)}"
