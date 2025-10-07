@@ -1019,18 +1019,22 @@ class MalwiReport:
                     print("\033[1A\033[2K", file=sys.stderr, end="")
                     sys.stderr.flush()
 
-                # Update confidence if deep analysis provides higher confidence
+                # Update confidence and malicious flag based on deep analysis
                 if deep_results and "overall" in deep_results:
                     deep_confidence = deep_results["overall"].get("confidence", 0.0)
-                    if deep_results["overall"]["prediction"] == "malicious":
+                    deep_prediction = deep_results["overall"]["prediction"]
+
+                    if deep_prediction == "malicious":
                         # Use deep analysis confidence if it's higher
                         confidence = max(confidence, deep_confidence)
-                        pass  # Deep analysis agrees with primary analysis
-                    elif not silent:
-                        # Deep analysis disagrees - log for informational purposes
-                        warning(
-                            f"Deep analysis prediction differs: {deep_results['overall']['prediction']}"
-                        )
+                        # Keep malicious=True (already set)
+                    else:
+                        # Deep analysis disagrees - downgrade to suspicious only
+                        malicious = False
+                        if not silent:
+                            warning(
+                                f"Deep analysis prediction differs: {deep_prediction} - downgrading to suspicious"
+                            )
 
             except Exception as e:
                 if not silent:
