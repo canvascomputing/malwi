@@ -288,6 +288,9 @@ Examples:
   # Train with custom parameters
   ./research train_longformer training_data.csv --max-length 2048 --batch-size 4 --epochs 5
 
+  # Train with custom benign ratio
+  ./research train_longformer training_data.csv --benign-ratio 8
+
   # Train with validation split
   ./research train_longformer training_data.csv --val-csv validation_data.csv --label-aggregation majority
             """,
@@ -372,6 +375,13 @@ Examples:
             default="any_positive",
             choices=["majority", "any_positive", "weighted"],
             help="Label aggregation strategy (default: any_positive)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--benign-ratio",
+            type=int,
+            default=4,
+            help="Training balance ratio: number of benign collections created per malicious package. Controls the proportion of benign vs malicious cases in training data (default: 4)",
         )
 
         train_longformer_parser.add_argument(
@@ -1196,6 +1206,7 @@ Examples:
             info(f"   • Mixed Precision: {not args.no_fp16}")
             info(f"   • Label Aggregation: {args.label_aggregation}")
             info(f"   • Model Size: {args.model_size}")
+            info(f"   • Benign Ratio: {args.benign_ratio}")
             if args.val_csv:
                 info(f"   • Validation CSV: {args.val_csv}")
 
@@ -1220,6 +1231,7 @@ Examples:
                 config=config,
                 val_csv=args.val_csv,
                 device=args.device,
+                benign_ratio=args.benign_ratio,
             )
 
             if success_result:

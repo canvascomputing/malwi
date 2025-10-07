@@ -53,7 +53,7 @@ class LongformerPackageDataset(Dataset):
             label_aggregation_strategy: How to aggregate CodeObject labels to package labels
             min_objects_per_package: Minimum CodeObjects required per package
             max_benign_samples_per_package: Maximum number of random samples to use from benign packages
-            benign_ratio: Number of random benign collections to create per benign package
+            benign_ratio: Training balance ratio - creates this many benign collections per malicious package (not per benign package)
         """
         self.csv_path = csv_path
         self.max_length = max_length
@@ -563,7 +563,7 @@ def create_longformer_dataloaders(
         max_length: Maximum sequence length
         val_split: Validation split ratio if val_csv not provided
         max_benign_samples_per_package: Maximum number of random samples per benign collection
-        benign_ratio: Number of random benign collections to create per benign package
+        benign_ratio: Training balance ratio - creates this many benign collections per malicious package
         **dataset_kwargs: Additional arguments for dataset
 
     Returns:

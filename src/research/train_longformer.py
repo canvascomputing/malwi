@@ -74,6 +74,7 @@ def train_longformer(
     config: Optional[LongformerTrainingConfig] = None,
     val_csv: Optional[str] = None,
     device: Optional[str] = None,
+    benign_ratio: int = 4,
 ) -> bool:
     """
     Train Longformer model for package-level malware detection.
@@ -85,6 +86,7 @@ def train_longformer(
         config: Training configuration
         val_csv: Path to validation CSV (optional)
         device: Device to use for training
+        benign_ratio: Training balance ratio - creates this many benign collections per malicious package to control benign/malicious proportion (default: 4)
 
     Returns:
         True if training succeeded, False otherwise
@@ -141,7 +143,7 @@ def train_longformer(
             max_length=config.max_length,
             val_split=0.2,  # Explicitly set 20% validation split
             max_benign_samples_per_package=10,  # Max 10 samples per benign collection
-            benign_ratio=4,  # Create 4 random benign collections per benign package
+            benign_ratio=benign_ratio,  # Use the configurable benign ratio
             label_aggregation_strategy=config.label_aggregation_strategy,
         )
 
