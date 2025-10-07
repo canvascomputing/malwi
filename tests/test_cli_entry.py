@@ -367,7 +367,7 @@ class TestBatchMode:
         args.triage = False
         args.triage_llm = False
         args.triage_ui = False
-        args.deep_analysis = False
+        args.deep_analysis = True
 
         # Mock the process_files function and report
         mock_report = MagicMock()
@@ -388,7 +388,7 @@ class TestBatchMode:
                     triage=args.triage,
                     triage_provider=None,
                     cache=None,
-                    deep_analysis=False,
+                    deep_analysis=True,
                     extract_attention=False,
                 )
 
@@ -660,7 +660,7 @@ class TestPyPICommand:
                     triage=False,
                     triage_provider=None,
                     cache=None,
-                    deep_analysis=False,
+                    deep_analysis=True,
                     extract_attention=False,
                 )
 
@@ -827,7 +827,7 @@ class TestPyPICommand:
                     triage=False,
                     triage_provider=None,
                     cache=None,
-                    deep_analysis=False,
+                    deep_analysis=True,
                     extract_attention=False,
                 )
 

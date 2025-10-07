@@ -39,8 +39,8 @@ def initialize_longformer_model(
     global _longformer_device, _longformer_config
 
     if model_path is None:
-        # Default to the provided sample model
-        model_path = "/Users/mav/My Drive/malwi/v21/longformer"
+        # Default to the malwi_models directory
+        model_path = "malwi_models/longformer"
 
     if tokenizer_path is None:
         # Default to malwi_models if available, else try default path

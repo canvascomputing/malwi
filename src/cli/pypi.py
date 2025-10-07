@@ -487,10 +487,11 @@ def setup_pypi_parser(subparsers):
     )
     # Deep analysis arguments
     pypi_developer_group.add_argument(
-        "--deep-analysis",
-        action="store_true",
-        help="Enable deep analysis with Longformer on malicious findings (cross-file package analysis)",
-        default=False,
+        "--no-deep-analysis",
+        action="store_false",
+        dest="deep_analysis",
+        help="Disable deep analysis with Longformer on malicious findings (enabled by default)",
+        default=True,
     )
     pypi_developer_group.add_argument(
         "--deep-model-path",
