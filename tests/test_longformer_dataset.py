@@ -326,16 +326,16 @@ class TestLongformerFileDataset:
             csv_path=sample_csv_file,
             tokenizer_path="distilbert-base-uncased",
             max_length=512,
+            benign_ratio=1,  # Create 1 benign file per malicious file
+            random_seed=42,
         )
 
-        # Should have 2 files
+        # Should have 2 files total (1 malicious + 1 benign from sampling)
         assert len(dataset.file_data) == 2
         assert "/file1.py" in dataset.file_data
-        assert "/file2.py" in dataset.file_data
 
-        # Each file should have 2 objects
+        # Malicious file should have 2 objects
         assert len(dataset.file_data["/file1.py"]) == 2
-        assert len(dataset.file_data["/file2.py"]) == 2
 
     def test_file_dataset_creates_one_sample_per_file(self, sample_csv_file):
         """Test that file dataset creates one training sample per file."""
@@ -343,9 +343,11 @@ class TestLongformerFileDataset:
             csv_path=sample_csv_file,
             tokenizer_path="distilbert-base-uncased",
             max_length=512,
+            benign_ratio=1,  # Create 1 benign file per malicious file
+            random_seed=42,
         )
 
-        # Should have 2 training samples (one per file)
+        # Should have 2 training samples (1 malicious + 1 sampled benign)
         assert len(dataset) == 2
 
     def test_file_dataset_sample_format(self, sample_csv_file):
@@ -450,15 +452,17 @@ class TestLongformerObjectDataset:
         Path(csv_path).unlink()
 
     def test_object_dataset_creates_one_sample_per_object(self, sample_csv_object):
-        """Test that object dataset creates one training sample per CodeObject."""
+        """Test that object dataset creates one training sample per non-benign object."""
         dataset = LongformerObjectDataset(
             csv_path=sample_csv_object,
             tokenizer_path="distilbert-base-uncased",
             max_length=512,
+            benign_ratio=1,  # Create 1 benign sample per malicious object
+            random_seed=42,
         )
 
-        # Should have 3 training samples (one per object)
-        assert len(dataset) == 3
+        # Should have 4 training samples (2 non-benign + 2 sampled benign with ratio=1)
+        assert len(dataset) == 4
 
     def test_object_dataset_sample_format(self, sample_csv_object):
         """Test that object dataset samples have correct format."""

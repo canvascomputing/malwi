@@ -42,6 +42,7 @@ class LongformerPackageDataset(Dataset):
         min_objects_per_package: int = 1,
         max_benign_samples_per_package: int = 10,
         benign_ratio: int = 4,
+        random_seed: int = 42,
     ):
         """
         Initialize the dataset.
@@ -54,6 +55,7 @@ class LongformerPackageDataset(Dataset):
             min_objects_per_package: Minimum CodeObjects required per package
             max_benign_samples_per_package: Maximum number of random samples to use from benign packages
             benign_ratio: Training balance ratio - creates this many benign collections per malicious package (not per benign package)
+            random_seed: Seed for random benign sampling (default: 42)
         """
         self.csv_path = csv_path
         self.max_length = max_length
@@ -61,6 +63,10 @@ class LongformerPackageDataset(Dataset):
         self.min_objects_per_package = min_objects_per_package
         self.max_benign_samples_per_package = max_benign_samples_per_package
         self.benign_ratio = benign_ratio
+        self.random_seed = random_seed
+
+        # Seed random number generator for reproducibility
+        random.seed(random_seed)
 
         # Load custom trained tokenizer
         progress("Loading tokenizer...")
@@ -479,6 +485,7 @@ class LongformerFileDataset(Dataset):
         label_aggregation_strategy: str = "any_positive",
         max_benign_samples_per_file: int = 10,
         benign_ratio: int = 4,
+        random_seed: int = 42,
     ):
         """
         Initialize the dataset.
@@ -490,12 +497,17 @@ class LongformerFileDataset(Dataset):
             label_aggregation_strategy: How to aggregate CodeObject labels to file labels
             max_benign_samples_per_file: Maximum number of random samples per benign file
             benign_ratio: Number of benign files to create per malicious file
+            random_seed: Seed for random benign sampling (default: 42)
         """
         self.csv_path = csv_path
         self.max_length = max_length
         self.label_aggregation_strategy = label_aggregation_strategy
         self.max_benign_samples_per_file = max_benign_samples_per_file
         self.benign_ratio = benign_ratio
+        self.random_seed = random_seed
+
+        # Seed random number generator for reproducibility
+        random.seed(random_seed)
 
         # Load tokenizer
         progress(f"Loading tokenizer from {tokenizer_path}...")
