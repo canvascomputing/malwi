@@ -6,7 +6,29 @@ This document tracks the AI model training research progress for malwi, document
 
 ### October 2025 (Latest First)
 
-#### 2025-10-07: Longformer Architecture with Benign-Ratio Control (NEW PEAK)
+#### 2025-10-08: Longformer File-Based Training Strategy
+- **Tag**: `81205f22_f1/0.995`
+- **F1 Score**: 0.995 (-0.001 from package strategy)
+- **Change**: Tested file-based training strategy for Longformer (groups CodeObjects by filepath instead of package)
+- **Training Strategy**: File-based grouping with random benign sampling
+  - Groups all CodeObjects from each file into a single training sample
+  - Creates `malicious_files × benign_ratio` random benign files
+  - Each benign file contains up to 10 random benign objects
+  - Benign ratio: 4 (4 benign files per malicious file)
+- **Model Configuration**: Same as package strategy (hidden_size=256, 4 heads, 4 layers, 4098 context)
+- **Training Metrics (1 epoch, ~73 min/epoch)**:
+  - **Losses**: Train 0.0324, Val 0.0025
+  - **Overall**: Macro F1=0.9978, Micro F1=0.9993
+  - **Benign**: F1=0.9996 (Precision=0.9996, Recall=0.9996)
+  - **Malicious**: F1=0.9959 (Precision=0.9962, Recall=0.9957)
+- **Files Modified**:
+  - `src/research/longformer_dataset.py`: Implemented LongformerFileDataset with benign sampling
+  - `src/research/cli.py`: Added --strategy flag for training strategy selection
+- **Impact**: ⚠️ **Slight Performance Decrease** - marginally lower than package strategy (0.995 vs 0.996)
+- **Analysis**: File-based grouping achieves near-identical performance to package-based grouping, with only a 0.001 F1 difference. This suggests that file-level context is nearly as effective as package-level context for malware detection. The file strategy is simpler (no need to track package names) and may be more suitable when package information is unreliable or unavailable. Both strategies benefit from Longformer's extended context window (4098 tokens), but package-level grouping captures slightly more cross-file dependencies within a package. The minimal performance difference indicates that most malicious patterns are contained within individual files rather than spread across multiple files in a package.
+- **Technical Insight**: File-level context (concatenating all CodeObjects from one file) captures most malicious patterns effectively. The 0.001 F1 difference between file and package strategies suggests that cross-file dependencies within packages are less critical than initially hypothesized. For practical deployment, file-based strategy may be preferred due to its simplicity and independence from package metadata.
+
+#### 2025-10-07: Longformer Architecture with Benign-Ratio Control (PEAK PERFORMANCE)
 - **Tag**: `8586c5a3_f1/0.996`
 - **F1 Score**: 0.996 (+0.001)
 - **Change**: Introduced Longformer architecture with configurable benign-ratio flag for training data balance
@@ -44,7 +66,7 @@ This document tracks the AI model training research progress for malwi, document
 #### 2025-09-26: Non-Benign Tokenizer Training + Latest malwi-samples (Previous Peak)
 - **Tag**: `6b69c5b1_f1/0.995`
 - **F1 Score**: 0.995 (+0.072)
-- **Note**: ⚠️ This F1 score represents multi-label classification performance (benign, malicious, suspicious, telemetry), not binary classification. Direct comparison with earlier binary scores may not be fully representative of actual detection capability improvements.
+- **Note**: ⚠️ **This F1 score is inflated due to severe class imbalance** - benign class had disproportionately more samples than malicious/suspicious/telemetry classes, artificially boosting the overall F1 score. This score is NOT directly comparable to Longformer results which use balanced benign_ratio sampling. Multi-label classification (4 categories) but with unbalanced data.
 - **Change**: Tokenizer trained exclusively on non-benign samples (malicious, suspicious, telemetry) + latest malwi-samples dataset
 - **Key Changes**:
   - Modified `train_tokenizer.py` to filter out benign samples: `non_benign_df = df[df["label"] != "benign"]`
@@ -240,46 +262,55 @@ This document tracks the AI model training research progress for malwi, document
 ## Key Insights
 
 ### ✅ High-Impact Improvements
-1. **Longformer architecture** (0.996) - NEW PEAK: Package-level analysis with 8x extended context (4098 tokens) + benign-ratio control achieved breakthrough performance
-2. **Non-benign tokenizer training** (0.995) - Previous peak: Specialized vocabulary for threat detection
-3. **String mapping optimization** (0.958) - Major improvement with minimal code changes
+1. **Longformer architecture** (0.996 balanced multi-category) - NEW PEAK: Package-level analysis with 8x extended context (4098 tokens) + benign-ratio control achieved breakthrough performance with balanced training data
+2. **Longformer file strategy** (0.995 balanced multi-category) - Near-identical to package strategy: File-level grouping proves nearly as effective as package-level context
+3. **String mapping optimization** (0.958 binary) - DistilBERT binary peak: Major improvement with minimal code changes
 4. **Dataset quality + special tokens** (0.953) - Clean training data and expanded vocabulary
 5. **False-positives training** (0.952) - Edge case handling improved robustness
 6. **KW_NAMES splitting** (0.947) - Major architecture improvement in AST processing
 
 ### ⚠️ Mixed Results / Minor Performance Changes
-1. **Code detection tokens optimization** (0.9362) - Slight decrease from peak but improved processing efficiency
-2. **Tokenizer vocabulary fix** (0.918) - Good recovery after configuration issues
-3. **Full file scanning** (0.894) - Partial recovery from module splitting issues
-4. **DistilBERT 256 reintroduction** (0.944) - Minor decrease, larger model not always better
+1. **Longformer strategy comparison** (0.996 vs 0.995) - Package strategy marginally outperforms file strategy, suggesting most malicious patterns are file-contained
+2. **Code detection tokens optimization** (0.9362) - Slight decrease from peak but improved processing efficiency
+3. **Tokenizer vocabulary fix** (0.918) - Good recovery after configuration issues
+4. **Full file scanning** (0.894) - Partial recovery from module splitting issues
+5. **DistilBERT 256 reintroduction** (0.944) - Minor decrease, larger model not always better
 
-### ❌ Failed Experiments / Performance Degradations
-1. **Vocabulary size increase** (0.0) - Complete model failure, suggests architecture limitations
-2. **KW_NAMES unmapping** (0.0) - Removing essential mappings broke model completely
-3. **Module code splitting** (0.847) - Lost contextual information critical for detection
-4. **Security-focused mappings** (0.843) - Significant performance drop (-0.11), new mapping functions may introduce noise
+### ❌ Failed Experiments / Performance Degradations / Misleading Results
+1. **Non-benign tokenizer DistilBERT** (0.995 multi-category) - ⚠️ **Inflated score due to severe class imbalance** - benign samples vastly outnumbered malicious/suspicious/telemetry, artificially boosting F1. Not comparable to balanced Longformer results
+2. **Vocabulary size increase** (0.0) - Complete model failure, suggests architecture limitations
+3. **KW_NAMES unmapping** (0.0) - Removing essential mappings broke model completely
+4. **Module code splitting** (0.847) - Lost contextual information critical for detection
+5. **Security-focused mappings** (0.843) - Significant performance drop (-0.11), new mapping functions may introduce noise
 
 ### 📊 Performance Trends
-- **Peak Performance**: 0.996 (2025-10-07) - Longformer architecture with extended context ✨ **NEW RECORD**
-- **Previous Peak**: 0.995 (2025-09-26) - Non-benign tokenizer training + latest malwi-samples
-- **DistilBERT Peak**: 0.958 (2025-08-14) - String mapping optimization
+- **Peak Performance**: 0.996 (2025-10-07) - Longformer package strategy (balanced multi-category) ✨ **NEW RECORD**
+- **Longformer File Strategy**: 0.995 (2025-10-08) - Nearly identical to package strategy (balanced multi-category, -0.001)
+- **DistilBERT Binary Peak**: 0.958 (2025-08-14) - String mapping optimization (binary classification, balanced data)
 - **Performance Range**: 0.0 - 0.996
-- **Average Performance**: 0.830 (excluding failed experiments)
-- **Latest Breakthrough**: +0.001 F1 improvement through Longformer architecture (package-level context)
-- **Architectural Shift**: Token-level (DistilBERT, 512 context) → Package-level (Longformer, 4098 context)
+- **Average Performance**: 0.831 (excluding failed experiments)
+- **Strategy Comparison**: Package (0.996) vs File (0.995) vs Object (untested) - minimal difference suggests file-level context sufficient
+- **Latest Insight**: File vs package strategy shows negligible difference (0.001), indicating most malicious patterns are file-contained
+- **Architectural Breakthrough**: Longformer (0.996 balanced multi-category) represents true peak - combines extended context (4098 tokens) with proper class balancing via benign_ratio
+- **Class Balance Importance**: DistilBERT 0.995 multi-category result was invalidated due to severe class imbalance - highlights critical importance of balanced training data
+- **Classification Evolution**: Binary → Balanced Multi-category (4 labels) - more challenging task with proper class distribution
 - **Volatility**: High - strategic changes can have major impact (±0.1 F1 score)
 
 ### 🔬 Critical Success Factors
-1. **Model Architecture**: Longformer (0.996) with 4098-token context outperforms DistilBERT (0.995) - package-level patterns require extended context
-2. **Training Data Balance**: Configurable benign-ratio flag enables optimal class balance control
-3. **Specialized Tokenizer Vocabulary**: Non-benign only training (0.995) - Domain-specific vocabulary outperforms general vocabulary for threat detection
-4. **Training Data Quality**: Clean dataset labeling is crucial - removing mislabeled files provided +0.025 F1 improvement
-5. **String Handling**: Length and mapping optimizations are disproportionately important (DistilBERT peak 0.958)
-6. **Tokenizer Configuration**: Special token count significantly impacts performance (5K→10K contributed to major gains)
-7. **AST Processing Pipeline**: Core changes in `ast_to_malwicode.py` have highest impact
-8. **Context Preservation**: Full file scanning > module splitting (0.894 vs 0.847)
-9. **Architecture Stability**: KW_NAMES system is fundamental - modifications must be careful
-10. **Training Data Structure**: Current bytecode chunking approach prevents function body duplication and maintains optimal context balance
+1. **Training Data Balance**: **CRITICAL** - Balanced benign_ratio sampling is essential for valid F1 scores. DistilBERT 0.995 (imbalanced) was invalidated; Longformer 0.996 (balanced) represents true performance
+2. **Model Architecture**: Longformer (0.996 balanced multi-category) with 4098-token context + benign-ratio control achieves peak performance on properly balanced data
+3. **Multi-Category Classification**: 4-label classification (benign, malicious, suspicious, telemetry) with balanced sampling - more challenging and realistic than binary
+4. **Training Strategy Flexibility**: Package (0.996) vs File (0.995) strategies show negligible difference - file-level context captures most malicious patterns
+5. **Configurable Class Balance**: benign-ratio flag enables optimal class balance control across all strategies (package, file, object)
+6. **Training Data Quality**: Clean dataset labeling is crucial - removing mislabeled files provided +0.025 F1 improvement
+7. **String Handling**: Length and mapping optimizations are disproportionately important (0.958 binary peak)
+8. **Tokenizer Configuration**: Special token count significantly impacts performance (5K→10K contributed to major gains)
+9. **AST Processing Pipeline**: Core changes in `ast_to_malwicode.py` have highest impact
+10. **Context Preservation**: Full file scanning > module splitting (0.894 vs 0.847)
+11. **Architecture Stability**: KW_NAMES system is fundamental - modifications must be careful
+12. **Training Data Structure**: Current bytecode chunking approach prevents function body duplication and maintains optimal context balance
+13. **Grouping Granularity**: Package vs file grouping makes minimal difference (0.001), suggesting malicious code is typically file-contained rather than spread across packages
+14. **Avoiding Inflated Metrics**: Class imbalance can artificially inflate F1 scores - proper sampling is non-negotiable for valid evaluation
 
 ### 🏗️ Training Data Architecture (2025-08-26 Analysis)
 **Current System Strengths**:
@@ -301,31 +332,39 @@ This document tracks the AI model training research progress for malwi, document
 3. **New mapping functions**: Adding security-focused mappings can degrade performance (-0.11 F1) - careful validation needed
 
 ### 🔍 Lessons from Performance Drops
-1. **Security mappings backfire** (0.843): Well-intentioned security detection functions (email, insecure protocols) caused significant performance regression
+1. **Class imbalance invalidates results** (0.995 → invalidated): **CRITICAL LESSON** - DistilBERT 0.995 multi-category score was artificially inflated by severe class imbalance (too many benign samples)
+   - **Root cause**: Benign samples vastly outnumbered malicious/suspicious/telemetry, making model appear better than it was
+   - **Solution**: Longformer's benign_ratio flag (0.996 with balanced data) provides honest evaluation
+   - **Key takeaway**: Always validate class distribution before trusting F1 scores
+2. **Security mappings backfire** (0.843): Well-intentioned security detection functions (email, insecure protocols) caused significant performance regression
    - **Recovery** (0.923): Disabling `is_insecure_protocol()` alone recovered +0.080 F1 score
    - **Root cause**: Function was too broad, matching protocol names within any string context
-2. **Feature complexity risk**: More features ≠ better performance - new mappings may create noise or vocabulary confusion
-3. **Incremental testing critical**: Major feature additions should be tested individually before combining
-4. **Module splitting**: Loses contextual signal quality
-5. **String tokenization**: Small changes have large impact
+3. **Feature complexity risk**: More features ≠ better performance - new mappings may create noise or vocabulary confusion
+4. **Incremental testing critical**: Major feature additions should be tested individually before combining
+5. **Module splitting**: Loses contextual signal quality
+6. **String tokenization**: Small changes have large impact
 
 ### 📈 Research Directions
-1. **Longformer optimization**: Fine-tune attention window sizes, layer depths, and hidden dimensions for malware-specific patterns
-2. **Hybrid architecture**: Combine Longformer's extended context with specialized non-benign tokenizer vocabulary
-3. **Benign-ratio tuning**: Experiment with different ratios (2, 4, 8, 16) to find optimal class balance
-4. **Context window expansion**: Test 8192+ token contexts for extremely large packages
-5. **Multi-scale analysis**: Combine function-level (DistilBERT) with package-level (Longformer) predictions
-6. **Training data curation**: Systematic false-positive identification and inclusion with expanded telemetry category
-7. **A/B testing**: Test incremental improvements on the new 0.996 baseline
+1. **Object strategy testing**: Test object-level strategy (individual CodeObjects) with benign_ratio tuning - may reveal if fine-grained patterns matter
+2. **Longformer optimization**: Fine-tune attention window sizes, layer depths, and hidden dimensions for malware-specific patterns
+3. **Hybrid architecture**: Combine Longformer's extended context with specialized non-benign tokenizer vocabulary
+4. **Benign-ratio tuning**: Experiment with different ratios (1, 2, 4, 8, 16) across all strategies to find optimal class balance
+5. **Context window expansion**: Test 8192+ token contexts for extremely large files/packages
+6. **Multi-scale analysis**: Combine function-level (DistilBERT) with file-level (Longformer) predictions
+7. **Training data curation**: Systematic false-positive identification and inclusion with expanded telemetry category
+8. **Strategy deployment**: Given minimal performance difference, file strategy may be preferred for production due to simpler metadata requirements
+9. **A/B testing**: Test incremental improvements on the 0.996 baseline
 
 ## Next Steps
 
 ### Immediate Priorities
-1. **Near-perfect performance**: Investigate closing the final 0.004 gap to achieve F1 = 1.0
-2. **Longformer-tokenizer integration**: Combine Longformer architecture with specialized non-benign tokenizer vocabulary
-3. **Benign-ratio optimization**: Systematic testing of different class balance ratios (2, 4, 8, 16)
-4. **Peak performance preservation**: Document and preserve the exact conditions that achieved 0.996 performance
-5. **Validation robustness**: Ensure 0.996 performance is consistent across different data splits and test scenarios
+1. **Object strategy evaluation**: Test object-level strategy to complete strategy comparison (package vs file vs object)
+2. **Strategy selection**: Decide between package (0.996) and file (0.995) for production - file strategy simpler but package slightly better
+3. **Near-perfect performance**: Investigate closing the final 0.004 gap to achieve F1 = 1.0
+4. **Longformer-tokenizer integration**: Combine Longformer architecture with specialized non-benign tokenizer vocabulary
+5. **Benign-ratio optimization**: Systematic testing of different class balance ratios across all strategies
+6. **Peak performance preservation**: Document and preserve the exact conditions that achieved 0.996 performance
+7. **Validation robustness**: Ensure 0.996 performance is consistent across different data splits and test scenarios
 
 ### Research Pipeline
 1. **Advanced token research**: Expand specialized token categories (network patterns, crypto operations, system calls)
