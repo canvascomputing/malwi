@@ -282,8 +282,14 @@ Examples:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  # Train Longformer with default settings
+  # Train Longformer with default settings (package strategy)
   ./research train_longformer training_data.csv
+
+  # Train with file-based strategy
+  ./research train_longformer training_data.csv --strategy file
+
+  # Train with object-based strategy
+  ./research train_longformer training_data.csv --strategy object
 
   # Train with custom parameters
   ./research train_longformer training_data.csv --max-length 2048 --batch-size 4 --epochs 5
@@ -390,6 +396,14 @@ Examples:
             default="small",
             choices=["small", "base"],
             help="Model size configuration (small: faster training, base: standard Longformer) (default: small)",
+        )
+
+        train_longformer_parser.add_argument(
+            "--strategy",
+            type=str,
+            default="package",
+            choices=["package", "file", "object"],
+            help="Training strategy: 'package' groups by package with random benign sampling, 'file' groups by filepath with random benign sampling, 'object' uses individual CodeObjects with 1 random benign per malicious object",
         )
 
         # Eval subcommand
@@ -1207,6 +1221,7 @@ Examples:
             info(f"   • Label Aggregation: {args.label_aggregation}")
             info(f"   • Model Size: {args.model_size}")
             info(f"   • Benign Ratio: {args.benign_ratio}")
+            info(f"   • Training Strategy: {args.strategy}")
             if args.val_csv:
                 info(f"   • Validation CSV: {args.val_csv}")
 
@@ -1232,6 +1247,7 @@ Examples:
                 val_csv=args.val_csv,
                 device=args.device,
                 benign_ratio=args.benign_ratio,
+                strategy=args.strategy,
             )
 
             if success_result:
@@ -1299,6 +1315,7 @@ Examples:
                 "LONGFORMER_LABEL_AGGREGATION", "any_positive"
             )
             model_size = os.environ.get("LONGFORMER_MODEL_SIZE", "small")
+            strategy = os.environ.get("LONGFORMER_STRATEGY", "package")
 
             info("🔧 Longformer Configuration:")
             info(f"   • Model Path: {output_model}")
@@ -1309,8 +1326,9 @@ Examples:
             info(f"   • Gradient Accumulation: {gradient_accumulation_steps}")
             info(f"   • Label Aggregation: {label_aggregation}")
             info(f"   • Model Size: {model_size}")
+            info(f"   • Training Strategy: {strategy}")
             info(
-                "💡 Tip: Configure via environment variables (LONGFORMER_EPOCHS, LONGFORMER_BATCH_SIZE, LONGFORMER_MODEL_SIZE, etc.)"
+                "💡 Tip: Configure via environment variables (LONGFORMER_EPOCHS, LONGFORMER_BATCH_SIZE, LONGFORMER_MODEL_SIZE, LONGFORMER_STRATEGY, etc.)"
             )
 
             # Create training configuration
@@ -1332,6 +1350,7 @@ Examples:
                 tokenizer_path=tokenizer_path,
                 config=config,
                 device="auto",
+                strategy=strategy,
             )
 
             if success_result:

@@ -49,6 +49,16 @@ uv run ruff format .
 # Longformer Training (requires preprocessed data)
 uv run python -m src.research.cli train_longformer training_processed.csv
 uv run python -m src.research.cli train_longformer training_processed.csv --epochs 5 --batch-size 2
+
+# Longformer Training Strategies
+# Package strategy (default): Groups CodeObjects by package, random benign sampling
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy package
+
+# File strategy: Groups CodeObjects by file, random benign sampling
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy file
+
+# Object strategy: Individual CodeObjects, 1 random benign per malicious object
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy object
 ```
 
 **Performance Tuning:**
@@ -133,6 +143,46 @@ The system now supports multi-label classification instead of binary malicious/b
 - **Training Data**: CSV files include a "label" column derived from folder structure (../malwi-samples/python/{label}/)
 - **Model Training**: DistilBERT trained with multi-class classification, dynamic label mapping
 - **Cache Support**: Updated to store and retrieve label dictionaries instead of single scores
+
+## Longformer Training Strategies
+
+malwi supports three Longformer training strategies, each with different grouping and benign sampling behavior:
+
+### Package Strategy (Default)
+- **Grouping**: Groups CodeObjects by package name
+- **Training Samples**: Creates overlapping windows from multiple CodeObjects within each package
+- **Benign Sampling**: Creates `malicious_packages × benign_ratio` random benign collections
+  - Each collection contains up to `max_benign_samples_per_package` random benign objects (default: 10)
+  - Default `benign_ratio`: 4 (creates 4 benign collections per malicious package)
+- **Use Case**: Package-level malware detection, captures cross-file dependencies
+
+### File Strategy
+- **Grouping**: Groups CodeObjects by filepath
+- **Training Samples**: Concatenates all CodeObjects from a file into one sample
+- **Benign Sampling**: Same as package strategy - creates `malicious_files × benign_ratio` random benign files
+  - Each file contains up to `max_benign_samples_per_file` random benign objects (default: 10)
+  - Default `benign_ratio`: 4 (creates 4 benign files per malicious file)
+- **Use Case**: File-level malware detection, simpler than package grouping
+
+### Object Strategy
+- **Grouping**: Each CodeObject is a separate training sample
+- **Training Samples**: One sample per CodeObject
+- **Benign Sampling**: For each malicious object, picks **one** random benign object
+  - If you have N malicious objects, you get N random benign objects (1:1 ratio)
+  - No `benign_ratio` parameter - always 1:1
+- **Use Case**: Fine-grained object-level detection, balanced classes
+
+### Strategy Selection
+```bash
+# Package strategy (default) - 4 benign collections per malicious package
+uv run python -m src.research.cli train_longformer data.csv --strategy package --benign-ratio 4
+
+# File strategy - 4 benign files per malicious file
+uv run python -m src.research.cli train_longformer data.csv --strategy file --benign-ratio 4
+
+# Object strategy - 1 benign object per malicious object (no benign-ratio flag)
+uv run python -m src.research.cli train_longformer data.csv --strategy object
+```
 
 ## Research Workflow
 

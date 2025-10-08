@@ -10,6 +10,8 @@ from pathlib import Path
 
 from research.longformer_dataset import (
     LongformerPackageDataset,
+    LongformerFileDataset,
+    LongformerObjectDataset,
     create_longformer_dataloaders,
     longformer_collate_fn,
 )
@@ -280,3 +282,327 @@ class TestLongformerCollateFunction:
 
         # Sequences should maintain the same length
         assert result["input_ids"].shape[1] == 5
+
+
+class TestLongformerFileDataset:
+    @pytest.fixture
+    def sample_csv_file(self):
+        """Create sample CSV data for file-based testing."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            csv_path = f.name
+            writer = csv.writer(f)
+            writer.writerow(["tokens", "label", "filepath", "package", "hash"])
+
+            # File 1 has 2 malicious objects
+            writer.writerow(
+                ["LOAD_CONST url CALL_FUNCTION", "malicious", "/file1.py", "pkg1", "h1"]
+            )
+            writer.writerow(
+                [
+                    "LOAD_CONST eval CALL_FUNCTION",
+                    "malicious",
+                    "/file1.py",
+                    "pkg1",
+                    "h2",
+                ]
+            )
+
+            # File 2 has 2 benign objects
+            writer.writerow(
+                ["LOAD_CONST x RETURN_VALUE", "benign", "/file2.py", "pkg2", "h3"]
+            )
+            writer.writerow(
+                ["LOAD_CONST y BINARY_ADD", "benign", "/file2.py", "pkg2", "h4"]
+            )
+
+        yield csv_path
+        Path(csv_path).unlink()
+
+    def test_file_dataset_groups_by_filepath(self, sample_csv_file):
+        """Test that file dataset groups objects by filepath."""
+        dataset = LongformerFileDataset(
+            csv_path=sample_csv_file,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        # Should have 2 files
+        assert len(dataset.file_data) == 2
+        assert "/file1.py" in dataset.file_data
+        assert "/file2.py" in dataset.file_data
+
+        # Each file should have 2 objects
+        assert len(dataset.file_data["/file1.py"]) == 2
+        assert len(dataset.file_data["/file2.py"]) == 2
+
+    def test_file_dataset_creates_one_sample_per_file(self, sample_csv_file):
+        """Test that file dataset creates one training sample per file."""
+        dataset = LongformerFileDataset(
+            csv_path=sample_csv_file,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        # Should have 2 training samples (one per file)
+        assert len(dataset) == 2
+
+    def test_file_dataset_sample_format(self, sample_csv_file):
+        """Test that file dataset samples have correct format."""
+        dataset = LongformerFileDataset(
+            csv_path=sample_csv_file,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        sample = dataset[0]
+
+        assert "filepath" in sample
+        assert "input_ids" in sample
+        assert "attention_mask" in sample
+        assert "global_attention_mask" in sample
+        assert "labels" in sample
+        assert "object_count" in sample
+
+    def test_file_dataset_benign_sampling(self):
+        """Test that file dataset creates random benign files based on malicious count."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            csv_path = f.name
+            writer = csv.writer(f)
+            writer.writerow(["tokens", "label", "filepath", "package", "hash"])
+
+            # 2 malicious files
+            writer.writerow(
+                ["LOAD_CONST url CALL_FUNCTION", "malicious", "/mal1.py", "pkg1", "h1"]
+            )
+            writer.writerow(
+                ["LOAD_CONST eval CALL_FUNCTION", "malicious", "/mal2.py", "pkg2", "h2"]
+            )
+
+            # 10 benign objects from different files
+            for i in range(10):
+                writer.writerow(
+                    [
+                        f"LOAD_CONST x{i} RETURN_VALUE",
+                        "benign",
+                        f"/benign{i}.py",
+                        "pkg",
+                        f"h{i + 3}",
+                    ]
+                )
+
+        try:
+            # With benign_ratio=4, should create 2 * 4 = 8 benign files
+            dataset = LongformerFileDataset(
+                csv_path=csv_path,
+                tokenizer_path="distilbert-base-uncased",
+                max_length=512,
+                benign_ratio=4,
+                max_benign_samples_per_file=3,
+            )
+
+            # Should have 2 malicious + 8 benign = 10 files
+            assert len(dataset) == 10
+
+            # Check that we have the right number of each type
+            malicious_count = sum(
+                1
+                for sample in dataset.training_samples
+                if any(label != "benign" for label in sample.get("file_labels", []))
+            )
+            assert malicious_count == 2
+
+        finally:
+            Path(csv_path).unlink()
+
+
+class TestLongformerObjectDataset:
+    @pytest.fixture
+    def sample_csv_object(self):
+        """Create sample CSV data for object-based testing."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            csv_path = f.name
+            writer = csv.writer(f)
+            writer.writerow(["tokens", "label", "filepath", "package", "hash"])
+
+            writer.writerow(
+                ["LOAD_CONST url CALL_FUNCTION", "malicious", "/file1.py", "pkg1", "h1"]
+            )
+            writer.writerow(
+                [
+                    "LOAD_CONST eval CALL_FUNCTION",
+                    "suspicious",
+                    "/file1.py",
+                    "pkg1",
+                    "h2",
+                ]
+            )
+            writer.writerow(
+                ["LOAD_CONST x RETURN_VALUE", "benign", "/file2.py", "pkg2", "h3"]
+            )
+
+        yield csv_path
+        Path(csv_path).unlink()
+
+    def test_object_dataset_creates_one_sample_per_object(self, sample_csv_object):
+        """Test that object dataset creates one training sample per CodeObject."""
+        dataset = LongformerObjectDataset(
+            csv_path=sample_csv_object,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        # Should have 3 training samples (one per object)
+        assert len(dataset) == 3
+
+    def test_object_dataset_sample_format(self, sample_csv_object):
+        """Test that object dataset samples have correct format."""
+        dataset = LongformerObjectDataset(
+            csv_path=sample_csv_object,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        sample = dataset[0]
+
+        assert "object_id" in sample
+        assert "filepath" in sample
+        assert "package" in sample
+        assert "input_ids" in sample
+        assert "attention_mask" in sample
+        assert "global_attention_mask" in sample
+        assert "labels" in sample
+        assert "label_name" in sample
+
+    def test_object_dataset_preserves_individual_labels(self, sample_csv_object):
+        """Test that object dataset preserves individual object labels."""
+        dataset = LongformerObjectDataset(
+            csv_path=sample_csv_object,
+            tokenizer_path="distilbert-base-uncased",
+            max_length=512,
+        )
+
+        # Check that different objects have different labels
+        labels = [sample["label_name"] for sample in dataset.training_samples]
+        assert "malicious" in labels
+        assert "suspicious" in labels
+        assert "benign" in labels
+
+    def test_object_dataset_benign_sampling(self):
+        """Test that object dataset picks one random benign per malicious object."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            csv_path = f.name
+            writer = csv.writer(f)
+            writer.writerow(["tokens", "label"])
+
+            # 2 malicious objects
+            writer.writerow(["LOAD_CONST url CALL_FUNCTION", "malicious"])
+            writer.writerow(["LOAD_CONST eval CALL_FUNCTION", "malicious"])
+
+            # 5 benign objects
+            for i in range(5):
+                writer.writerow([f"LOAD_CONST x{i} RETURN_VALUE", "benign"])
+
+        try:
+            dataset = LongformerObjectDataset(
+                csv_path=csv_path,
+                tokenizer_path="distilbert-base-uncased",
+                max_length=512,
+            )
+
+            # Should have 2 malicious + 2 random benign (1 per malicious) = 4 total
+            assert len(dataset) == 4
+
+            # Count labels
+            labels = [sample["label_name"] for sample in dataset.training_samples]
+            assert labels.count("malicious") == 2
+            assert labels.count("benign") == 2
+
+        finally:
+            Path(csv_path).unlink()
+
+
+class TestDataloaderStrategies:
+    @pytest.fixture
+    def strategy_csv(self):
+        """Create CSV for testing different strategies."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline=""
+        ) as f:
+            csv_path = f.name
+            writer = csv.writer(f)
+            writer.writerow(["tokens", "label", "filepath", "package", "hash"])
+
+            for i in range(10):
+                writer.writerow(
+                    [
+                        f"LOAD_CONST var{i} STORE_GLOBAL",
+                        "malicious" if i % 2 == 0 else "benign",
+                        f"/file{i % 3}.py",
+                        f"package_{i % 2}",
+                        f"hash{i}",
+                    ]
+                )
+
+        yield csv_path
+        Path(csv_path).unlink()
+
+    def test_create_dataloaders_with_package_strategy(self, strategy_csv):
+        """Test dataloader creation with package strategy."""
+        train_loader, val_loader = create_longformer_dataloaders(
+            train_csv=strategy_csv,
+            strategy="package",
+            tokenizer_path="distilbert-base-uncased",
+            batch_size=2,
+            max_length=512,
+            val_split=0.2,
+        )
+
+        assert train_loader is not None
+        assert val_loader is not None
+
+    def test_create_dataloaders_with_file_strategy(self, strategy_csv):
+        """Test dataloader creation with file strategy."""
+        train_loader, val_loader = create_longformer_dataloaders(
+            train_csv=strategy_csv,
+            strategy="file",
+            tokenizer_path="distilbert-base-uncased",
+            batch_size=2,
+            max_length=512,
+            val_split=0.2,
+        )
+
+        assert train_loader is not None
+        assert val_loader is not None
+
+    def test_create_dataloaders_with_object_strategy(self, strategy_csv):
+        """Test dataloader creation with object strategy."""
+        train_loader, val_loader = create_longformer_dataloaders(
+            train_csv=strategy_csv,
+            strategy="object",
+            tokenizer_path="distilbert-base-uncased",
+            batch_size=2,
+            max_length=512,
+            val_split=0.2,
+        )
+
+        assert train_loader is not None
+        assert val_loader is not None
+
+    def test_create_dataloaders_invalid_strategy(self, strategy_csv):
+        """Test that invalid strategy raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            create_longformer_dataloaders(
+                train_csv=strategy_csv,
+                strategy="invalid",
+                tokenizer_path="distilbert-base-uncased",
+                batch_size=2,
+                max_length=512,
+            )
