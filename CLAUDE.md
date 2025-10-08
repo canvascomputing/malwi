@@ -51,14 +51,14 @@ uv run python -m src.research.cli train_longformer training_processed.csv
 uv run python -m src.research.cli train_longformer training_processed.csv --epochs 5 --batch-size 2
 
 # Longformer Training Strategies
-# Package strategy (default): Groups CodeObjects by package, random benign sampling
-uv run python -m src.research.cli train_longformer training_processed.csv --strategy package
+# Package strategy (default): Groups by package, benign_ratio controls benign collections per malicious package
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy package --benign-ratio 4
 
-# File strategy: Groups CodeObjects by file, random benign sampling
-uv run python -m src.research.cli train_longformer training_processed.csv --strategy file
+# File strategy: Groups by file, benign_ratio controls benign files per malicious file
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy file --benign-ratio 4
 
-# Object strategy: Individual CodeObjects, 1 random benign per malicious object
-uv run python -m src.research.cli train_longformer training_processed.csv --strategy object
+# Object strategy: Individual objects, benign_ratio controls benign objects per malicious object
+uv run python -m src.research.cli train_longformer training_processed.csv --strategy object --benign-ratio 1
 ```
 
 **Performance Tuning:**
@@ -167,10 +167,11 @@ malwi supports three Longformer training strategies, each with different groupin
 ### Object Strategy
 - **Grouping**: Each CodeObject is a separate training sample
 - **Training Samples**: One sample per CodeObject
-- **Benign Sampling**: For each malicious object, picks **one** random benign object
-  - If you have N malicious objects, you get N random benign objects (1:1 ratio)
-  - No `benign_ratio` parameter - always 1:1
-- **Use Case**: Fine-grained object-level detection, balanced classes
+- **Benign Sampling**: For each malicious object, picks `benign_ratio` random benign objects
+  - If you have N malicious objects with `benign_ratio=1`, you get N malicious + N benign samples (1:1 ratio)
+  - Default `benign_ratio`: 1 (balanced classes)
+  - Can increase ratio for more benign representation (e.g., ratio=4 gives 1:4 malicious:benign)
+- **Use Case**: Fine-grained object-level detection, flexible class balance control
 
 ### Strategy Selection
 ```bash
@@ -180,8 +181,11 @@ uv run python -m src.research.cli train_longformer data.csv --strategy package -
 # File strategy - 4 benign files per malicious file
 uv run python -m src.research.cli train_longformer data.csv --strategy file --benign-ratio 4
 
-# Object strategy - 1 benign object per malicious object (no benign-ratio flag)
-uv run python -m src.research.cli train_longformer data.csv --strategy object
+# Object strategy - 1 benign object per malicious object (default)
+uv run python -m src.research.cli train_longformer data.csv --strategy object --benign-ratio 1
+
+# Object strategy - 4 benign objects per malicious object
+uv run python -m src.research.cli train_longformer data.csv --strategy object --benign-ratio 4
 ```
 
 ## Research Workflow

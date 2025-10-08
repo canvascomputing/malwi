@@ -403,7 +403,7 @@ Examples:
             type=str,
             default="package",
             choices=["package", "file", "object"],
-            help="Training strategy: 'package' groups by package with random benign sampling, 'file' groups by filepath with random benign sampling, 'object' uses individual CodeObjects with 1 random benign per malicious object",
+            help="Training strategy: 'package' groups by package, 'file' groups by filepath, 'object' uses individual CodeObjects. All strategies use --benign-ratio to control benign sampling",
         )
 
         # Eval subcommand

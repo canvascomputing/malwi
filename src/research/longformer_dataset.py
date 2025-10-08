@@ -716,8 +716,8 @@ class LongformerObjectDataset(Dataset):
     """
     Dataset for object-level malware detection with Longformer.
 
-    Each CodeObject becomes an individual training sample. Uses random benign sampling:
-    for each malicious object, picks one random benign object.
+    Each CodeObject becomes an individual training sample. Uses random benign sampling
+    controlled by benign_ratio.
     """
 
     def __init__(
@@ -725,6 +725,7 @@ class LongformerObjectDataset(Dataset):
         csv_path: str,
         tokenizer_path: str = "malwi_models",
         max_length: int = 4096,
+        benign_ratio: int = 1,
     ):
         """
         Initialize the dataset.
@@ -733,9 +734,11 @@ class LongformerObjectDataset(Dataset):
             csv_path: Path to CSV with tokens, label columns
             tokenizer_path: Path to DistilBERT tokenizer
             max_length: Maximum sequence length for Longformer
+            benign_ratio: Number of random benign objects per malicious object (default: 1)
         """
         self.csv_path = csv_path
         self.max_length = max_length
+        self.benign_ratio = benign_ratio
 
         # Load tokenizer
         progress(f"Loading tokenizer from {tokenizer_path}...")
@@ -802,9 +805,9 @@ class LongformerObjectDataset(Dataset):
             if sample:
                 training_samples.append(sample)
 
-        # For each malicious object, pick one random benign object
+        # Pick random benign objects based on benign_ratio
         if benign_objects and malicious_objects:
-            num_benign_samples = len(malicious_objects)
+            num_benign_samples = len(malicious_objects) * self.benign_ratio
             sampled_benign = random.choices(benign_objects, k=num_benign_samples)
 
             for obj in sampled_benign:
@@ -813,7 +816,7 @@ class LongformerObjectDataset(Dataset):
                     training_samples.append(sample)
 
             info(
-                f"Created {len(malicious_objects)} malicious + {num_benign_samples} random benign samples"
+                f"Created {len(malicious_objects)} malicious + {num_benign_samples} random benign samples (ratio: {self.benign_ratio})"
             )
         else:
             info(f"Created {len(training_samples)} samples (no benign sampling)")
@@ -1018,6 +1021,7 @@ def create_longformer_dataloaders(
             "csv_path": train_csv,
             "tokenizer_path": tokenizer_path,
             "max_length": max_length,
+            "benign_ratio": benign_ratio,
         }
     else:
         raise ValueError(

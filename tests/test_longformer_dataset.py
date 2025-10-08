@@ -494,7 +494,7 @@ class TestLongformerObjectDataset:
         assert "benign" in labels
 
     def test_object_dataset_benign_sampling(self):
-        """Test that object dataset picks one random benign per malicious object."""
+        """Test that object dataset picks benign objects based on benign_ratio."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", delete=False, newline=""
         ) as f:
@@ -511,10 +511,12 @@ class TestLongformerObjectDataset:
                 writer.writerow([f"LOAD_CONST x{i} RETURN_VALUE", "benign"])
 
         try:
+            # Test with benign_ratio=1 (default)
             dataset = LongformerObjectDataset(
                 csv_path=csv_path,
                 tokenizer_path="distilbert-base-uncased",
                 max_length=512,
+                benign_ratio=1,
             )
 
             # Should have 2 malicious + 2 random benign (1 per malicious) = 4 total
@@ -524,6 +526,22 @@ class TestLongformerObjectDataset:
             labels = [sample["label_name"] for sample in dataset.training_samples]
             assert labels.count("malicious") == 2
             assert labels.count("benign") == 2
+
+            # Test with benign_ratio=3
+            dataset = LongformerObjectDataset(
+                csv_path=csv_path,
+                tokenizer_path="distilbert-base-uncased",
+                max_length=512,
+                benign_ratio=3,
+            )
+
+            # Should have 2 malicious + 6 random benign (3 per malicious) = 8 total
+            assert len(dataset) == 8
+
+            # Count labels
+            labels = [sample["label_name"] for sample in dataset.training_samples]
+            assert labels.count("malicious") == 2
+            assert labels.count("benign") == 6
 
         finally:
             Path(csv_path).unlink()
