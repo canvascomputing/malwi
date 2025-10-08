@@ -154,10 +154,67 @@ def train_longformer(
         if val_loader:
             info(f"Validation batches: {len(val_loader)}")
 
-        # Get label distribution
-        if hasattr(train_loader.dataset, "get_label_distribution"):
-            label_dist = train_loader.dataset.get_label_distribution()
-            info(f"Label distribution: {label_dist}")
+        # Collect dataset statistics
+        train_dataset = train_loader.dataset
+        val_dataset = val_loader.dataset if val_loader else None
+
+        # Unwrap Subset if needed
+        if hasattr(train_dataset, "dataset"):
+            train_dataset = train_dataset.dataset
+        if val_dataset and hasattr(val_dataset, "dataset"):
+            val_dataset = val_dataset.dataset
+
+        total_train_samples = len(train_loader.dataset)
+        total_val_samples = len(val_loader.dataset) if val_loader else 0
+        total_samples = total_train_samples + total_val_samples
+
+        # Get label distribution and count samples per category
+        dataset_stats = {
+            "total_training_samples": total_train_samples,
+            "total_validation_samples": total_val_samples,
+            "total_samples": total_samples,
+            "train_val_split": f"{total_train_samples}/{total_val_samples}"
+            if total_val_samples > 0
+            else f"{total_train_samples}/0",
+            "benign_ratio": benign_ratio,
+            "strategy": strategy,
+        }
+
+        # Count samples per label in training and validation sets
+        def count_label_samples(loader):
+            """Count samples for each label in a dataloader."""
+            label_counts = {label: 0 for label in ID_TO_LABEL.values()}
+            for batch in loader:
+                labels = batch["labels"]
+                for label_idx, label_name in ID_TO_LABEL.items():
+                    label_counts[label_name] += labels[:, label_idx].sum().item()
+            return label_counts
+
+        info("Counting label distribution...")
+        train_label_counts = count_label_samples(train_loader)
+        dataset_stats["train_label_counts"] = {
+            k: int(v) for k, v in train_label_counts.items()
+        }
+
+        if val_loader:
+            val_label_counts = count_label_samples(val_loader)
+            dataset_stats["val_label_counts"] = {
+                k: int(v) for k, v in val_label_counts.items()
+            }
+
+            # Total label counts
+            total_label_counts = {
+                label: train_label_counts[label] + val_label_counts[label]
+                for label in train_label_counts
+            }
+            dataset_stats["total_label_counts"] = {
+                k: int(v) for k, v in total_label_counts.items()
+            }
+
+        info(f"Training label counts: {dataset_stats['train_label_counts']}")
+        if val_loader:
+            info(f"Validation label counts: {dataset_stats['val_label_counts']}")
+            info(f"Total label counts: {dataset_stats['total_label_counts']}")
 
         # Get tokenizer info for model initialization
         dataset = train_loader.dataset
@@ -365,7 +422,12 @@ def train_longformer(
 
             if save_model_flag:
                 save_model(
-                    model, output_model, epoch + 1, epoch_stats, tokenizer_vocab_size
+                    model,
+                    output_model,
+                    epoch + 1,
+                    epoch_stats,
+                    tokenizer_vocab_size,
+                    dataset_stats,
                 )
 
         # Save final model (ensure model is always saved)
@@ -376,6 +438,7 @@ def train_longformer(
             config.epochs,
             training_stats[-1] if training_stats else {},
             tokenizer_vocab_size,
+            dataset_stats,
         )
 
         # Save final training statistics
@@ -480,6 +543,10 @@ def train_epoch(
 
 def evaluate_model(model, val_loader, device) -> tuple:
     """Evaluate model on validation set."""
+    import time
+    from sklearn.metrics import accuracy_score
+
+    eval_start_time = time.time()
     model.eval()
     total_loss = 0.0
     all_predictions = []
@@ -517,15 +584,23 @@ def evaluate_model(model, val_loader, device) -> tuple:
     all_predictions = torch.cat(all_predictions, dim=0).numpy()
     all_labels = torch.cat(all_labels, dim=0).numpy()
 
-    # Calculate per-label metrics
+    eval_runtime = time.time() - eval_start_time
+    total_samples = len(all_labels)
+
+    # Calculate per-label metrics with support counts
     metrics = {}
     all_f1_scores = []
+
+    # Overall accuracy (exact match across all labels)
+    exact_match = (all_predictions == all_labels).all(axis=1).mean()
+    metrics["accuracy"] = exact_match
 
     for label_idx, label_name in ID_TO_LABEL.items():
         y_true = all_labels[:, label_idx]
         y_pred = all_predictions[:, label_idx]
+        support = int(y_true.sum())
 
-        if y_true.sum() > 0:  # Only calculate if label exists in validation set
+        if support > 0:  # Only calculate if label exists in validation set
             from sklearn.metrics import precision_score, recall_score, f1_score
 
             precision = precision_score(y_true, y_pred, zero_division=0)
@@ -535,6 +610,7 @@ def evaluate_model(model, val_loader, device) -> tuple:
             metrics[f"{label_name}_precision"] = precision
             metrics[f"{label_name}_recall"] = recall
             metrics[f"{label_name}_f1"] = f1
+            metrics[f"{label_name}_support"] = support
             all_f1_scores.append(f1)
 
     # Calculate overall metrics
@@ -545,11 +621,25 @@ def evaluate_model(model, val_loader, device) -> tuple:
         )
         metrics["f1_score"] = metrics["macro_f1"]  # For model selection
 
+    # Add evaluation performance metrics
+    metrics["eval_runtime"] = eval_runtime
+    metrics["eval_samples_per_second"] = (
+        total_samples / eval_runtime if eval_runtime > 0 else 0
+    )
+    metrics["eval_steps_per_second"] = (
+        len(val_loader) / eval_runtime if eval_runtime > 0 else 0
+    )
+
     return avg_loss, metrics
 
 
 def save_model(
-    model, output_path: str, epoch: int, stats: Dict, tokenizer_vocab_size: int = None
+    model,
+    output_path: str,
+    epoch: int,
+    stats: Dict,
+    tokenizer_vocab_size: int = None,
+    dataset_stats: Dict = None,
 ):
     """Save model and training metadata."""
     output_dir = Path(output_path)
@@ -558,6 +648,10 @@ def save_model(
     # Save model state dict
     model_path = output_dir / "pytorch_model.bin"
     torch.save(model.state_dict(), model_path)
+
+    # Calculate model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # Save model config
     config_path = output_dir / "config.json"
@@ -579,7 +673,13 @@ def save_model(
         "id_to_label": ID_TO_LABEL,
         "epoch": epoch,
         "training_stats": stats,
+        "total_params": total_params,
+        "trainable_params": trainable_params,
     }
+
+    # Add dataset statistics if provided
+    if dataset_stats:
+        config_data["dataset_stats"] = dataset_stats
 
     with open(config_path, "w") as f:
         json.dump(config_data, f, indent=2)

@@ -726,6 +726,7 @@ class LongformerObjectDataset(Dataset):
         tokenizer_path: str = "malwi_models",
         max_length: int = 4096,
         benign_ratio: int = 1,
+        random_seed: int = 42,
     ):
         """
         Initialize the dataset.
@@ -735,10 +736,15 @@ class LongformerObjectDataset(Dataset):
             tokenizer_path: Path to DistilBERT tokenizer
             max_length: Maximum sequence length for Longformer
             benign_ratio: Number of random benign objects per malicious object (default: 1)
+            random_seed: Seed for random benign sampling (default: 42)
         """
         self.csv_path = csv_path
         self.max_length = max_length
         self.benign_ratio = benign_ratio
+        self.random_seed = random_seed
+
+        # Seed random number generator for reproducibility
+        random.seed(random_seed)
 
         # Load tokenizer
         progress(f"Loading tokenizer from {tokenizer_path}...")
