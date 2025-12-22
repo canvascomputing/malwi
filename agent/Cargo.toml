@@ -1,0 +1,27 @@
+[package]
+name = "malwi-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+malwi-protocol.workspace = true
+malwi-intercept.workspace = true
+libc.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "filter"
+harness = false

@@ -1,0 +1,28 @@
+# Networking policy — restrict outbound connections
+# Usage: malwi x --policy examples/policies/networking.yaml <command>
+version: 1
+
+# Unified network section: patterns auto-classified as URL, domain, or endpoint.
+#   Contains `/`  → URL pattern
+#   Contains `:`  → endpoint pattern (host:port)
+#   Otherwise     → domain pattern (bare hostname)
+network:
+  protocols: [tcp, https]
+  allow:
+    - "127.0.0.1:*"       # endpoint: localhost any port
+    - "*:443"             # endpoint: HTTPS anywhere
+    - "*.googleapis.com"  # domain
+    - "*.amazonaws.com"   # domain
+    - "*.pypi.org"        # domain
+    - "*.npmjs.org"       # domain
+  deny:
+    - "*:22"              # endpoint: block SSH
+    - "*:25"              # endpoint: block SMTP
+    - "http://**"         # URL: block all plain HTTP
+    - "**/admin/**"       # URL: block admin paths
+    - "**/.env"           # URL: block .env access
+
+  # Warn instead of block for suspicious TLDs
+  warn:
+    - "*.onion"           # Tor hidden services
+    - "*malware*"         # suspicious domains

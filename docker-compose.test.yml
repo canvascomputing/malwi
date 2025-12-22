@@ -1,0 +1,75 @@
+services:
+  # Python 3.12 combinations
+  test-py312-node20:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.12"
+        NODE_VERSION: "20"
+
+  test-py312-node22:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.12"
+        NODE_VERSION: "22"
+
+  test-py312-node23:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.12"
+        NODE_VERSION: "23"
+
+  # Python 3.13 combinations
+  test-py313-node20:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.13"
+        NODE_VERSION: "20"
+
+  test-py313-node22:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.13"
+        NODE_VERSION: "22"
+
+  test-py313-node23:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.13"
+        NODE_VERSION: "23"
+
+  # Python 3.14 combinations
+  test-py314-node20:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.14"
+        NODE_VERSION: "20"
+
+  test-py314-node22:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.14"
+        NODE_VERSION: "22"
+
+  test-py314-node23:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-matrix
+      args:
+        PYTHON_VERSION: "3.14"
+        NODE_VERSION: "23"

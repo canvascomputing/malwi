@@ -1,0 +1,52 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Built binary (copied to project root by make build)
+/malwi
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test binaries (Node.js, Python, Bash - ~5.3GB)
+/binaries/
+
+# Test programs - compiled binaries and debug symbols
+/tests/simple_target
+/tests/multithread
+/tests/spawner
+/tests/forker
+/tests/test_target
+/tests/malicious_target
+/tests/malicious_lib.dylib
+/tests/malicious_lib.so
+/tests/direct_syscall_target
+/tests/*.dSYM/
+
+# Example programs - compiled binaries and debug symbols
+/examples/hello
+/examples/*.dSYM/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+.env.local
+
+# Node.js addon build artifacts
+node-addon/build/
+node-addon/node_modules/
+node-addon/prebuilt/**/*.node
+/build/

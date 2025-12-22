@@ -1,0 +1,26 @@
+# Execution policy — control child process spawning
+# Usage: malwi x --policy examples/policies/execution.yaml <command>
+version: 1
+
+# Allow safe dev tooling, deny shells / recon / exfil tools
+commands:
+  allow:
+    - "git *"
+    - "pip install *"
+    - "npm install *"
+    - "npm test*"
+    - "python -m pytest*"
+  deny:
+    - bash                # shell spawning
+    - sh
+    - zsh
+    - curl                # data exfiltration
+    - wget
+    - nc                  # netcat
+    - ncat
+    - ssh                 # remote access
+    - scp
+    - nmap                # network recon
+    - dig                 # DNS recon
+    - nslookup
+    - "*sudo*"            # privilege escalation

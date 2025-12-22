@@ -1,0 +1,316 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build only, no publish)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Stage 1: Build Node.js addons (5 versions × 4 platforms = 20 jobs)
+  # --------------------------------------------------------------------------
+  addons:
+    uses: ./.github/workflows/build-addons.yml
+
+  # --------------------------------------------------------------------------
+  # Stage 2: Build Rust binaries (4 platform jobs)
+  # --------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: addons
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            lib: dylib
+            platform: darwin-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            lib: dylib
+            platform: darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            lib: so
+            platform: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            lib: so
+            platform: linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ~/.cache/malwi/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      # Download all 5 node version addons for this platform
+      - name: Download addon (node21)
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-${{ matrix.platform }}-node21
+          path: node-addon/prebuilt/${{ matrix.platform }}/node21
+
+      - name: Download addon (node22)
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-${{ matrix.platform }}-node22
+          path: node-addon/prebuilt/${{ matrix.platform }}/node22
+
+      - name: Download addon (node23)
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-${{ matrix.platform }}-node23
+          path: node-addon/prebuilt/${{ matrix.platform }}/node23
+
+      - name: Download addon (node24)
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-${{ matrix.platform }}-node24
+          path: node-addon/prebuilt/${{ matrix.platform }}/node24
+
+      - name: Download addon (node25)
+        uses: actions/download-artifact@v4
+        with:
+          name: addon-${{ matrix.platform }}-node25
+          path: node-addon/prebuilt/${{ matrix.platform }}/node25
+
+      - name: Verify addons
+        run: |
+          echo "Addon files for ${{ matrix.platform }}:"
+          ls -la node-addon/prebuilt/${{ matrix.platform }}/*/v8_introspect.node
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/malwi
+          retention-days: 1
+
+      - name: Upload agent library
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/libmalwi_agent.${{ matrix.lib }}
+          retention-days: 1
+
+  # --------------------------------------------------------------------------
+  # Stage 3a: Standalone tarballs
+  # --------------------------------------------------------------------------
+  tarball:
+    name: Tarball ${{ matrix.platform }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: darwin-arm64
+            lib: dylib
+          - platform: darwin-x64
+            lib: dylib
+          - platform: linux-x64
+            lib: so
+          - platform: linux-arm64
+            lib: so
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: version.toml
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep 'version' version.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-${{ matrix.platform }}
+          path: staging
+
+      - name: Download agent
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-${{ matrix.platform }}
+          path: staging/lib
+
+      - name: Create tarball
+        run: |
+          chmod +x staging/malwi
+          tar -czf "malwi-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz" \
+            -C staging malwi lib/libmalwi_agent.${{ matrix.lib }}
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.platform }}
+          path: "malwi-*.tar.gz"
+          retention-days: 5
+
+  # --------------------------------------------------------------------------
+  # Stage 3b: Python wheels
+  # --------------------------------------------------------------------------
+  wheel:
+    name: Wheel ${{ matrix.platform }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            lib: dylib
+            platform: darwin-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            lib: dylib
+            platform: darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            lib: so
+            platform: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            lib: so
+            platform: linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Download agent
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-${{ matrix.platform }}
+          path: malwi_trace.data/data/lib
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*.whl
+          retention-days: 5
+
+  # --------------------------------------------------------------------------
+  # Stage 3c: Source distribution
+  # --------------------------------------------------------------------------
+  sdist:
+    name: Source distribution
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          retention-days: 5
+
+  # --------------------------------------------------------------------------
+  # Stage 4: Publish (tag push only)
+  # --------------------------------------------------------------------------
+  publish-github:
+    name: GitHub Release
+    needs: [tarball]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/malwi-*.tar.gz
+          generate_release_notes: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [wheel, sdist]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/malwi-trace
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

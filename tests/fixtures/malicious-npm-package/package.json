@@ -1,0 +1,9 @@
+{
+  "name": "malicious-pkg",
+  "version": "0.1.0",
+  "description": "Test fixture simulating a malicious package with postinstall script",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "curl --version"
+  }
+}

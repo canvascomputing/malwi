@@ -1,0 +1,59 @@
+name: Build Node.js Addons
+
+on:
+  workflow_call:
+
+jobs:
+  build-addon:
+    name: Addon ${{ matrix.platform.name }}/node${{ matrix.node }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['21', '22', '23', '24', '25']
+        platform:
+          - { name: darwin-arm64, runner: macos-14 }
+          - { name: darwin-x64, runner: macos-13 }
+          - { name: linux-x64, runner: ubuntu-latest }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install LLVM (macOS Node 25+)
+        if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
+        run: |
+          LLVM_VERSION=21.0.0
+          ARCH=$(uname -m)
+          curl -sSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/clang+llvm-${LLVM_VERSION}-${ARCH}-apple-darwin.tar.xz" | tar xJ
+          echo "LLVM_PATH=$PWD/clang+llvm-${LLVM_VERSION}-${ARCH}-apple-darwin" >> $GITHUB_ENV
+
+      - name: Build addon (Node 25+ macOS)
+        if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
+        run: |
+          NODE_BIN=$(which node)
+          TARGET_DIR="node-addon/prebuilt/${{ matrix.platform.name }}/node${{ matrix.node }}"
+          bash scripts/build-addon.sh "$NODE_BIN" "$TARGET_DIR" "$LLVM_PATH"
+
+      - name: Build addon (standard)
+        if: "!(matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin'))"
+        run: |
+          cd node-addon
+          npm install
+          npx node-gyp rebuild
+          cd ..
+          mkdir -p "node-addon/prebuilt/${{ matrix.platform.name }}/node${{ matrix.node }}"
+          cp node-addon/build/Release/v8_introspect.node \
+            "node-addon/prebuilt/${{ matrix.platform.name }}/node${{ matrix.node }}/"
+
+      - name: Upload addon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.platform.name }}-node${{ matrix.node }}
+          path: node-addon/prebuilt/${{ matrix.platform.name }}/node${{ matrix.node }}/v8_introspect.node
+          retention-days: 1

@@ -1,0 +1,19 @@
+{
+  "name": "v8-introspect",
+  "version": "0.1.0",
+  "description": "V8 introspection addon for malwi-trace",
+  "main": "build/Release/v8_introspect.node",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "clean": "node-gyp clean",
+    "configure": "node-gyp configure"
+  },
+  "devDependencies": {
+    "node-gyp": "^12.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true,
+  "license": "MIT"
+}

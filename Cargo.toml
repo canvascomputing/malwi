@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "cli",
+    "agent",
+    "protocol",
+    "intercept",
+    "policy",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["malwi-trace contributors"]
+
+[workspace.dependencies]
+# Shared dependencies
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4.29"
+env_logger = { version = "0.11.8", default-features = false, features = ["auto-color"] }
+anyhow = "1.0.100"
+
+# CLI
+clap = { version = "4.5.53", features = ["derive"] }
+
+# Platform APIs
+libc = "0.2.178"
+mach2 = "0.4"
+
+# Testing
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Internal crates
+malwi-protocol = { path = "protocol" }
+malwi-agent = { path = "agent" }
+malwi-policy = { path = "policy" }
+malwi-intercept = { path = "intercept" }

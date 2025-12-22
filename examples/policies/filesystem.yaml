@@ -1,0 +1,15 @@
+# Filesystem policy — constrain file read/write/delete
+# Usage: malwi x --policy examples/policies/filesystem.yaml <command>
+version: 1
+
+# Global file access (log mode — allow but record activity)
+files:
+  allow:
+    - "/tmp/*": [read, edit, delete]
+    - "/app/data/*": [read, edit]
+    - "/app/logs/*": [read]
+  log:
+    - "~/.ssh/*"          # protect SSH keys
+    - "~/.aws/*"          # protect AWS credentials
+    - "*.pem"             # protect certificates
+    - "*.key"             # protect private keys

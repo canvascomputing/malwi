@@ -1,0 +1,42 @@
+[package]
+name = "malwi-trace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "malwi"
+path = "src/main.rs"
+
+[lib]
+name = "malwi_trace"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+malwi-protocol.workspace = true
+malwi-policy.workspace = true
+clap.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+object = { version = "0.36", default-features = false, features = ["read"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile = "3"
+which = "7"
+
+[[bench]]
+name = "symbol_resolver"
+harness = false
+
+[[bench]]
+name = "throughput"
+harness = false

