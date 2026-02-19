@@ -100,9 +100,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libclang-dev build-essential
 
-      - name: Install traceable Bash (macOS)
+      - name: Build traceable Bash (macOS)
         if: runner.os == 'macOS'
-        run: brew install bash
+        run: |
+          curl -fsSL -o bash-5.2.tar.gz https://ftp.gnu.org/gnu/bash/bash-5.2.tar.gz
+          echo "a139c166df7ff4471c5e0733051642ee5556c1cc8a4a78f145583c5c81ab32fb  bash-5.2.tar.gz" | shasum -a 256 -c
+          tar xzf bash-5.2.tar.gz
+          cd bash-5.2
+          ./configure --without-bash-malloc
+          make -j$(sysctl -n hw.ncpu)
+          mkdir -p ../binaries/arm64/mac/bash
+          cp bash ../binaries/arm64/mac/bash/bash-5.2
 
       - name: Cache cargo
         uses: actions/cache@v4
