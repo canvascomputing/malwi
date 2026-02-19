@@ -60,21 +60,9 @@ $ malwi x -p policy.yaml -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_
 [malwi] warning: AWS_SECRET_ACCESS_KEY
 ```
 
-## Features
-
-| | |
-|:--|:--|
-| **Runtime Interception** | Allow/deny runtime functions, network access, commands, files, and environment variables by pattern |
-| **Native Function Hooking** | Hooks C/system functions in the target process |
-| **System Library Interception** | Intercepts libc/libSystem calls — covers code that links C directly |
-| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
-| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
-| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver |
-| ⚠️ **Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc |
-
 ## How It Works
 
-`malwi` injects a tracing agent into the target process at startup. The agent hooks function calls across runtimes — Node.js, Python, Bash, and native symbols — and reports every intercepted call back to the CLI over a local HTTP channel. The CLI evaluates each call against the loaded policy and decides whether to allow, deny, warn, or prompt for review.
+`malwi` injects a tracing agent into the target process at startup. The agent hooks function calls across runtimes — Node.js, Python, Bash, and native symbols — and reports every intercepted call back to the CLI over a local HTTP channel. The CLI evaluates each call against the loaded policy and decides whether to allow, deny, warn, or prompt for review. The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) — no source code changes or recompilation required. Tracing propagates automatically to child processes.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -109,7 +97,15 @@ $ malwi x -p policy.yaml -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_
 └──────────────────────────────────────────────────────┘
 ```
 
-The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) — no source code changes or recompilation required. Tracing propagates automatically to child processes.
+| Features | Explanation |
+|:--|:--|
+| **Runtime Interception** | Allow/deny runtime functions, network access, commands, files, and environment variables by pattern |
+| **Native Function Hooking** | Hooks C/system functions in the target process |
+| **System Library Interception** | Intercept libc/libSystem calls |
+| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
+| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
+| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver |
+| ⚠️ **Direct Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc/libSystem calls |
 
 ## Policies
 
