@@ -18,6 +18,15 @@ pub static PYTHON_SKIPS: AtomicUsize = AtomicUsize::new(0);
 /// Counter for skipped Bash tests
 pub static BASH_SKIPS: AtomicUsize = AtomicUsize::new(0);
 
+/// Search PATH for an executable by name.
+pub fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?
+        .to_str()?
+        .split(':')
+        .map(|dir| PathBuf::from(dir).join(name))
+        .find(|p| p.is_file())
+}
+
 /// Supported runtime types for testing
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Runtime {
@@ -57,9 +66,9 @@ impl Runtime {
     /// Find this runtime in PATH
     pub fn find_in_path(&self) -> Option<PathBuf> {
         match self {
-            Runtime::Node => which::which("node").ok(),
-            Runtime::Python => which::which("python3").ok(),
-            Runtime::Bash => which::which("bash").ok(),
+            Runtime::Node => which("node"),
+            Runtime::Python => which("python3"),
+            Runtime::Bash => which("bash"),
         }
     }
 }

@@ -1185,7 +1185,7 @@ fn test_npm_postinstall_exec_tracing() {
     setup();
 
     // Find npm - either in PATH or skip
-    let npm = match which::which("npm") {
+    let npm = match crate::common::which("npm").ok_or(()) {
         Ok(p) => p,
         Err(_) => {
             println!("SKIPPED: npm not found in PATH");
@@ -1193,7 +1193,7 @@ fn test_npm_postinstall_exec_tracing() {
         }
     };
 
-    // Verify npm actually works (which::which only checks the path exists)
+    // Verify npm actually works (which() only checks the path exists)
     match std::process::Command::new(&npm).arg("--version").output() {
         Ok(out) if out.status.success() => {}
         _ => {
@@ -1204,9 +1204,19 @@ fn test_npm_postinstall_exec_tracing() {
 
     let pkg_dir = fixture("fixtures/malicious-npm-package");
 
-    // Run npm install with exec tracing for curl
+    // Use "npm run postinstall" instead of "npm install" because npm v10+
+    // skips lifecycle scripts when the install tree is already up-to-date
+    // (no dependencies to install). "npm run" explicitly runs the script.
     let output = run_tracer_with_timeout_in_dir(
-        &["x", "-c", "curl", "--", npm.to_str().unwrap(), "install"],
+        &[
+            "x",
+            "-c",
+            "curl",
+            "--",
+            npm.to_str().unwrap(),
+            "run",
+            "postinstall",
+        ],
         std::time::Duration::from_secs(30),
         &pkg_dir,
     );
@@ -1246,7 +1256,7 @@ fn test_npm_postinstall_exec_tracing_macos() {
     }
 
     // Find npm - either in PATH or skip
-    let npm = match which::which("npm") {
+    let npm = match crate::common::which("npm").ok_or(()) {
         Ok(p) => p,
         Err(_) => {
             println!("SKIPPED: npm not found in PATH");
@@ -1254,7 +1264,7 @@ fn test_npm_postinstall_exec_tracing_macos() {
         }
     };
 
-    // Verify npm actually works (which::which only checks the path exists)
+    // Verify npm actually works (which() only checks the path exists)
     match std::process::Command::new(&npm).arg("--version").output() {
         Ok(out) if out.status.success() => {}
         _ => {

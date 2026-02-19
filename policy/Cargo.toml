@@ -8,6 +8,5 @@ description = "Policy engine for malwi function tracing"
 
 [dependencies]
 regex = "1.10"
-thiserror = "1.0"
 
 [dev-dependencies]

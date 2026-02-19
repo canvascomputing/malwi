@@ -30,8 +30,6 @@ libc.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
-tempfile = "3"
-which = "7"
 
 [[bench]]
 name = "symbol_resolver"

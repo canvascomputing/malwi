@@ -1160,25 +1160,35 @@ mod tests {
         assert_eq!(detect_policy(&strs(&[])), None);
     }
 
+    fn test_tempdir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("malwi_test_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn test_detect_comfyui_python_main_py() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("main.py"), "").unwrap();
-        std::fs::write(dir.path().join("comfyui_version.py"), "").unwrap();
-        let main_py = dir.path().join("main.py").to_str().unwrap().to_string();
+        let dir = test_tempdir("comfyui_main");
+        std::fs::write(dir.join("main.py"), "").unwrap();
+        std::fs::write(dir.join("comfyui_version.py"), "").unwrap();
+        let main_py = dir.join("main.py").to_str().unwrap().to_string();
         assert_eq!(
             detect_policy(&[String::from("python"), main_py]),
             Some("comfyui"),
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_detect_python_main_no_siblings() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("main.py"), "").unwrap();
+        let dir = test_tempdir("no_siblings");
+        std::fs::write(dir.join("main.py"), "").unwrap();
         // No comfyui_version.py → should NOT match.
-        let main_py = dir.path().join("main.py").to_str().unwrap().to_string();
+        let main_py = dir.join("main.py").to_str().unwrap().to_string();
         assert_eq!(detect_policy(&[String::from("python"), main_py]), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
