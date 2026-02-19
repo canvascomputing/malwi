@@ -71,8 +71,8 @@ pub fn enumerate_modules() -> Vec<ModuleInfo> {
         }
 
         let base = info.dlpi_addr as usize + min_addr.unwrap_or(0) as usize;
-        let size = if min_addr.is_some() {
-            (max_addr - min_addr.unwrap()) as usize
+        let size = if let Some(min) = min_addr {
+            (max_addr - min) as usize
         } else {
             0
         };
@@ -272,7 +272,7 @@ fn enumerate_dynamic_symbols(module_name: &str, only_exports: bool) -> Result<Ve
         let mut dynamic_ptr: *const elf::Elf64Dyn = core::ptr::null();
         for phdr in phdrs {
             if phdr.p_type == libc::PT_DYNAMIC {
-                dynamic_ptr = (info.dlpi_addr as u64 + phdr.p_vaddr) as *const elf::Elf64Dyn;
+                dynamic_ptr = (info.dlpi_addr + phdr.p_vaddr) as *const elf::Elf64Dyn;
                 break;
             }
         }
@@ -312,7 +312,7 @@ fn enumerate_dynamic_symbols(module_name: &str, only_exports: bool) -> Result<Ve
 
         // Detect if DT addresses are pristine or adjusted:
         // if DT_SYMTAB or DT_STRTAB > base_address, they're already absolute.
-        let base = info.dlpi_addr as u64;
+        let base = info.dlpi_addr;
         let adjusted = symtab_val > base || strtab_val > base;
         let resolve = |val: u64| -> usize {
             if adjusted { val as usize } else { (base + val) as usize }
@@ -669,6 +669,10 @@ pub fn resolve_address_module(address: usize) -> Option<String> {
 ///
 /// Scans `.got` and `.got.plt` across all loaded modules for entries pointing
 /// to the target symbol's address, and replaces them with `replacement`.
+///
+/// # Safety
+/// The caller must ensure `replacement` points to a valid function with the
+/// same signature as the original symbol.
 pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usize, usize)>, HookError> {
     // Resolve the original address of the symbol.
     let original_addr = find_global_export_by_name(symbol)?;
@@ -736,7 +740,7 @@ pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usi
             dyn_entry = dyn_entry.add(1);
         }
 
-        let base_u64 = info.dlpi_addr as u64;
+        let base_u64 = info.dlpi_addr;
         let adjusted = symtab_val > base_u64 || strtab_val > base_u64;
         let resolve = |val: u64| -> *const u8 {
             if val == 0 { return core::ptr::null(); }
@@ -800,6 +804,10 @@ pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usi
 
 /// Rebind raw pointers by scanning writable segments for word-sized values
 /// matching `old_value` and replacing them with `replacement`.
+///
+/// # Safety
+/// The caller must ensure `replacement` is a valid pointer value suitable for
+/// replacing `old_value` in all writable segments of the specified module.
 pub unsafe fn rebind_pointers_by_value(
     module_name: &str,
     old_value: usize,

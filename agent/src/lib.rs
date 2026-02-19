@@ -814,7 +814,7 @@ pub extern "C" fn malwi_prepare_node_options(
     }
 
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, bytes.len());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer, bytes.len());
         *out_buffer.add(bytes.len()) = 0; // Null terminate
     }
 
