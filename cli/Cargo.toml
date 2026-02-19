@@ -9,7 +9,7 @@ name = "malwi"
 path = "src/main.rs"
 
 [lib]
-name = "malwi_trace"
+name = "malwi"
 path = "src/lib.rs"
 doctest = false
 

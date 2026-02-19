@@ -1,6 +1,6 @@
 {
   "name": "v8-introspect",
-  "version": "0.1.0",
+  "version": "0.0.24",
   "description": "V8 introspection addon for malwi-trace",
   "main": "build/Release/v8_introspect.node",
   "scripts": {

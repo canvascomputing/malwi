@@ -14,21 +14,11 @@ Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and
 
 </div>
 
-## Features
+## Installation
 
-| | | |
-|:--|:--|:--|
-| **Runtime Function Interception** | Intercepts function calls in Node.js, Python, and Bash | `child_process.exec`, `os.system`, `eval` |
-| **Network Access Control** | Allow/deny by URL pattern, domain, endpoint, or protocol | `https://169.254.169.254/metadata` |
-| **Command Execution Control** | Allow/deny child process spawning by command name | `curl`, `wget`, `nc` |
-| **File Access Protection** | Allow/deny file reads and writes by path pattern | `~/.ssh/id_rsa`, `credentials.json` |
-| **Environment Variable Protection** | Allow/deny access to environment variables by name pattern | `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN` |
-| **Native Function Hooking** | Hooks C/system functions in the target process | `getpass`, `crypt`, `connect` |
-| **System Library Interception** | Intercepts libc/libSystem calls — covers code that links C directly | `open`, `socket`, `dlopen` |
-| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses | `bash -c "python3 -c ..."` |
-| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation | `threading.Thread`, `worker_threads` |
-| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver | `requests.get(url='https://...')` |
-| ⚠️ **Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc | `syscall(SYS_connect, ...)` |
+```
+pip install --user malwi
+```
 
 ## Demo
 
@@ -69,6 +59,22 @@ $ malwi x -p policy.yaml -- bash -c 'crontab -l'
 $ malwi x -p policy.yaml -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
 [malwi] warning: AWS_SECRET_ACCESS_KEY
 ```
+
+## Features
+
+| | | |
+|:--|:--|:--|
+| **Runtime Function Interception** | Intercepts function calls in Node.js, Python, and Bash | `child_process.exec`, `os.system`, `eval` |
+| **Network Access Control** | Allow/deny by URL pattern, domain, endpoint, or protocol | `https://169.254.169.254/metadata` |
+| **Command Execution Control** | Allow/deny child process spawning by command name | `curl`, `wget`, `nc` |
+| **File Access Protection** | Allow/deny file reads and writes by path pattern | `~/.ssh/id_rsa`, `credentials.json` |
+| **Environment Variable Protection** | Allow/deny access to environment variables by name pattern | `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN` |
+| **Native Function Hooking** | Hooks C/system functions in the target process | `getpass`, `crypt`, `connect` |
+| **System Library Interception** | Intercepts libc/libSystem calls — covers code that links C directly | `open`, `socket`, `dlopen` |
+| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses | `bash -c "python3 -c ..."` |
+| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation | `threading.Thread`, `worker_threads` |
+| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver | `requests.get(url='https://...')` |
+| ⚠️ **Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc | `syscall(SYS_connect, ...)` |
 
 ## How It Works
 

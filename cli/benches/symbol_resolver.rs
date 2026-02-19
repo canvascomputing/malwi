@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
+use malwi::symbol_resolver::SymbolResolver;
 use malwi_protocol::protocol::ModuleInfo;
 use malwi_protocol::NativeFrame;
-use malwi_trace::symbol_resolver::SymbolResolver;
 
 fn make_modules(count: usize) -> Vec<ModuleInfo> {
     (0..count)

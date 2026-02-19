@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
+use malwi::agent_server::AgentServer;
 use malwi_protocol::{Argument, EventType, HookConfig, TraceEvent};
-use malwi_trace::agent_server::AgentServer;
 
 fn make_event(_i: u64) -> TraceEvent {
     TraceEvent {

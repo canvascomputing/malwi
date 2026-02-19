@@ -1,16 +1,16 @@
 [build-system]
-requires = ["maturin>=1.4,<2.0"]
+requires = ["maturin>=1.12"]
 build-backend = "maturin"
 
 [project]
-name = "malwi-trace"
-version = "0.1.0"
+name = "malwi"
+version = "0.0.24"
 description = "Function tracing tool for Python, JavaScript, and native code"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "malwi-trace contributors"}
+    {name = "malwi contributors"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -37,6 +37,6 @@ Repository = "https://github.com/user/malwi-trace"
 [tool.maturin]
 bindings = "bin"
 python-source = "python"
-data = "malwi_trace.data"
+data = "malwi.data"
 manifest-path = "cli/Cargo.toml"
 strip = true

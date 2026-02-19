@@ -1,4 +1,4 @@
-.PHONY: all build addon addon-install addon-all addon-node25 test clean fixtures
+.PHONY: all build fmt addon addon-install addon-all addon-node25 test clean fixtures
 
 # Detect platform for addon installation
 UNAME_S := $(shell uname -s)
@@ -37,7 +37,10 @@ endif
 # Default target: build addon and Rust project
 all: addon-install build
 
-build:
+fmt:
+	cargo fmt --all
+
+build: fmt
 	cargo build --release
 	ln -sf target/release/malwi .
 

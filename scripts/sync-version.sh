@@ -99,7 +99,13 @@ sync_file "$ROOT/pyproject.toml" \
     "version = \"$MALWI_VERSION\"" \
     "pyproject.toml project version"
 
-# 3. node-addon/package.json — version
+# 3. python/malwi/__init__.py — __version__
+sync_file "$ROOT/python/malwi/__init__.py" \
+    '^__version__ = ".*"' \
+    "__version__ = \"$MALWI_VERSION\"" \
+    "python/malwi/__init__.py __version__"
+
+# 4. node-addon/package.json — version
 sync_file "$ROOT/node-addon/package.json" \
     '"version": ".*"' \
     "\"version\": \"$MALWI_VERSION\"" \
