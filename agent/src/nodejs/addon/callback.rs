@@ -16,7 +16,7 @@ unsafe fn extract_string(ptr: *const c_char, len: u32) -> String {
     if ptr.is_null() || len == 0 || len > 1_000_000 {
         return String::new();
     }
-    let slice = std::slice::from_raw_parts(ptr, len as usize);
+    let slice = std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize);
     String::from_utf8_lossy(slice).into_owned()
 }
 
