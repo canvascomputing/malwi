@@ -1193,6 +1193,15 @@ fn test_npm_postinstall_exec_tracing() {
         }
     };
 
+    // Verify npm actually works (which::which only checks the path exists)
+    match std::process::Command::new(&npm).arg("--version").output() {
+        Ok(out) if out.status.success() => {}
+        _ => {
+            println!("SKIPPED: npm found but not functional");
+            return;
+        }
+    }
+
     let pkg_dir = fixture("fixtures/malicious-npm-package");
 
     // Run npm install with exec tracing for curl
@@ -1244,6 +1253,15 @@ fn test_npm_postinstall_exec_tracing_macos() {
             return;
         }
     };
+
+    // Verify npm actually works (which::which only checks the path exists)
+    match std::process::Command::new(&npm).arg("--version").output() {
+        Ok(out) if out.status.success() => {}
+        _ => {
+            println!("SKIPPED: npm found but not functional");
+            return;
+        }
+    }
 
     let pkg_dir = fixture("fixtures/malicious-npm-package");
 
