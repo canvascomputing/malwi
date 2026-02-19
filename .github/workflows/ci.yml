@@ -60,7 +60,7 @@ jobs:
             ~/.cargo/git/db/
             ~/.cache/malwi/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build Node.js addon
         run: make addon-install
@@ -122,7 +122,7 @@ jobs:
             ~/.cargo/git/db/
             ~/.cache/malwi/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build Node.js addon
         run: make addon-install
