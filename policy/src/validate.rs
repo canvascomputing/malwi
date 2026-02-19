@@ -118,9 +118,7 @@ fn validate_rule(rule: &Rule, category: &str) -> Result<(), ValidationError> {
             if category == "files" || category == "envvars" {
                 for constraint in constraints {
                     // Could be an operation or a pattern
-                    if Operation::parse(constraint).is_none()
-                        && !looks_like_pattern(constraint)
-                    {
+                    if Operation::parse(constraint).is_none() && !looks_like_pattern(constraint) {
                         return Err(ValidationError::InvalidOperation(constraint.clone()));
                     }
                 }
@@ -186,7 +184,10 @@ python@warn:
     - eval
 "#;
         let result = validate_yaml(yaml);
-        assert!(matches!(result, Err(ValidationError::DeprecatedAtSyntax(_))));
+        assert!(matches!(
+            result,
+            Err(ValidationError::DeprecatedAtSyntax(_))
+        ));
     }
 
     #[test]

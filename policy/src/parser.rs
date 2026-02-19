@@ -156,9 +156,7 @@ impl<'de> Deserialize<'de> for Rule {
                 M: MapAccess<'de>,
             {
                 // Expect exactly one key-value pair: pattern -> constraints
-                if let Some((pattern, constraints)) =
-                    map.next_entry::<String, Vec<String>>()?
-                {
+                if let Some((pattern, constraints)) = map.next_entry::<String, Vec<String>>()? {
                     // Ensure no more entries
                     if map.next_entry::<String, Vec<String>>()?.is_some() {
                         return Err(de::Error::custom(
@@ -210,9 +208,8 @@ impl<'de> Deserialize<'de> for PolicyFile {
                     }
                 }
 
-                let version = version.ok_or_else(|| {
-                    de::Error::custom("missing required 'version' field")
-                })?;
+                let version =
+                    version.ok_or_else(|| de::Error::custom("missing required 'version' field"))?;
 
                 Ok(PolicyFile { version, sections })
             }
@@ -387,7 +384,11 @@ nodejs:
         if let SectionValue::RuleList(rules) = section {
             assert_eq!(rules.len(), 3);
             // First rule has constraints
-            if let Rule::WithConstraints { pattern, constraints } = &rules[0] {
+            if let Rule::WithConstraints {
+                pattern,
+                constraints,
+            } = &rules[0]
+            {
                 assert_eq!(pattern, "axios.*");
                 assert_eq!(constraints, &["https://api.example.com/*"]);
             } else {
@@ -437,7 +438,11 @@ envvars:
         if let SectionValue::RuleList(rules) = section {
             assert_eq!(rules.len(), 3);
             // All should be WithConstraints
-            if let Rule::WithConstraints { pattern, constraints } = &rules[0] {
+            if let Rule::WithConstraints {
+                pattern,
+                constraints,
+            } = &rules[0]
+            {
                 assert_eq!(pattern, "HOME");
                 assert_eq!(constraints, &["read"]);
             } else {

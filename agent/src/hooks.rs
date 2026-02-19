@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
+use core::ffi::c_void;
 use log::{debug, info, warn};
-use malwi_protocol::{Argument, HookConfig};
 use malwi_intercept::CallListener;
 use malwi_intercept::InvocationContext;
-use core::ffi::c_void;
+use malwi_protocol::{Argument, HookConfig};
 
 // Thread-local re-entrancy guard. Prevents infinite recursion when
 // hooked functions (like `malloc`) are called from within the hook
@@ -80,7 +80,7 @@ fn is_network_syscall(nr: usize) -> bool {
             | 52  // getpeername
             | 53  // socketpair — skip, needed for pipe-like IPC
             | 54  // setsockopt
-            | 55  // getsockopt
+            | 55 // getsockopt
         )
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -95,7 +95,7 @@ fn is_network_syscall(nr: usize) -> bool {
             | 133 // sendto
             | 29  // recvfrom
             | 28  // sendmsg
-            | 27  // recvmsg
+            | 27 // recvmsg
         )
     }
     #[cfg(not(any(
@@ -204,24 +204,24 @@ impl HookManager {
     }
 
     /// Attempt to attach a hook to a single export.
-    fn try_attach_hook(
-        &self,
-        export: &native::ExportInfo,
-        config: &HookConfig,
-    ) -> Result<()> {
+    fn try_attach_hook(&self, export: &native::ExportInfo, config: &HookConfig) -> Result<()> {
         let callback_data = Box::into_raw(Box::new(HookCallbackData {
             function_name: export.name.clone(),
             module_name: export.module.clone(),
             capture_stack: config.capture_stack,
         }));
 
-        let listener = self.create_listener(callback_data).inspect_err(|_e| {
-            unsafe { drop(Box::from_raw(callback_data)); }
-        })?;
+        let listener = self
+            .create_listener(callback_data)
+            .inspect_err(|_e| unsafe {
+                drop(Box::from_raw(callback_data));
+            })?;
 
         // Primary path: inline interceptor attach.
         self.interceptor.begin_transaction();
-        let attach_res = self.interceptor.attach(export.address as *mut c_void, listener);
+        let attach_res = self
+            .interceptor
+            .attach(export.address as *mut c_void, listener);
         self.interceptor.end_transaction();
 
         // Fallback (macOS): rebind imported symbol pointers to an interceptor wrapper.
@@ -229,7 +229,10 @@ impl HookManager {
         let (attach_ok, rebind_patches) = match attach_res {
             Ok(()) => (true, None),
             Err(e) => {
-                warn!("Inline attach failed for {} ({:?}); trying import rebinding", export.name, e);
+                warn!(
+                    "Inline attach failed for {} ({:?}); trying import rebinding",
+                    export.name, e
+                );
                 // Build wrapper/trampoline but don't patch the target.
                 let wrapper = self
                     .interceptor
@@ -247,13 +250,17 @@ impl HookManager {
         let attach_ok = match attach_res {
             Ok(()) => true,
             Err(e) => {
-                unsafe { drop(Box::from_raw(callback_data)); }
+                unsafe {
+                    drop(Box::from_raw(callback_data));
+                }
                 return Err(anyhow!("Attach failed: {:?}", e));
             }
         };
 
         if !attach_ok {
-            unsafe { drop(Box::from_raw(callback_data)); }
+            unsafe {
+                drop(Box::from_raw(callback_data));
+            }
             return Err(anyhow!("Attach failed"));
         }
 
@@ -280,7 +287,9 @@ impl HookManager {
             self.interceptor.detach(&entry.listener);
             // Free the callback data
             if !entry.callback_data.is_null() {
-                unsafe { drop(Box::from_raw(entry.callback_data)); }
+                unsafe {
+                    drop(Box::from_raw(entry.callback_data));
+                }
             }
             debug!("Hook removed for {}", symbol);
             Ok(())
@@ -312,7 +321,9 @@ impl Drop for HookManager {
         for (_, entry) in hooks.iter() {
             self.interceptor.detach(&entry.listener);
             if !entry.callback_data.is_null() {
-                unsafe { drop(Box::from_raw(entry.callback_data)); }
+                unsafe {
+                    drop(Box::from_raw(entry.callback_data));
+                }
             }
         }
     }
@@ -330,10 +341,7 @@ unsafe fn get_hook_data(user_data: *mut c_void, func_addr: usize) -> (String, bo
 }
 
 /// Callback when a hooked function is entered.
-unsafe extern "C" fn on_enter(
-    context: *mut InvocationContext,
-    user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_enter(context: *mut InvocationContext, user_data: *mut c_void) {
     // Re-entrancy guard: skip if we're already inside a hook callback on this thread.
     // This prevents infinite recursion when hooked functions (e.g., malloc) are called
     // internally by the hook processing (JSON serialization, HTTP, allocations).
@@ -347,10 +355,7 @@ unsafe extern "C" fn on_enter(
     IN_HOOK.with(|h| h.set(false));
 }
 
-unsafe fn on_enter_inner(
-    context: *mut InvocationContext,
-    user_data: *mut c_void,
-) {
+unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void) {
     let func_addr = (*context).function as usize;
 
     // Capture arguments (up to 6 for now)
@@ -410,9 +415,13 @@ unsafe fn on_enter_inner(
                 );
                 // Set errno = EACCES (Permission denied) so callers see a proper error
                 #[cfg(target_os = "macos")]
-                { *libc::__error() = libc::EACCES; }
+                {
+                    *libc::__error() = libc::EACCES;
+                }
                 #[cfg(target_os = "linux")]
-                { *libc::__errno_location() = libc::EACCES; }
+                {
+                    *libc::__errno_location() = libc::EACCES;
+                }
                 info!("BLOCKED: {}", event.function);
             }
         } else {
@@ -423,10 +432,7 @@ unsafe fn on_enter_inner(
 }
 
 /// Callback when a hooked function returns.
-unsafe extern "C" fn on_leave(
-    context: *mut InvocationContext,
-    user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_leave(context: *mut InvocationContext, user_data: *mut c_void) {
     if IN_HOOK.with(|h| h.get()) {
         return;
     }
@@ -437,21 +443,18 @@ unsafe extern "C" fn on_leave(
     IN_HOOK.with(|h| h.set(false));
 }
 
-unsafe fn on_leave_inner(
-    context: *mut InvocationContext,
-    user_data: *mut c_void,
-) {
+unsafe fn on_leave_inner(context: *mut InvocationContext, user_data: *mut c_void) {
     let func_addr = (*context).function as usize;
     let return_value = malwi_intercept::invocation::get_return_value(context);
 
     let (function, _capture_stack) = get_hook_data(user_data, func_addr);
 
     let event = crate::tracing::event::EventBuilder::leave(
-            &function,
-            Some(format!("{:#x}", return_value as usize)),
-        )
-        .hook_type(malwi_protocol::HookType::Native)
-        .build();
+        &function,
+        Some(format!("{:#x}", return_value as usize)),
+    )
+    .hook_type(malwi_protocol::HookType::Native)
+    .build();
 
     if let Some(agent) = crate::Agent::get() {
         let _ = agent.send_event(event);

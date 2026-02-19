@@ -96,8 +96,7 @@ pub type StringWriteUtf8Fn =
 
 /// Function type for v8::Script::Compile
 /// Compiles a script from source.
-pub type ScriptCompileFn =
-    unsafe extern "C" fn(V8Context, V8String, V8ScriptOrigin) -> V8Script;
+pub type ScriptCompileFn = unsafe extern "C" fn(V8Context, V8String, V8ScriptOrigin) -> V8Script;
 
 /// Function type for v8::Script::Run(Context)
 /// Runs the compiled script and returns the result.
@@ -121,11 +120,11 @@ pub type FunctionCallFn =
 /// Signature: (Local<Object> exports, Local<Value> module, Local<Context> context,
 ///             napi_addon_register_func init, int32_t module_api_version)
 pub type NapiModuleRegisterBySymbolFn = unsafe extern "C" fn(
-    V8Object,             // exports
-    V8Value,              // module
-    V8Context,            // context
+    V8Object,              // exports
+    V8Value,               // module
+    V8Context,             // context
     NapiAddonRegisterFunc, // init
-    c_int,                // module_api_version
+    c_int,                 // module_api_version
 );
 
 // =============================================================================
@@ -145,7 +144,7 @@ pub type UvRunFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 #[repr(C)]
 pub struct NodejsTraceArgument {
     pub index: u32,
-    pub type_hint: *const c_char,      // nullable
+    pub type_hint: *const c_char, // nullable
     pub type_hint_len: u32,
     pub display: *const c_char,
     pub display_len: u32,
@@ -157,15 +156,15 @@ pub struct NodejsTraceArgument {
 pub struct NodejsTraceEventData {
     pub timestamp_ns: u64,
     pub thread_id: u64,
-    pub event_type: u8,  // 0 = Enter, 1 = Leave
+    pub event_type: u8, // 0 = Enter, 1 = Leave
     pub function: *const c_char,
     pub function_len: u32,
-    pub script_path: *const c_char,  // Script origin path (e.g., "node:fs")
+    pub script_path: *const c_char, // Script origin path (e.g., "node:fs")
     pub script_path_len: u32,
-    pub return_value: *const c_char,  // nullable, for Leave events
+    pub return_value: *const c_char, // nullable, for Leave events
     pub return_value_len: u32,
     pub arg_count: u32,
-    pub arguments: *const NodejsTraceArgument,  // pointer to array
+    pub arguments: *const NodejsTraceArgument, // pointer to array
 }
 
 // =============================================================================

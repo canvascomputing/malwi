@@ -1,9 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use malwi_protocol::glob::matches_glob;
-use malwi_protocol::{
-    Argument, EventType, NodejsFrame, RuntimeStack, TraceEvent,
-};
+use malwi_protocol::{Argument, EventType, NodejsFrame, RuntimeStack, TraceEvent};
 
 fn make_event() -> TraceEvent {
     TraceEvent {
@@ -32,9 +30,27 @@ fn make_event() -> TraceEvent {
             0x7fff00005000,
         ],
         runtime_stack: Some(RuntimeStack::Nodejs(vec![
-            NodejsFrame { function: "readFileSync".to_string(), script: "node:fs".to_string(), line: 450, column: 12, is_user_javascript: false },
-            NodejsFrame { function: "loadConfig".to_string(), script: "/app/config.js".to_string(), line: 23, column: 5, is_user_javascript: true },
-            NodejsFrame { function: "main".to_string(), script: "/app/index.js".to_string(), line: 10, column: 1, is_user_javascript: true },
+            NodejsFrame {
+                function: "readFileSync".to_string(),
+                script: "node:fs".to_string(),
+                line: 450,
+                column: 12,
+                is_user_javascript: false,
+            },
+            NodejsFrame {
+                function: "loadConfig".to_string(),
+                script: "/app/config.js".to_string(),
+                line: 23,
+                column: 5,
+                is_user_javascript: true,
+            },
+            NodejsFrame {
+                function: "main".to_string(),
+                script: "/app/index.js".to_string(),
+                line: 10,
+                column: 1,
+                is_user_javascript: true,
+            },
         ])),
         network_info: None,
         source_file: None,

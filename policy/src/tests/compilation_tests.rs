@@ -114,8 +114,17 @@ python:
         let policy = compile_policy_yaml(&yaml).unwrap();
         let key = SectionKey::for_runtime(Runtime::Python, Category::Functions);
         let section = policy.get_section(&key).unwrap();
-        assert_eq!(section.deny_rules.len(), 1, "Key {} should produce a deny rule", mode_key);
-        assert_eq!(section.deny_rules[0].mode, expected, "Key {} should have mode {:?}", mode_key, expected);
+        assert_eq!(
+            section.deny_rules.len(),
+            1,
+            "Key {} should produce a deny rule",
+            mode_key
+        );
+        assert_eq!(
+            section.deny_rules[0].mode, expected,
+            "Key {} should have mode {:?}",
+            mode_key, expected
+        );
     }
 }
 
@@ -226,7 +235,10 @@ commands:
     .unwrap();
 
     assert!(policy
-        .get_section(&SectionKey::for_runtime(Runtime::Python, Category::Functions))
+        .get_section(&SectionKey::for_runtime(
+            Runtime::Python,
+            Category::Functions
+        ))
         .is_some());
     assert!(policy
         .get_section(&SectionKey::for_runtime(Runtime::Node, Category::Functions))

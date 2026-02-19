@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use log::debug;
-use malwi_protocol::NativeFrame;
 use malwi_protocol::protocol::ModuleInfo;
+use malwi_protocol::NativeFrame;
 
 /// Cached symbol table for a single binary file.
 struct ModuleSymbols {
@@ -51,7 +51,11 @@ impl SymbolResolver {
 
     /// Store a module map for a given PID and rebuild the sorted index.
     pub fn add_module_map(&mut self, pid: u32, modules: Vec<ModuleInfo>) {
-        debug!("Added module map for PID {}: {} modules", pid, modules.len());
+        debug!(
+            "Added module map for PID {}: {} modules",
+            pid,
+            modules.len()
+        );
         self.module_maps.insert(pid, modules);
         self.rebuild_sorted_ranges();
     }
@@ -151,7 +155,10 @@ impl SymbolResolver {
 
     /// Resolve a slice of raw addresses into NativeFrames.
     pub fn resolve_addresses(&mut self, addresses: &[usize]) -> Vec<NativeFrame> {
-        addresses.iter().map(|&addr| self.resolve_address(addr)).collect()
+        addresses
+            .iter()
+            .map(|&addr| self.resolve_address(addr))
+            .collect()
     }
 
     /// Remove module maps for a given PID and rebuild sorted ranges.
@@ -188,8 +195,8 @@ impl SymbolResolver {
             }
         };
 
-        use object::ObjectSymbol;
         use object::Object;
+        use object::ObjectSymbol;
 
         let mut symbols: Vec<(u64, String)> = Vec::new();
 
@@ -246,14 +253,15 @@ mod tests {
     #[test]
     fn test_resolve_frame_finds_module() {
         let mut resolver = SymbolResolver::new();
-        resolver.add_module_map(1, vec![
-            ModuleInfo {
+        resolver.add_module_map(
+            1,
+            vec![ModuleInfo {
                 name: "test_lib".to_string(),
                 path: "/nonexistent/test_lib.so".to_string(),
                 base_address: 0x1000,
                 size: 0x5000,
-            },
-        ]);
+            }],
+        );
 
         let frame = make_frame(0x2000);
         let resolved = resolver.resolve_frame(&frame);
@@ -265,14 +273,15 @@ mod tests {
     #[test]
     fn test_resolve_frame_unknown_address() {
         let mut resolver = SymbolResolver::new();
-        resolver.add_module_map(1, vec![
-            ModuleInfo {
+        resolver.add_module_map(
+            1,
+            vec![ModuleInfo {
                 name: "test_lib".to_string(),
                 path: "/nonexistent/test_lib.so".to_string(),
                 base_address: 0x1000,
                 size: 0x5000,
-            },
-        ]);
+            }],
+        );
 
         let frame = make_frame(0xDEAD);
         let resolved = resolver.resolve_frame(&frame);
@@ -299,14 +308,15 @@ mod tests {
 
         let mut resolver = SymbolResolver::new();
         // Use base_address = 0 since object crate returns virtual addresses
-        resolver.add_module_map(1, vec![
-            ModuleInfo {
+        resolver.add_module_map(
+            1,
+            vec![ModuleInfo {
                 name: "test_binary".to_string(),
                 path: exe_str,
                 base_address: 0,
                 size: u64::MAX,
-            },
-        ]);
+            }],
+        );
 
         let frame = make_frame(*sym_addr as usize);
         let resolved = resolver.resolve_frame(&frame);
@@ -314,15 +324,21 @@ mod tests {
         assert!(
             resolved.symbol.is_some(),
             "Expected resolved symbol, got None for address {:#x} (expected '{}')",
-            sym_addr, sym_name
+            sym_addr,
+            sym_name
         );
         assert_eq!(
             resolved.symbol.as_deref(),
             Some(sym_name.as_str()),
             "Expected symbol '{}' at address {:#x}",
-            sym_name, sym_addr
+            sym_name,
+            sym_addr
         );
-        assert_eq!(resolved.offset, Some(0), "Offset should be 0 for exact symbol address");
+        assert_eq!(
+            resolved.offset,
+            Some(0),
+            "Offset should be 0 for exact symbol address"
+        );
     }
 
     #[test]
@@ -331,14 +347,15 @@ mod tests {
         let exe_str = exe.to_string_lossy().to_string();
 
         let mut resolver = SymbolResolver::new();
-        resolver.add_module_map(1, vec![
-            ModuleInfo {
+        resolver.add_module_map(
+            1,
+            vec![ModuleInfo {
                 name: "test_binary".to_string(),
                 path: exe_str,
                 base_address: 0,
                 size: u64::MAX,
-            },
-        ]);
+            }],
+        );
 
         // Resolve two different frames from the same module
         let _ = resolver.resolve_frame(&make_frame(0x100));
@@ -352,14 +369,15 @@ mod tests {
     fn test_stripped_binary_fallback() {
         let mut resolver = SymbolResolver::new();
         // Point at /dev/null — not a valid binary
-        resolver.add_module_map(1, vec![
-            ModuleInfo {
+        resolver.add_module_map(
+            1,
+            vec![ModuleInfo {
                 name: "stripped_lib".to_string(),
                 path: "/dev/null".to_string(),
                 base_address: 0x1000,
                 size: 0x5000,
-            },
-        ]);
+            }],
+        );
 
         let frame = make_frame(0x2000);
         let resolved = resolver.resolve_frame(&frame);

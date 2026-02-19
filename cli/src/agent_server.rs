@@ -16,8 +16,7 @@ use tiny_http::{Response, Server};
 use malwi_protocol::{
     Argument, ChildOperation, ChildReconnectRequest, CommandResponse, ConfigureRequest,
     ConfigureResponse, EventType, HookConfig, HookType, HostChildInfo, ReadyRequest,
-    ReviewDecision, ReviewRequest, ReviewResponse, RuntimeInfoRequest, ShutdownRequest,
-    TraceEvent,
+    ReviewDecision, ReviewRequest, ReviewResponse, RuntimeInfoRequest, ShutdownRequest, TraceEvent,
 };
 
 /// Events sent from the HTTP server to the main event loop.
@@ -34,10 +33,7 @@ pub enum AgentEvent {
     /// Trace event from agent
     Trace(TraceEvent),
     /// Late runtime info (e.g., Node.js version detected after Ready)
-    RuntimeInfo {
-        runtime: String,
-        version: String,
-    },
+    RuntimeInfo { runtime: String, version: String },
     /// Agent disconnected
     Disconnected { pid: u32 },
     /// Review mode decision request (agent blocks on HTTP response)
@@ -93,14 +89,20 @@ fn create_reuse_addr_listener() -> Result<std::net::TcpListener> {
         let addr = libc::sockaddr_in {
             sin_family: libc::AF_INET as libc::sa_family_t,
             sin_port: 0,
-            sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes([127, 0, 0, 1]) },
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
             sin_zero: [0; 8],
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
         };
 
-        if libc::bind(fd, &addr as *const libc::sockaddr_in as *const libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t) < 0 {
+        if libc::bind(
+            fd,
+            &addr as *const libc::sockaddr_in as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        ) < 0
+        {
             let err = std::io::Error::last_os_error();
             libc::close(fd);
             anyhow::bail!("bind() failed: {}", err);
@@ -231,9 +233,8 @@ fn respond_json<T: serde::Serialize>(request: tiny_http::Request, data: &T) {
         }
         Err(e) => {
             log::error!("Failed to serialize response: {}", e);
-            let _ = request.respond(
-                Response::from_string("Internal Server Error").with_status_code(500),
-            );
+            let _ = request
+                .respond(Response::from_string("Internal Server Error").with_status_code(500));
         }
     }
 }
@@ -392,7 +393,8 @@ fn handle_child(mut request: tiny_http::Request, shared: &SharedState) {
 
 /// Extract the command basename from a HostChildInfo.
 fn extract_cmd_name(info: &HostChildInfo) -> String {
-    info.argv.as_ref()
+    info.argv
+        .as_ref()
         .and_then(|argv| argv.first())
         .map(|s| basename(s).to_string())
         .or_else(|| info.path.as_ref().map(|p| basename(p).to_string()))
@@ -405,11 +407,17 @@ fn extract_cmd_name(info: &HostChildInfo) -> String {
 /// Shell unwrapping (e.g., `sh -c "curl ..."` → `curl`) is handled separately
 /// in policy evaluation so that display and manual filters see the raw command.
 fn child_info_to_trace_event(info: HostChildInfo, cmd_name: String) -> TraceEvent {
-    let arguments: Vec<Argument> = info.argv.as_ref()
-        .map(|argv| argv.iter().map(|a| Argument {
-            raw_value: 0,
-            display: Some(a.clone()),
-        }).collect())
+    let arguments: Vec<Argument> = info
+        .argv
+        .as_ref()
+        .map(|argv| {
+            argv.iter()
+                .map(|a| Argument {
+                    raw_value: 0,
+                    display: Some(a.clone()),
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     TraceEvent {

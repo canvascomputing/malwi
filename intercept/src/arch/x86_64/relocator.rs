@@ -5,15 +5,15 @@ use crate::types::HookError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InsnKind {
-    Normal,       // Copy verbatim
-    RipRelative,  // Has ModRM with mod=0, rm=5 (RIP+disp32)
-    JmpRel8,      // EB rel8
-    JmpRel32,     // E9 rel32
-    JccRel8,      // 70-7F rel8
-    JccRel32,     // 0F 80-8F rel32
-    CallRel32,    // E8 rel32
-    Ret,          // C3 / C2
-    End,          // INT3 (CC), UD2 (0F 0B), HLT (F4)
+    Normal,      // Copy verbatim
+    RipRelative, // Has ModRM with mod=0, rm=5 (RIP+disp32)
+    JmpRel8,     // EB rel8
+    JmpRel32,    // E9 rel32
+    JccRel8,     // 70-7F rel8
+    JccRel32,    // 0F 80-8F rel32
+    CallRel32,   // E8 rel32
+    Ret,         // C3 / C2
+    End,         // INT3 (CC), UD2 (0F 0B), HLT (F4)
 }
 
 // ── Decoded instruction ──────────────────────────────────────────────
@@ -38,13 +38,24 @@ fn one_byte_has_modrm(opcode: u8) -> bool {
     // Then 0x62-0x63, 0x69, 0x6B, 0x80-0x8F, 0xC0-0xC1, 0xC4-0xC5, 0xC6-0xC7,
     // 0xD0-0xD3, 0xF6-0xF7, 0xFE-0xFF, etc.
     match opcode {
-        0x00..=0x03 | 0x08..=0x0B | 0x10..=0x13 | 0x18..=0x1B |
-        0x20..=0x23 | 0x28..=0x2B | 0x30..=0x33 | 0x38..=0x3B |
-        0x62..=0x63 | 0x69 | 0x6B |
-        0x80..=0x8F |
-        0xC0..=0xC1 | 0xC4..=0xC7 |
-        0xD0..=0xD3 | 0xD8..=0xDF |
-        0xF6..=0xF7 | 0xFE..=0xFF => true,
+        0x00..=0x03
+        | 0x08..=0x0B
+        | 0x10..=0x13
+        | 0x18..=0x1B
+        | 0x20..=0x23
+        | 0x28..=0x2B
+        | 0x30..=0x33
+        | 0x38..=0x3B
+        | 0x62..=0x63
+        | 0x69
+        | 0x6B
+        | 0x80..=0x8F
+        | 0xC0..=0xC1
+        | 0xC4..=0xC7
+        | 0xD0..=0xD3
+        | 0xD8..=0xDF
+        | 0xF6..=0xF7
+        | 0xFE..=0xFF => true,
         _ => false,
     }
 }
@@ -56,38 +67,102 @@ fn one_byte_imm_size(opcode: u8, has_66_prefix: bool, has_rexw: bool) -> usize {
         // Short ALU immediate forms
         0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => 1, // AL, imm8
         0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x35 | 0x3D => {
-            if has_66_prefix { 2 } else { 4 } // AX/EAX/RAX, imm16/32
+            if has_66_prefix {
+                2
+            } else {
+                4
+            } // AX/EAX/RAX, imm16/32
         }
-        0x68 => if has_66_prefix { 2 } else { 4 }, // PUSH imm16/32
-        0x69 => if has_66_prefix { 2 } else { 4 }, // IMUL r, r/m, imm16/32
-        0x6A | 0x6B => 1, // PUSH imm8, IMUL r, r/m, imm8
-        0x70..=0x7F => 1, // Jcc rel8
+        0x68 => {
+            if has_66_prefix {
+                2
+            } else {
+                4
+            }
+        } // PUSH imm16/32
+        0x69 => {
+            if has_66_prefix {
+                2
+            } else {
+                4
+            }
+        } // IMUL r, r/m, imm16/32
+        0x6A | 0x6B => 1,        // PUSH imm8, IMUL r, r/m, imm8
+        0x70..=0x7F => 1,        // Jcc rel8
         0x80 | 0x82 | 0x83 => 1, // group1 r/m, imm8
-        0x81 => if has_66_prefix { 2 } else { 4 }, // group1 r/m, imm16/32
-        0xA0 => if has_rexw { 8 } else { 4 }, // MOV AL, moffs
-        0xA1 => if has_rexw { 8 } else { 4 }, // MOV AX/EAX/RAX, moffs
-        0xA2 => if has_rexw { 8 } else { 4 }, // MOV moffs, AL
-        0xA3 => if has_rexw { 8 } else { 4 }, // MOV moffs, AX/EAX/RAX
-        0xA8 => 1, // TEST AL, imm8
-        0xA9 => if has_66_prefix { 2 } else { 4 }, // TEST AX/EAX/RAX, imm16/32
-        0xB0..=0xB7 => 1, // MOV r8, imm8
+        0x81 => {
+            if has_66_prefix {
+                2
+            } else {
+                4
+            }
+        } // group1 r/m, imm16/32
+        0xA0 => {
+            if has_rexw {
+                8
+            } else {
+                4
+            }
+        } // MOV AL, moffs
+        0xA1 => {
+            if has_rexw {
+                8
+            } else {
+                4
+            }
+        } // MOV AX/EAX/RAX, moffs
+        0xA2 => {
+            if has_rexw {
+                8
+            } else {
+                4
+            }
+        } // MOV moffs, AL
+        0xA3 => {
+            if has_rexw {
+                8
+            } else {
+                4
+            }
+        } // MOV moffs, AX/EAX/RAX
+        0xA8 => 1,               // TEST AL, imm8
+        0xA9 => {
+            if has_66_prefix {
+                2
+            } else {
+                4
+            }
+        } // TEST AX/EAX/RAX, imm16/32
+        0xB0..=0xB7 => 1,        // MOV r8, imm8
         0xB8..=0xBF => {
             // MOV r16/32/64, imm16/32/64
-            if has_rexw { 8 } else if has_66_prefix { 2 } else { 4 }
+            if has_rexw {
+                8
+            } else if has_66_prefix {
+                2
+            } else {
+                4
+            }
         }
         0xC0..=0xC1 => 1, // Shift grp2 r/m, imm8
-        0xC2 => 2, // RET imm16
-        0xC6 => 1, // MOV r/m8, imm8
-        0xC7 => if has_66_prefix { 2 } else { 4 }, // MOV r/m16/32, imm16/32 (sign-extended to 64 if REX.W)
-        0xC8 => 3, // ENTER imm16, imm8
-        0xCD => 1, // INT imm8
+        0xC2 => 2,        // RET imm16
+        0xC6 => 1,        // MOV r/m8, imm8
+        0xC7 => {
+            if has_66_prefix {
+                2
+            } else {
+                4
+            }
+        } // MOV r/m16/32, imm16/32 (sign-extended to 64 if REX.W)
+        0xC8 => 3,        // ENTER imm16, imm8
+        0xCD => 1,        // INT imm8
         0xD4..=0xD5 => 1, // AAM/AAD (legacy)
         0xE0..=0xE3 => 1, // LOOPxx/JCXZ rel8
         0xE4..=0xE7 => 1, // IN/OUT imm8
         0xE8 | 0xE9 => 4, // CALL/JMP rel32
-        0xEB => 1, // JMP rel8
-        0xF6 => 0, // Handled via ModRM (TEST r/m8, imm8 is /0 with 1-byte imm)
-        0xF7 => 0, // Handled via ModRM (TEST r/m, imm is /0 with 4-byte imm)
+        0xEB => 1,        // JMP rel8
+        0xF6 => 0,        // Handled via ModRM (TEST r/m8, imm8 is /0 with 1-byte imm)
+        0xF7 => 0,        // Handled via ModRM (TEST r/m, imm is /0 with 4-byte imm)
         _ => 0,
     }
 }
@@ -96,9 +171,17 @@ fn one_byte_imm_size(opcode: u8, has_66_prefix: bool, has_rexw: bool) -> usize {
 fn two_byte_has_modrm(opcode2: u8) -> bool {
     match opcode2 {
         // Most 0F xx opcodes have ModRM, major exceptions:
-        0x05 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0B |
-        0x0E | 0xA0..=0xA1 | 0xA8..=0xA9 |
-        0x77 | 0x30..=0x37 => false,
+        0x05
+        | 0x06
+        | 0x07
+        | 0x08
+        | 0x09
+        | 0x0B
+        | 0x0E
+        | 0xA0..=0xA1
+        | 0xA8..=0xA9
+        | 0x77
+        | 0x30..=0x37 => false,
         0x80..=0x8F => false, // Jcc rel32 (no ModRM, has imm32)
         _ => true,
     }
@@ -122,10 +205,19 @@ fn two_byte_imm_size(opcode2: u8, _has_66: bool) -> usize {
 /// For F6/F7 opcodes, the /0 and /1 reg fields indicate TEST which has an immediate.
 fn group_test_imm_size(opcode: u8, modrm: u8, has_66: bool) -> usize {
     let reg = (modrm >> 3) & 7;
-    if reg <= 1 { // /0 or /1 = TEST
-        if opcode == 0xF6 { 1 } // TEST r/m8, imm8
-        else if has_66 { 2 } // TEST r/m16, imm16
-        else { 4 } // TEST r/m32, imm32
+    if reg <= 1 {
+        // /0 or /1 = TEST
+        if opcode == 0xF6 {
+            1
+        }
+        // TEST r/m8, imm8
+        else if has_66 {
+            2
+        }
+        // TEST r/m16, imm16
+        else {
+            4
+        } // TEST r/m32, imm32
     } else {
         0
     }
@@ -143,19 +235,28 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
 
     let read = |p: usize| -> u8 { unsafe { input.add(p).read() } };
     let read_i8 = |p: usize| -> i8 { read(p) as i8 };
-    let read_i32 = |p: usize| -> i32 {
-        unsafe { (input.add(p) as *const i32).read_unaligned() }
-    };
+    let read_i32 = |p: usize| -> i32 { unsafe { (input.add(p) as *const i32).read_unaligned() } };
 
     // ── Legacy prefixes ──
     let mut has_66 = false;
     loop {
         match read(pos) {
-            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => { pos += 1; } // segment overrides + branch hints
-            0x66 => { has_66 = true; pos += 1; }
-            0x67 => { pos += 1; } // address-size
-            0xF0 => { pos += 1; } // LOCK
-            0xF2 | 0xF3 => { pos += 1; } // REPNE/REP
+            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => {
+                pos += 1;
+            } // segment overrides + branch hints
+            0x66 => {
+                has_66 = true;
+                pos += 1;
+            }
+            0x67 => {
+                pos += 1;
+            } // address-size
+            0xF0 => {
+                pos += 1;
+            } // LOCK
+            0xF2 | 0xF3 => {
+                pos += 1;
+            } // REPNE/REP
             _ => break,
         }
     }
@@ -180,31 +281,61 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
 
     // RET
     if opcode == 0xC3 {
-        return DecodedInsn { len: pos, kind: InsnKind::Ret, rip_disp_offset: None, branch_offset: 0, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::Ret,
+            rip_disp_offset: None,
+            branch_offset: 0,
+            cc: 0,
+        };
     }
     if opcode == 0xC2 {
         // RET imm16
         pos += 2;
-        return DecodedInsn { len: pos, kind: InsnKind::Ret, rip_disp_offset: None, branch_offset: 0, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::Ret,
+            rip_disp_offset: None,
+            branch_offset: 0,
+            cc: 0,
+        };
     }
 
     // INT3, HLT
     if opcode == 0xCC || opcode == 0xF4 {
-        return DecodedInsn { len: pos, kind: InsnKind::End, rip_disp_offset: None, branch_offset: 0, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::End,
+            rip_disp_offset: None,
+            branch_offset: 0,
+            cc: 0,
+        };
     }
 
     // JMP rel8
     if opcode == 0xEB {
         let off = read_i8(pos) as i64;
         pos += 1;
-        return DecodedInsn { len: pos, kind: InsnKind::JmpRel8, rip_disp_offset: None, branch_offset: off, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::JmpRel8,
+            rip_disp_offset: None,
+            branch_offset: off,
+            cc: 0,
+        };
     }
 
     // JMP rel32
     if opcode == 0xE9 {
         let off = read_i32(pos) as i64;
         pos += 4;
-        return DecodedInsn { len: pos, kind: InsnKind::JmpRel32, rip_disp_offset: None, branch_offset: off, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::JmpRel32,
+            rip_disp_offset: None,
+            branch_offset: off,
+            cc: 0,
+        };
     }
 
     // CALL rel32
@@ -212,7 +343,13 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
         let off = read_i32(pos) as i64;
         pos += 4;
         // Detect CALL $+0 (PIC pattern): offset == 0
-        return DecodedInsn { len: pos, kind: InsnKind::CallRel32, rip_disp_offset: None, branch_offset: off, cc: 0 };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::CallRel32,
+            rip_disp_offset: None,
+            branch_offset: off,
+            cc: 0,
+        };
     }
 
     // Jcc rel8 (70-7F)
@@ -220,7 +357,13 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
         let cc = opcode & 0x0F;
         let off = read_i8(pos) as i64;
         pos += 1;
-        return DecodedInsn { len: pos, kind: InsnKind::JccRel8, rip_disp_offset: None, branch_offset: off, cc };
+        return DecodedInsn {
+            len: pos,
+            kind: InsnKind::JccRel8,
+            rip_disp_offset: None,
+            branch_offset: off,
+            cc,
+        };
     }
 
     // ── Two-byte opcode (0F xx) ──
@@ -230,7 +373,13 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
 
         // UD2
         if opcode2 == 0x0B {
-            return DecodedInsn { len: pos, kind: InsnKind::End, rip_disp_offset: None, branch_offset: 0, cc: 0 };
+            return DecodedInsn {
+                len: pos,
+                kind: InsnKind::End,
+                rip_disp_offset: None,
+                branch_offset: 0,
+                cc: 0,
+            };
         }
 
         // Jcc rel32 (0F 80-8F)
@@ -238,7 +387,13 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
             let cc = opcode2 & 0x0F;
             let off = read_i32(pos) as i64;
             pos += 4;
-            return DecodedInsn { len: pos, kind: InsnKind::JccRel32, rip_disp_offset: None, branch_offset: off, cc };
+            return DecodedInsn {
+                len: pos,
+                kind: InsnKind::JccRel32,
+                rip_disp_offset: None,
+                branch_offset: off,
+                cc,
+            };
         }
 
         // ModRM for 2-byte opcode
@@ -272,8 +427,12 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
                             }
                         }
                     }
-                    1 => { pos += 1; } // disp8
-                    2 => { pos += 4; } // disp32
+                    1 => {
+                        pos += 1;
+                    } // disp8
+                    2 => {
+                        pos += 4;
+                    } // disp32
                     _ => {}
                 }
             }
@@ -283,8 +442,18 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
         let imm_sz = two_byte_imm_size(opcode2, has_66);
         pos += imm_sz;
 
-        let kind = if rip_disp_offset.is_some() { InsnKind::RipRelative } else { InsnKind::Normal };
-        return DecodedInsn { len: pos, kind, rip_disp_offset, branch_offset: 0, cc: 0 };
+        let kind = if rip_disp_offset.is_some() {
+            InsnKind::RipRelative
+        } else {
+            InsnKind::Normal
+        };
+        return DecodedInsn {
+            len: pos,
+            kind,
+            rip_disp_offset,
+            branch_offset: 0,
+            cc: 0,
+        };
     }
 
     // ── Three-byte opcodes (0F 38 xx, 0F 3A xx) ──
@@ -316,8 +485,12 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
                         }
                     }
                 }
-                1 => { pos += 1; }
-                2 => { pos += 4; }
+                1 => {
+                    pos += 1;
+                }
+                2 => {
+                    pos += 4;
+                }
                 _ => {}
             }
         }
@@ -333,8 +506,18 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
         pos += one_byte_imm_size(opcode, has_66, has_rexw);
     }
 
-    let kind = if rip_disp_offset.is_some() { InsnKind::RipRelative } else { InsnKind::Normal };
-    DecodedInsn { len: pos, kind, rip_disp_offset, branch_offset: 0, cc: 0 }
+    let kind = if rip_disp_offset.is_some() {
+        InsnKind::RipRelative
+    } else {
+        InsnKind::Normal
+    };
+    DecodedInsn {
+        len: pos,
+        kind,
+        rip_disp_offset,
+        branch_offset: 0,
+        cc: 0,
+    }
 }
 
 // ── ENDBR64 detection ────────────────────────────────────────────────
@@ -342,7 +525,10 @@ fn decode_insn(input: *const u8, _pc: u64) -> DecodedInsn {
 /// Returns true if the bytes at `p` are ENDBR64 (F3 0F 1E FA).
 pub fn is_endbr64(p: *const u8) -> bool {
     unsafe {
-        p.read() == 0xF3 && p.add(1).read() == 0x0F && p.add(2).read() == 0x1E && p.add(3).read() == 0xFA
+        p.read() == 0xF3
+            && p.add(1).read() == 0x0F
+            && p.add(2).read() == 0x1E
+            && p.add(3).read() == 0xFA
     }
 }
 
@@ -434,7 +620,8 @@ impl X86_64Relocator {
                         // CALL $+0 (PIC pattern): push old_pc + insn_len onto stack
                         let return_addr = src_pc + insn.len as u64;
                         // mov r11, return_addr; push r11
-                        writer.put_mov_reg_imm64(crate::arch::x86_64::writer::Reg::R11, return_addr);
+                        writer
+                            .put_mov_reg_imm64(crate::arch::x86_64::writer::Reg::R11, return_addr);
                         writer.put_push_reg(crate::arch::x86_64::writer::Reg::R11);
                     } else {
                         // Regular CALL: mov r11, target; call r11
@@ -616,10 +803,10 @@ mod tests {
     fn can_relocate_basic() {
         // push rbp; mov rbp,rsp; sub rsp,0x80; ret
         let code = [
-            0x55u8,                                     // push rbp (1)
-            0x48, 0x89, 0xE5,                          // mov rbp, rsp (3)
+            0x55u8, // push rbp (1)
+            0x48, 0x89, 0xE5, // mov rbp, rsp (3)
             0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, // sub rsp, 0x80 (7)
-            0xC3,                                       // ret
+            0xC3, // ret
         ];
         assert_eq!(can_relocate(code.as_ptr(), 5), 11); // stops before ret
     }
@@ -630,9 +817,9 @@ mod tests {
         // the function pointer to skip it. Test that can_relocate works
         // when called on code starting after ENDBR64.
         let code = [
-            0x55u8,                      // push rbp (1)
-            0x48, 0x89, 0xE5,          // mov rbp, rsp (3)
-            0xC3,                        // ret
+            0x55u8, // push rbp (1)
+            0x48, 0x89, 0xE5, // mov rbp, rsp (3)
+            0xC3, // ret
         ];
         // min_bytes=5 → push rbp(1) + mov rbp,rsp(3) = 4 bytes, then ret stops
         assert_eq!(can_relocate(code.as_ptr(), 5), 4);
@@ -683,7 +870,7 @@ mod tests {
             assert_eq!(consumed, 2);
             // Should emit: inverted Jcc (JNE skip 16) + JMP far to 0x1012
             assert_eq!(buf[0], 0x75); // JNE rel8 (inverted JE)
-            assert_eq!(buf[1], 16);   // skip 16 bytes
+            assert_eq!(buf[1], 16); // skip 16 bytes
         }
     }
 
@@ -711,8 +898,8 @@ mod tests {
         // Simulate the caller already having skipped ENDBR64.
         // The relocator receives the code starting after ENDBR64.
         let code = [
-            0x55u8,              // push rbp
-            0x48, 0x89, 0xE5,  // mov rbp, rsp
+            0x55u8, // push rbp
+            0x48, 0x89, 0xE5, // mov rbp, rsp
         ];
         let mut buf = [0u8; 64];
         unsafe {
@@ -754,7 +941,7 @@ mod tests {
         // Relocated to PC=0x2000
         let code = [
             0x48u8, 0x8B, 0x05, 0x00, 0x01, 0x00, 0x00, // mov rax, [rip+0x100]
-            0x48,   0x8B, 0x1D, 0x00, 0x02, 0x00, 0x00, // mov rbx, [rip+0x200]
+            0x48, 0x8B, 0x1D, 0x00, 0x02, 0x00, 0x00, // mov rbx, [rip+0x200]
         ];
         let mut buf = [0u8; 64];
         unsafe {

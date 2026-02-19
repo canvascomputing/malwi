@@ -16,12 +16,7 @@ fn setup() {
 fn test_native_tracing_captures_malloc_calls() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "malloc",
-        "--",
-        "./simple_target",
-    ]);
+    let output = run_tracer(&["x", "-s", "malloc", "--", "./simple_target"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -31,7 +26,8 @@ fn test_native_tracing_captures_malloc_calls() {
     assert!(
         combined.contains("malloc"),
         "Expected malloc trace events. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -43,7 +39,8 @@ fn test_native_tracing_glob_pattern_matches_prefixed_functions() {
     // malloc* matches 60+ functions on macOS which can overwhelm HTTP
     let output = run_tracer(&[
         "x",
-        "-s", "malloc_good*",  // Matches only malloc_good_size
+        "-s",
+        "malloc_good*", // Matches only malloc_good_size
         "--",
         "./simple_target",
     ]);
@@ -55,7 +52,8 @@ fn test_native_tracing_glob_pattern_matches_prefixed_functions() {
     assert!(
         output.status.success() || stderr.contains("malloc"),
         "Glob pattern test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -66,8 +64,10 @@ fn test_native_tracing_captures_multiple_functions_simultaneously() {
     // Use simple_target_marker and getpid instead of malloc/free which generate too much output
     let output = run_tracer(&[
         "x",
-        "-s", "simple_target_marker",
-        "-s", "getpid",
+        "-s",
+        "simple_target_marker",
+        "-s",
+        "getpid",
         "--",
         "./simple_target",
     ]);
@@ -95,12 +95,7 @@ fn test_native_stack_trace_omitted_without_t_flag() {
     setup();
 
     // Run WITHOUT --st flag - should NOT have stack traces
-    let output = run_tracer(&[
-        "x",
-        "-s", "malloc",
-        "--",
-        "./simple_target",
-    ]);
+    let output = run_tracer(&["x", "-s", "malloc", "--", "./simple_target"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -108,7 +103,8 @@ fn test_native_stack_trace_omitted_without_t_flag() {
     assert!(
         output.status.success(),
         "Native test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should NOT have stack trace frames when -t is not used
@@ -126,8 +122,9 @@ fn test_native_stack_trace_included_with_t_flag() {
     // Run WITH --st flag - should have stack traces
     let output = run_tracer(&[
         "x",
-        "--st",  // Enable stack traces
-        "-s", "malloc",
+        "--st", // Enable stack traces
+        "-s",
+        "malloc",
         "--",
         "./simple_target",
     ]);
@@ -138,7 +135,8 @@ fn test_native_stack_trace_included_with_t_flag() {
     assert!(
         output.status.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have malloc function call
@@ -160,13 +158,7 @@ fn test_native_stack_trace_included_with_t_flag() {
 fn test_native_stack_trace_shows_symbol_and_address() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "--st",
-        "-s", "malloc",
-        "--",
-        "./simple_target",
-    ]);
+    let output = run_tracer(&["x", "--st", "-s", "malloc", "--", "./simple_target"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -174,7 +166,8 @@ fn test_native_stack_trace_shows_symbol_and_address() {
     assert!(
         output.status.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Stack trace lines should start with "    at "
@@ -207,7 +200,8 @@ fn test_native_stack_trace_resolves_known_symbol() {
     let output = run_tracer(&[
         "x",
         "--st",
-        "-s", "simple_target_marker",
+        "-s",
+        "simple_target_marker",
         "--",
         "./simple_target",
     ]);
@@ -218,7 +212,8 @@ fn test_native_stack_trace_resolves_known_symbol() {
     assert!(
         output.status.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have the function call
@@ -237,9 +232,7 @@ fn test_native_stack_trace_resolves_known_symbol() {
         }
         let frame = line.trim_start_matches("    at ");
         // Check for common symbols that should appear in a simple binary's stack
-        frame.contains("main")
-            || frame.contains("start")
-            || frame.contains("simple_target")
+        frame.contains("main") || frame.contains("start") || frame.contains("simple_target")
     });
 
     assert!(
@@ -257,12 +250,7 @@ fn test_native_stack_trace_resolves_known_symbol() {
 fn test_native_hooks_trace_events_from_multiple_threads() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "multithread_marker",
-        "--",
-        "./multithread",
-    ]);
+    let output = run_tracer(&["x", "-s", "multithread_marker", "--", "./multithread"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -272,7 +260,8 @@ fn test_native_hooks_trace_events_from_multiple_threads() {
     assert!(
         output.status.success(),
         "Multi-threaded test crashed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have marker events from multiple threads
@@ -280,7 +269,8 @@ fn test_native_hooks_trace_events_from_multiple_threads() {
     assert!(
         marker_count > 0,
         "Expected multiple marker events. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -289,12 +279,7 @@ fn test_multithreaded_tracing_completes_without_crash() {
     setup();
 
     // Run once to verify basic functionality (multiple iterations can be slow)
-    let output = run_tracer(&[
-        "x",
-        "-s", "multithread_marker",
-        "--",
-        "./multithread",
-    ]);
+    let output = run_tracer(&["x", "-s", "multithread_marker", "--", "./multithread"]);
 
     assert!(
         output.status.success(),
@@ -313,7 +298,8 @@ fn test_nonexistent_symbol_exits_gracefully_with_warning() {
 
     let output = run_tracer(&[
         "x",
-        "-s", "this_symbol_definitely_does_not_exist_xyz123",
+        "-s",
+        "this_symbol_definitely_does_not_exist_xyz123",
         "--",
         "./simple_target",
     ]);
@@ -332,12 +318,7 @@ fn test_nonexistent_symbol_exits_gracefully_with_warning() {
 fn test_invalid_program_path_exits_gracefully_with_error() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "malloc",
-        "--",
-        "./nonexistent_program_xyz",
-    ]);
+    let output = run_tracer(&["x", "-s", "malloc", "--", "./nonexistent_program_xyz"]);
 
     // Should fail but not crash
     assert!(

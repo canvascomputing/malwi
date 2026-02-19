@@ -11,7 +11,7 @@ use tiny_http::{Response, Server};
 
 use malwi_protocol::{EventType, HookType, RuntimeStack, TraceEvent};
 
-use crate::{DIM, LIGHT_BLUE, RED, RESET, YELLOW, display_name};
+use crate::{display_name, DIM, LIGHT_BLUE, RED, RESET, YELLOW};
 
 /// Global flag for SIGINT handler to signal shutdown.
 static MONITOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -20,7 +20,13 @@ extern "C" fn handle_sigint(_sig: libc::c_int) {
     MONITOR_SHUTDOWN.store(true, Ordering::SeqCst);
     // Write message directly (write() is async-signal-safe)
     let msg = b"\n\x1b[93m[malwi monitor]\x1b[0m Shutting down...\n";
-    unsafe { libc::write(libc::STDOUT_FILENO, msg.as_ptr() as *const libc::c_void, msg.len()) };
+    unsafe {
+        libc::write(
+            libc::STDOUT_FILENO,
+            msg.as_ptr() as *const libc::c_void,
+            msg.len(),
+        )
+    };
     // _exit is async-signal-safe
     unsafe { libc::_exit(0) };
 }
@@ -55,7 +61,8 @@ pub struct SessionEndRequest {
 /// Run the monitor HTTP server.
 pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
-    let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+    let server =
+        Server::http(&addr).map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
 
     println!(
         "{}[malwi monitor]{} Listening on http://{}",
@@ -66,7 +73,10 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
 
     // Set up Ctrl+C handler via SIGINT
     unsafe {
-        libc::signal(libc::SIGINT, handle_sigint as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGINT,
+            handle_sigint as *const () as libc::sighandler_t,
+        );
     }
 
     // Main request loop
@@ -83,52 +93,52 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
                 let response = Response::from_string("OK");
                 let _ = request.respond(response);
             }
-            ("POST", "/session/start") => {
-                match read_json_body::<SessionStartRequest>(request) {
-                    Ok((req, request)) => {
-                        println!(
-                            "{}[session:{}]{} Started: {} (PID {})",
-                            YELLOW,
-                            &req.session_id[..8.min(req.session_id.len())],
-                            RESET,
-                            req.command.join(" "),
-                            req.pid
-                        );
-                        let _ = request.respond(Response::from_string("OK"));
-                    }
-                    Err((e, request)) => {
-                        let _ = request.respond(Response::from_string(format!("Error: {}", e)).with_status_code(400));
-                    }
+            ("POST", "/session/start") => match read_json_body::<SessionStartRequest>(request) {
+                Ok((req, request)) => {
+                    println!(
+                        "{}[session:{}]{} Started: {} (PID {})",
+                        YELLOW,
+                        &req.session_id[..8.min(req.session_id.len())],
+                        RESET,
+                        req.command.join(" "),
+                        req.pid
+                    );
+                    let _ = request.respond(Response::from_string("OK"));
                 }
-            }
-            ("POST", "/event") => {
-                match read_json_body::<EventRequest>(request) {
-                    Ok((req, request)) => {
-                        print_trace_event(&req.event, show_stack, Some(req.session_id.as_str()));
-                        let _ = request.respond(Response::from_string("OK"));
-                    }
-                    Err((e, request)) => {
-                        let _ = request.respond(Response::from_string(format!("Error: {}", e)).with_status_code(400));
-                    }
+                Err((e, request)) => {
+                    let _ = request.respond(
+                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
+                    );
                 }
-            }
-            ("POST", "/session/end") => {
-                match read_json_body::<SessionEndRequest>(request) {
-                    Ok((req, request)) => {
-                        println!(
-                            "{}[session:{}]{} Ended (exit code: {:?})",
-                            YELLOW,
-                            &req.session_id[..8.min(req.session_id.len())],
-                            RESET,
-                            req.exit_code
-                        );
-                        let _ = request.respond(Response::from_string("OK"));
-                    }
-                    Err((e, request)) => {
-                        let _ = request.respond(Response::from_string(format!("Error: {}", e)).with_status_code(400));
-                    }
+            },
+            ("POST", "/event") => match read_json_body::<EventRequest>(request) {
+                Ok((req, request)) => {
+                    print_trace_event(&req.event, show_stack, Some(req.session_id.as_str()));
+                    let _ = request.respond(Response::from_string("OK"));
                 }
-            }
+                Err((e, request)) => {
+                    let _ = request.respond(
+                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
+                    );
+                }
+            },
+            ("POST", "/session/end") => match read_json_body::<SessionEndRequest>(request) {
+                Ok((req, request)) => {
+                    println!(
+                        "{}[session:{}]{} Ended (exit code: {:?})",
+                        YELLOW,
+                        &req.session_id[..8.min(req.session_id.len())],
+                        RESET,
+                        req.exit_code
+                    );
+                    let _ = request.respond(Response::from_string("OK"));
+                }
+                Err((e, request)) => {
+                    let _ = request.respond(
+                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
+                    );
+                }
+            },
             _ => {
                 let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
             }
@@ -163,7 +173,15 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
     let func = &event.function;
     let is_blocked = func.starts_with("BLOCKED ");
     let is_warn = func.starts_with("WARN ");
-    let color = if is_blocked { RED } else if is_warn { YELLOW } else if event.hook_type == HookType::DirectSyscall { RED } else { LIGHT_BLUE };
+    let color = if is_blocked {
+        RED
+    } else if is_warn {
+        YELLOW
+    } else if event.hook_type == HookType::DirectSyscall {
+        RED
+    } else {
+        LIGHT_BLUE
+    };
 
     // For BLOCKED/WARN events sent from the CLI, parse and reformat
     let (display_func, policy_info) = if is_blocked {
@@ -191,7 +209,8 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
     } else if event.hook_type == HookType::Exec {
         // Exec: "cmd arg1 arg2" style (skip argv[0] which is the function name)
         let start = 1.min(event.arguments.len());
-        let args: Vec<String> = event.arguments[start..].iter()
+        let args: Vec<String> = event.arguments[start..]
+            .iter()
             .filter_map(|a| a.display.clone())
             .collect();
         let args_str = crate::shell_format::format_shell_command(&args, 200);
@@ -220,7 +239,8 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
             println!("{}{}{}  {}{}", color, tag, RESET, display_func, src);
         } else {
             println!(
-                "{}{}{}  {}{}({}){}{}",  color, tag, RESET, display_func, DIM, args_str, RESET, src
+                "{}{}{}  {}{}({}){}{}",
+                color, tag, RESET, display_func, DIM, args_str, RESET, src
             );
         }
     }
@@ -237,16 +257,16 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
             Some(RuntimeStack::Python(frames)) => {
                 for frame in frames {
                     println!(
-                        "{}    at {} ({}:{}){}", DIM,
-                        frame.function, frame.filename, frame.line, RESET
+                        "{}    at {} ({}:{}){}",
+                        DIM, frame.function, frame.filename, frame.line, RESET
                     );
                 }
             }
             Some(RuntimeStack::Nodejs(frames)) => {
                 for frame in frames {
                     println!(
-                        "{}    at {} ({}:{}:{}){}", DIM,
-                        frame.function, frame.script, frame.line, frame.column, RESET
+                        "{}    at {} ({}:{}:{}){}",
+                        DIM, frame.function, frame.script, frame.line, frame.column, RESET
                     );
                 }
             }
@@ -263,7 +283,7 @@ fn parse_prefixed_event<'a>(func: &'a str, prefix: &str) -> (&'a str, Option<(&'
     if let Some(paren_pos) = rest.find(" (policy: ") {
         let name_part = &rest[..paren_pos];
         let policy_part = &rest[paren_pos + 10..]; // skip " (policy: "
-        // Parse "section rule 'rule')"
+                                                   // Parse "section rule 'rule')"
         if let Some(rule_pos) = policy_part.find(" rule '") {
             let section = &policy_part[..rule_pos];
             let rule_start = rule_pos + 7; // skip " rule '"
@@ -277,4 +297,3 @@ fn parse_prefixed_event<'a>(func: &'a str, prefix: &str) -> (&'a str, Option<(&'
         (display_name(rest), None)
     }
 }
-

@@ -6,7 +6,9 @@ use crate::compiled::{
 };
 use crate::error::{PolicyError, Result};
 use crate::parser::{parse_section_name, AllowDenySection, PolicyFile, Rule, SectionValue};
-use crate::pattern::{compile_pattern, compile_pattern_case_insensitive, compile_url_pattern, CompiledPattern};
+use crate::pattern::{
+    compile_pattern, compile_pattern_case_insensitive, compile_url_pattern, CompiledPattern,
+};
 
 /// Compile a parsed policy into an efficient runtime representation.
 ///
@@ -116,8 +118,11 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
     let category = if runtime.is_some() && parsed.category == "functions" {
         Category::Functions
     } else {
-        Category::parse(&parsed.category)
-            .ok_or_else(|| PolicyError::Validation(crate::error::ValidationError::UnknownSection(name.to_string())))?
+        Category::parse(&parsed.category).ok_or_else(|| {
+            PolicyError::Validation(crate::error::ValidationError::UnknownSection(
+                name.to_string(),
+            ))
+        })?
     };
 
     let key = SectionKey::new(runtime, category);
@@ -134,7 +139,9 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
             };
             for pattern_str in list {
                 let rule = Rule::Simple(pattern_str.clone());
-                section.allow_rules.push(compile_rule(&rule, case_insensitive, category, mode)?);
+                section
+                    .allow_rules
+                    .push(compile_rule(&rule, case_insensitive, category, mode)?);
             }
             section
         }
@@ -146,7 +153,9 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
                 ..Default::default()
             };
             for rule in rules {
-                section.allow_rules.push(compile_rule(rule, case_insensitive, category, mode)?);
+                section
+                    .allow_rules
+                    .push(compile_rule(rule, case_insensitive, category, mode)?);
             }
             section
         }
@@ -163,9 +172,7 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
 /// - Otherwise → domain pattern (Category::Domains)
 ///
 /// The `protocols` field becomes a Protocols section with allowed_values.
-fn compile_network_section(
-    value: &SectionValue,
-) -> Result<Vec<(SectionKey, CompiledSection)>> {
+fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, CompiledSection)>> {
     let ad = match value {
         SectionValue::AllowDeny(ad) => ad,
         _ => {
@@ -190,8 +197,12 @@ fn compile_network_section(
         let mode = EnforcementMode::Block; // mode on allow rules is not used for matching
         match classify_network_pattern(pattern_str) {
             PatternType::Url => url_allow.push(compile_rule(rule, false, Category::Http, mode)?),
-            PatternType::Domain => domain_allow.push(compile_rule(rule, true, Category::Domains, mode)?),
-            PatternType::Endpoint => endpoint_allow.push(compile_rule(rule, false, Category::Endpoints, mode)?),
+            PatternType::Domain => {
+                domain_allow.push(compile_rule(rule, true, Category::Domains, mode)?)
+            }
+            PatternType::Endpoint => {
+                endpoint_allow.push(compile_rule(rule, false, Category::Endpoints, mode)?)
+            }
         }
     }
 
@@ -207,9 +218,15 @@ fn compile_network_section(
         for rule in *rules {
             let pattern_str = rule_pattern(rule);
             match classify_network_pattern(pattern_str) {
-                PatternType::Url => url_deny.push(compile_rule(rule, false, Category::Http, *mode)?),
-                PatternType::Domain => domain_deny.push(compile_rule(rule, true, Category::Domains, *mode)?),
-                PatternType::Endpoint => endpoint_deny.push(compile_rule(rule, false, Category::Endpoints, *mode)?),
+                PatternType::Url => {
+                    url_deny.push(compile_rule(rule, false, Category::Http, *mode)?)
+                }
+                PatternType::Domain => {
+                    domain_deny.push(compile_rule(rule, true, Category::Domains, *mode)?)
+                }
+                PatternType::Endpoint => {
+                    endpoint_deny.push(compile_rule(rule, false, Category::Endpoints, *mode)?)
+                }
             }
         }
     }
@@ -282,11 +299,17 @@ fn strictest_mode_of_rules(deny_rules: &[CompiledRule], ad: &AllowDenySection) -
     match strictest {
         Some(s) => {
             // Map severity back to mode
-            if s >= mode_severity(EnforcementMode::Block) { EnforcementMode::Block }
-            else if s >= mode_severity(EnforcementMode::Review) { EnforcementMode::Review }
-            else if s >= mode_severity(EnforcementMode::Warn) { EnforcementMode::Warn }
-            else if s >= mode_severity(EnforcementMode::Log) { EnforcementMode::Log }
-            else { EnforcementMode::Noop }
+            if s >= mode_severity(EnforcementMode::Block) {
+                EnforcementMode::Block
+            } else if s >= mode_severity(EnforcementMode::Review) {
+                EnforcementMode::Review
+            } else if s >= mode_severity(EnforcementMode::Warn) {
+                EnforcementMode::Warn
+            } else if s >= mode_severity(EnforcementMode::Log) {
+                EnforcementMode::Log
+            } else {
+                EnforcementMode::Noop
+            }
         }
         None => compute_section_mode(ad),
     }
@@ -313,30 +336,62 @@ fn compile_allow_deny_section(
 
     // Allow rules
     for rule in &ad.allow {
-        section.allow_rules.push(compile_rule(rule, case_insensitive, category, mode)?);
+        section
+            .allow_rules
+            .push(compile_rule(rule, case_insensitive, category, mode)?);
     }
 
     // Deny-side rules, each with their key's mode
     for rule in &ad.deny {
-        section.deny_rules.push(compile_rule(rule, case_insensitive, category, EnforcementMode::Block)?);
+        section.deny_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Block,
+        )?);
     }
     for rule in &ad.review {
-        section.deny_rules.push(compile_rule(rule, case_insensitive, category, EnforcementMode::Review)?);
+        section.deny_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Review,
+        )?);
     }
     for rule in &ad.warn {
-        section.deny_rules.push(compile_rule(rule, case_insensitive, category, EnforcementMode::Warn)?);
+        section.deny_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Warn,
+        )?);
     }
     for rule in &ad.log {
-        section.deny_rules.push(compile_rule(rule, case_insensitive, category, EnforcementMode::Log)?);
+        section.deny_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Log,
+        )?);
     }
     for rule in &ad.noop {
-        section.deny_rules.push(compile_rule(rule, case_insensitive, category, EnforcementMode::Noop)?);
+        section.deny_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Noop,
+        )?);
     }
 
     Ok(section)
 }
 
-fn compile_rule(rule: &Rule, case_insensitive: bool, category: Category, mode: EnforcementMode) -> Result<CompiledRule> {
+fn compile_rule(
+    rule: &Rule,
+    case_insensitive: bool,
+    category: Category,
+    mode: EnforcementMode,
+) -> Result<CompiledRule> {
     let is_url_category = category == Category::Http;
 
     match rule {
@@ -604,19 +659,19 @@ network:
         let http_key = SectionKey::global(Category::Http);
         let http = policy.get_section(&http_key).unwrap();
         assert_eq!(http.allow_rules.len(), 1); // huggingface.co/**
-        assert_eq!(http.deny_rules.len(), 1);  // *.evil.com/**
+        assert_eq!(http.deny_rules.len(), 1); // *.evil.com/**
 
         // Domain patterns
         let domain_key = SectionKey::global(Category::Domains);
         let domains = policy.get_section(&domain_key).unwrap();
         assert_eq!(domains.allow_rules.len(), 1); // *.example.com
-        assert_eq!(domains.deny_rules.len(), 1);  // *.onion
+        assert_eq!(domains.deny_rules.len(), 1); // *.onion
 
         // Endpoint patterns
         let ep_key = SectionKey::global(Category::Endpoints);
         let eps = policy.get_section(&ep_key).unwrap();
         assert_eq!(eps.allow_rules.len(), 1); // 127.0.0.1:*
-        assert_eq!(eps.deny_rules.len(), 1);  // *:22
+        assert_eq!(eps.deny_rules.len(), 1); // *:22
 
         // Protocols
         let proto_key = SectionKey::global(Category::Protocols);

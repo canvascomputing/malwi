@@ -5,7 +5,7 @@
 
 #[path = "integration/common/mod.rs"]
 mod common;
-#[path = "integration/python_tests.rs"]
-mod python_tests;
 #[path = "integration/cross_runtime_tests.rs"]
 mod cross_runtime_tests;
+#[path = "integration/python_tests.rs"]
+mod python_tests;

@@ -300,7 +300,10 @@ fn detect_version_from_metadata() -> Option<u32> {
 /// libstdc++ stores:
 /// - length at offset 8
 /// - SSO buffer at offset 16
-#[cfg(any(target_os = "linux", not(any(target_os = "linux", target_os = "macos"))))]
+#[cfg(any(
+    target_os = "linux",
+    not(any(target_os = "linux", target_os = "macos"))
+))]
 fn detect_version_libstdcxx(addr: usize) -> Option<u32> {
     // Read the std::string structure (32 bytes covers pointer + length + SSO buffer)
     let mut bytes = [0u8; 32];
@@ -341,7 +344,10 @@ fn detect_version_libstdcxx(addr: usize) -> Option<u32> {
 ///
 /// libc++ SSO strings have inline data starting near offset 0.
 /// We scan from the start for a null terminator.
-#[cfg(any(target_os = "macos", not(any(target_os = "linux", target_os = "macos"))))]
+#[cfg(any(
+    target_os = "macos",
+    not(any(target_os = "linux", target_os = "macos"))
+))]
 fn detect_version_libcxx(addr: usize) -> Option<u32> {
     let mut bytes = [0u8; 16];
     unsafe {

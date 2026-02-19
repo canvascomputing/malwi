@@ -162,7 +162,8 @@ pub struct MalwiFrameParseResult {
 // =============================================================================
 
 type ParseFrameParametersFn = unsafe extern "C" fn(usize) -> *mut MalwiFrameParseResult;
-type ParseFrameParametersWithIsolateFn = unsafe extern "C" fn(usize, *mut c_void) -> *mut MalwiFrameParseResult;
+type ParseFrameParametersWithIsolateFn =
+    unsafe extern "C" fn(usize, *mut c_void) -> *mut MalwiFrameParseResult;
 type FreeFrameResultFn = unsafe extern "C" fn(*mut MalwiFrameParseResult);
 type WalkToJsFrameFn = unsafe extern "C" fn(usize) -> usize;
 type GetJsFrameFromIsolateFn = unsafe extern "C" fn(*mut c_void) -> usize;
@@ -175,8 +176,8 @@ type CaptureStackTraceFn = unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_ch
 // DYNAMIC FFI LOADING
 // =============================================================================
 
-use std::sync::OnceLock;
 use log::{debug, warn};
+use std::sync::OnceLock;
 
 /// Cached FFI function pointers (resolved from addon via dlsym)
 struct StackParserFfi {
@@ -232,14 +233,26 @@ pub fn resolve_stack_parser_ffi(addon_path: &std::path::Path) -> bool {
         }
 
         let ffi = StackParserFfi {
-            parse_frame_parameters: resolve_sym!("malwi_parse_frame_parameters", ParseFrameParametersFn),
-            parse_frame_parameters_with_isolate: resolve_sym!("malwi_parse_frame_parameters_with_isolate", ParseFrameParametersWithIsolateFn),
+            parse_frame_parameters: resolve_sym!(
+                "malwi_parse_frame_parameters",
+                ParseFrameParametersFn
+            ),
+            parse_frame_parameters_with_isolate: resolve_sym!(
+                "malwi_parse_frame_parameters_with_isolate",
+                ParseFrameParametersWithIsolateFn
+            ),
             free_frame_result: resolve_sym!("malwi_free_frame_result", FreeFrameResultFn),
             walk_to_js_frame: resolve_sym!("malwi_walk_to_js_frame", WalkToJsFrameFn),
-            get_js_frame_from_isolate: resolve_sym!("malwi_get_js_frame_from_isolate", GetJsFrameFromIsolateFn),
+            get_js_frame_from_isolate: resolve_sym!(
+                "malwi_get_js_frame_from_isolate",
+                GetJsFrameFromIsolateFn
+            ),
             get_platform_info: resolve_sym!("malwi_get_platform_info", GetPlatformInfoFn),
             get_type_name: resolve_sym!("malwi_get_type_name", GetTypeNameFn),
-            get_current_function_name: resolve_sym!("malwi_get_current_function_name", GetCurrentFunctionNameFn),
+            get_current_function_name: resolve_sym!(
+                "malwi_get_current_function_name",
+                GetCurrentFunctionNameFn
+            ),
             capture_stack_trace: resolve_sym!("malwi_capture_stack_trace", CaptureStackTraceFn),
         };
 
@@ -301,7 +314,11 @@ impl ParameterInfo {
         };
 
         let string_value = if !ffi.string_value.is_null() {
-            Some(CStr::from_ptr(ffi.string_value).to_string_lossy().into_owned())
+            Some(
+                CStr::from_ptr(ffi.string_value)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         } else {
             None
         };
@@ -313,7 +330,11 @@ impl ParameterInfo {
         };
 
         let function_name = if !ffi.function_name.is_null() {
-            Some(CStr::from_ptr(ffi.function_name).to_string_lossy().into_owned())
+            Some(
+                CStr::from_ptr(ffi.function_name)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         } else {
             None
         };
@@ -321,9 +342,7 @@ impl ParameterInfo {
         let type_name = if ffi.type_name.is_null() {
             value_type.name().to_string()
         } else {
-            CStr::from_ptr(ffi.type_name)
-                .to_string_lossy()
-                .into_owned()
+            CStr::from_ptr(ffi.type_name).to_string_lossy().into_owned()
         };
 
         Self {
@@ -751,7 +770,10 @@ pub struct V8StackFrame {
 ///
 /// # Safety
 /// The caller must ensure `isolate` is a valid v8::Isolate pointer, or null.
-pub unsafe fn capture_stack_trace(isolate: *mut c_void, max_frames: i32) -> Option<Vec<V8StackFrame>> {
+pub unsafe fn capture_stack_trace(
+    isolate: *mut c_void,
+    max_frames: i32,
+) -> Option<Vec<V8StackFrame>> {
     let ffi = STACK_PARSER_FFI.get()?;
 
     unsafe {

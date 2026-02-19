@@ -20,16 +20,20 @@ fn test_perf_native_tracing_throughput() {
 
     // Run uninstrumented baseline
     let baseline_start = Instant::now();
-    let _ = run_tracer_with_timeout(
-        &["--", &multithread_str],
-        Duration::from_secs(10),
-    );
+    let _ = run_tracer_with_timeout(&["--", &multithread_str], Duration::from_secs(10));
     let baseline_ms = baseline_start.elapsed().as_millis();
 
     // Run with tracing enabled — hook multithread_marker and malloc
     let traced_start = Instant::now();
     let output = run_tracer_with_timeout(
-        &["x", "-s", "multithread_marker", "-s", "malloc", &multithread_str],
+        &[
+            "x",
+            "-s",
+            "multithread_marker",
+            "-s",
+            "malloc",
+            &multithread_str,
+        ],
         Duration::from_secs(10),
     );
     let traced_ms = traced_start.elapsed().as_millis();

@@ -23,10 +23,16 @@ impl Default for CodeAllocator {
 
 impl CodeAllocator {
     pub fn new(slab_size: usize) -> Self {
-        Self { slab_size: slab_size.max(4096) }
+        Self {
+            slab_size: slab_size.max(4096),
+        }
     }
 
-    pub fn alloc_near(&mut self, near: *const u8, max_distance: usize) -> Result<CodeSlice, HookError> {
+    pub fn alloc_near(
+        &mut self,
+        near: *const u8,
+        max_distance: usize,
+    ) -> Result<CodeSlice, HookError> {
         #[cfg(target_os = "macos")]
         unsafe {
             use mach2::kern_return::KERN_SUCCESS;
@@ -112,10 +118,18 @@ impl CodeAllocator {
             if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
                 let mut regions: Vec<(usize, usize)> = Vec::new();
                 for line in maps.lines() {
-                    let Some(range) = line.split_whitespace().next() else { continue };
-                    let Some((start_s, end_s)) = range.split_once('-') else { continue };
-                    let Ok(start) = usize::from_str_radix(start_s, 16) else { continue };
-                    let Ok(end) = usize::from_str_radix(end_s, 16) else { continue };
+                    let Some(range) = line.split_whitespace().next() else {
+                        continue;
+                    };
+                    let Some((start_s, end_s)) = range.split_once('-') else {
+                        continue;
+                    };
+                    let Ok(start) = usize::from_str_radix(start_s, 16) else {
+                        continue;
+                    };
+                    let Ok(end) = usize::from_str_radix(end_s, 16) else {
+                        continue;
+                    };
                     regions.push((start, end));
                 }
                 regions.sort_by_key(|&(s, _)| s);
@@ -130,7 +144,8 @@ impl CodeAllocator {
                         let gap_start = prev_end;
                         let gap_end = region_start.min(win_end);
                         if gap_end > gap_start && gap_end - gap_start >= need {
-                            let candidate = near_u.clamp(gap_start, gap_end - need) & !(page_sz - 1);
+                            let candidate =
+                                near_u.clamp(gap_start, gap_end - need) & !(page_sz - 1);
                             let ptr = libc::mmap(
                                 candidate as *mut libc::c_void,
                                 need,
@@ -189,8 +204,8 @@ impl CodeAllocator {
             use mach2::kern_return::KERN_SUCCESS;
             use mach2::traps::mach_task_self;
             use mach2::vm::{mach_vm_allocate, mach_vm_protect};
-            use mach2::vm_statistics::VM_FLAGS_ANYWHERE;
             use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE};
+            use mach2::vm_statistics::VM_FLAGS_ANYWHERE;
 
             let task = mach_task_self();
             let mut addr: u64 = 0;
@@ -200,7 +215,13 @@ impl CodeAllocator {
             }
 
             // Start RW for emission.
-            let kr = mach_vm_protect(task, addr, self.slab_size as u64, 0, VM_PROT_READ | VM_PROT_WRITE);
+            let kr = mach_vm_protect(
+                task,
+                addr,
+                self.slab_size as u64,
+                0,
+                VM_PROT_READ | VM_PROT_WRITE,
+            );
             if kr != KERN_SUCCESS {
                 return Err(HookError::AllocationFailed);
             }
@@ -249,7 +270,13 @@ impl CodeAllocator {
             use mach2::vm_prot::{VM_PROT_EXECUTE, VM_PROT_READ};
 
             let task = mach_task_self();
-            let kr = mach_vm_protect(task, slice.data as u64, slice.size as u64, 0, VM_PROT_READ | VM_PROT_EXECUTE);
+            let kr = mach_vm_protect(
+                task,
+                slice.data as u64,
+                slice.size as u64,
+                0,
+                VM_PROT_READ | VM_PROT_EXECUTE,
+            );
             if kr != KERN_SUCCESS {
                 return Err(HookError::AllocationFailed);
             }

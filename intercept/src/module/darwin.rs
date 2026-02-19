@@ -133,8 +133,8 @@ mod macho {
 use macho::{
     dysymtab_command, load_command, mach_header_64, nlist_64, section_64, segment_command_64,
     symtab_command, INDIRECT_SYMBOL_ABS, INDIRECT_SYMBOL_LOCAL, LC_DYSYMTAB, LC_SEGMENT_64,
-    LC_SYMTAB, MH_MAGIC_64, N_EXT, S_LAZY_SYMBOL_POINTERS, S_NON_LAZY_SYMBOL_POINTERS,
-    SECTION_TYPE,
+    LC_SYMTAB, MH_MAGIC_64, N_EXT, SECTION_TYPE, S_LAZY_SYMBOL_POINTERS,
+    S_NON_LAZY_SYMBOL_POINTERS,
 };
 
 extern "C" {
@@ -197,7 +197,8 @@ fn cstr_from_fixed_bytes(bytes: &[u8; 16]) -> &str {
 }
 
 unsafe fn load_commands(header: *const mach_header_64) -> (*const load_command, u32) {
-    let cmds = (header as *const u8).add(core::mem::size_of::<mach_header_64>()) as *const load_command;
+    let cmds =
+        (header as *const u8).add(core::mem::size_of::<mach_header_64>()) as *const load_command;
     (cmds, (*header).ncmds)
 }
 
@@ -407,7 +408,9 @@ fn enumerate_symbols_internal(
             let path = if name_ptr.is_null() {
                 String::new()
             } else {
-                core::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+                core::ffi::CStr::from_ptr(name_ptr)
+                    .to_string_lossy()
+                    .into_owned()
             };
             if basename(&path) != module.name {
                 continue;
@@ -468,12 +471,22 @@ unsafe fn rebind_symbol_in_image(
     replacement: usize,
     mut patched: Option<&mut Vec<(usize, usize)>>,
 ) -> Result<(), HookError> {
-    let Some(symtab) = find_symtab(header) else { return Ok(()) };
-    let Some(dysymtab) = find_dysymtab(header) else { return Ok(()) };
+    let Some(symtab) = find_symtab(header) else {
+        return Ok(());
+    };
+    let Some(dysymtab) = find_dysymtab(header) else {
+        return Ok(());
+    };
 
-    let Some(symtab_ptr) = fileoff_to_ptr(header, slide, symtab.symoff as u64) else { return Ok(()) };
-    let Some(strtab_ptr) = fileoff_to_ptr(header, slide, symtab.stroff as u64) else { return Ok(()) };
-    let Some(indirect_ptr) = fileoff_to_ptr(header, slide, dysymtab.indirectsymoff as u64) else { return Ok(()) };
+    let Some(symtab_ptr) = fileoff_to_ptr(header, slide, symtab.symoff as u64) else {
+        return Ok(());
+    };
+    let Some(strtab_ptr) = fileoff_to_ptr(header, slide, symtab.stroff as u64) else {
+        return Ok(());
+    };
+    let Some(indirect_ptr) = fileoff_to_ptr(header, slide, dysymtab.indirectsymoff as u64) else {
+        return Ok(());
+    };
 
     let symbols = symtab_ptr as *const nlist_64;
     let strings = strtab_ptr;
@@ -514,10 +527,12 @@ unsafe fn rebind_symbol_in_image(
             // Some binaries use symbol pointers even for local-to-image symbols (interposable
             // call stubs); those are marked as LOCAL/ABS. For these, fall back to dladdr() on
             // the current slot value.
-            let matches = if sym_index == INDIRECT_SYMBOL_LOCAL || sym_index == INDIRECT_SYMBOL_ABS {
+            let matches = if sym_index == INDIRECT_SYMBOL_LOCAL || sym_index == INDIRECT_SYMBOL_ABS
+            {
                 let mut info: Dl_info = unsafe { core::mem::zeroed() };
                 unsafe {
-                    if dladdr(original as *const c_void, &mut info) == 0 || info.dli_sname.is_null() {
+                    if dladdr(original as *const c_void, &mut info) == 0 || info.dli_sname.is_null()
+                    {
                         false
                     } else {
                         core::ffi::CStr::from_ptr(info.dli_sname).to_bytes() == want
@@ -547,7 +562,12 @@ unsafe fn rebind_symbol_in_image(
             let page_ptr = page as *mut u8;
 
             // Make writable, patch, and optionally restore to read-only.
-            if libc::mprotect(page_ptr as *mut _, page_sz, libc::PROT_READ | libc::PROT_WRITE) != 0 {
+            if libc::mprotect(
+                page_ptr as *mut _,
+                page_sz,
+                libc::PROT_READ | libc::PROT_WRITE,
+            ) != 0
+            {
                 // Some hardened binaries have read-only __DATA_CONST mappings where
                 // libc's mprotect fails; try Mach directly as a fallback.
                 let kr = unsafe {
@@ -587,7 +607,10 @@ unsafe fn rebind_symbol_in_image(
 
 /// # Safety
 /// `replacement` must be a valid function pointer with the same signature as `symbol`.
-pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usize, usize)>, HookError> {
+pub unsafe fn rebind_symbol(
+    symbol: &str,
+    replacement: usize,
+) -> Result<Vec<(usize, usize)>, HookError> {
     ensure_rebinding_callback_registered();
 
     let want: Vec<u8> = if symbol.starts_with('_') {
@@ -601,7 +624,10 @@ pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usi
 
     {
         let mut guard = rebindings().lock().unwrap();
-        if !guard.iter().any(|b| b.want == want && b.replacement == replacement) {
+        if !guard
+            .iter()
+            .any(|b| b.want == want && b.replacement == replacement)
+        {
             guard.push(Rebinding {
                 want: want.clone(),
                 replacement,
@@ -659,7 +685,9 @@ pub unsafe fn rebind_pointers_by_value(
         let path = if name_ptr.is_null() {
             String::new()
         } else {
-            core::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+            core::ffi::CStr::from_ptr(name_ptr)
+                .to_string_lossy()
+                .into_owned()
         };
         if basename(&path) != module.name {
             continue;
@@ -764,8 +792,14 @@ mod tests {
         let modules = enumerate_modules();
         assert!(!modules.is_empty());
 
-        let has_system = modules.iter().any(|m| m.name.contains("libSystem") || m.name.contains("dyld"));
-        assert!(has_system, "modules: {:?}", modules.iter().map(|m| &m.name).collect::<Vec<_>>());
+        let has_system = modules
+            .iter()
+            .any(|m| m.name.contains("libSystem") || m.name.contains("dyld"));
+        assert!(
+            has_system,
+            "modules: {:?}",
+            modules.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -778,13 +812,16 @@ mod tests {
     fn find_export_in_module_resolves_malloc() {
         let malloc_addr = find_global_export_by_name("malloc").expect("malloc should resolve");
         let module_name = resolve_address_module(malloc_addr).expect("dladdr should find module");
-        let addr = find_export_by_name(&module_name, "malloc").expect("malloc in its defining module");
+        let addr =
+            find_export_by_name(&module_name, "malloc").expect("malloc in its defining module");
         assert_ne!(addr, 0);
     }
 
     #[test]
     fn find_export_returns_error_for_missing() {
-        assert!(find_global_export_by_name("this_symbol_definitely_does_not_exist_xyz123").is_err());
+        assert!(
+            find_global_export_by_name("this_symbol_definitely_does_not_exist_xyz123").is_err()
+        );
     }
 
     #[test]
@@ -820,7 +857,9 @@ mod tests {
 
         let symbols = enumerate_symbols(&module_name).expect("enumerate symbols");
         assert!(
-            symbols.iter().any(|s| s.name.contains("malwi_intercept_test_symbol")),
+            symbols
+                .iter()
+                .any(|s| s.name.contains("malwi_intercept_test_symbol")),
             "missing symbol in main executable; module_name={module_name}, symbols_len={}",
             symbols.len()
         );
@@ -843,14 +882,15 @@ mod tests {
             CALLED.fetch_add(1, Ordering::SeqCst);
 
             // Call the real function via RTLD_NEXT to avoid recursion.
-            let mut original =
-                libc::dlsym(libc::RTLD_NEXT, c"posix_spawn".as_ptr());
+            let mut original = libc::dlsym(libc::RTLD_NEXT, c"posix_spawn".as_ptr());
             if original.is_null() {
                 // Try underscore form for Mach-O symbol naming.
-                original =
-                    libc::dlsym(libc::RTLD_NEXT, c"_posix_spawn".as_ptr());
+                original = libc::dlsym(libc::RTLD_NEXT, c"_posix_spawn".as_ptr());
             }
-            assert!(!original.is_null(), "failed to resolve original posix_spawn");
+            assert!(
+                !original.is_null(),
+                "failed to resolve original posix_spawn"
+            );
 
             type FnT = unsafe extern "C" fn(
                 *mut libc::pid_t,
@@ -869,17 +909,13 @@ mod tests {
             for (slot, original) in patched {
                 let slot_ptr = *slot as *mut usize;
                 let page = (slot_ptr as usize) & !(page_sz - 1);
-                let _ = libc::mprotect(
-                    page as *mut _,
-                    page_sz,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                );
+                let _ = libc::mprotect(page as *mut _, page_sz, libc::PROT_READ | libc::PROT_WRITE);
                 core::ptr::write_unaligned(slot_ptr, *original);
             }
         }
 
-        let patched =
-            unsafe { rebind_symbol("posix_spawn", wrapper as *const () as usize) }.expect("should patch slots");
+        let patched = unsafe { rebind_symbol("posix_spawn", wrapper as *const () as usize) }
+            .expect("should patch slots");
         assert!(!patched.is_empty());
 
         let mut pid: libc::pid_t = 0;
@@ -902,7 +938,10 @@ mod tests {
         let mut status: libc::c_int = 0;
         let _ = unsafe { libc::waitpid(pid, &mut status, 0) };
 
-        assert!(CALLED.load(Ordering::SeqCst) > 0, "expected wrapper to be called");
+        assert!(
+            CALLED.load(Ordering::SeqCst) > 0,
+            "expected wrapper to be called"
+        );
 
         unsafe { restore_slots(&patched) };
     }

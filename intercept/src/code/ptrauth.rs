@@ -14,4 +14,3 @@ pub(crate) fn strip_code_ptr(ptr: usize) -> usize {
 pub(crate) fn strip_code_ptr(ptr: usize) -> usize {
     ptr
 }
-

@@ -25,7 +25,11 @@ mod tests {
 
     #[test]
     fn test_unwrap_sh_c_curl() {
-        let argv: Vec<String> = vec!["sh".into(), "-c".into(), "curl -s https://example.com".into()];
+        let argv: Vec<String> = vec![
+            "sh".into(),
+            "-c".into(),
+            "curl -s https://example.com".into(),
+        ];
         assert_eq!(unwrap_shell_command(&argv), Some("curl"));
     }
 

@@ -38,9 +38,7 @@ impl SyscallMonitor {
 fn is_system_library(path: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        path.starts_with("/usr/lib/")
-            || path.starts_with("/System/")
-            || path.contains("/dyld")
+        path.starts_with("/usr/lib/") || path.starts_with("/System/") || path.contains("/dyld")
     }
     #[cfg(target_os = "linux")]
     {

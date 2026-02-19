@@ -89,10 +89,7 @@ mod tests {
     #[test]
     fn test_truncate_with_suffix() {
         assert_eq!(truncate_with_suffix("hello", 10, "..."), "hello");
-        assert_eq!(
-            truncate_with_suffix("hello world", 8, "..."),
-            "hello..."
-        );
+        assert_eq!(truncate_with_suffix("hello world", 8, "..."), "hello...");
         assert_eq!(
             truncate_with_suffix("hello world", 10, "[truncated]"),
             "[truncated]"

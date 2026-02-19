@@ -38,8 +38,7 @@ pub unsafe fn get_module_name(frame: *mut c_void) -> Option<String> {
     }
 
     // Get __name__ from globals dict (borrowed reference - no decref!)
-    let name_obj =
-        (api.dict_get_item_string)(f_globals, c"__name__".as_ptr());
+    let name_obj = (api.dict_get_item_string)(f_globals, c"__name__".as_ptr());
     let result = if !name_obj.is_null() {
         cstr_to_string((api.unicode_as_utf8)(name_obj))
     } else {
@@ -260,8 +259,7 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
         obj
     };
 
-    let qualname_obj =
-        (api.get_attr_string)(class_obj, c"__qualname__".as_ptr());
+    let qualname_obj = (api.get_attr_string)(class_obj, c"__qualname__".as_ptr());
     let result = if !qualname_obj.is_null() {
         let s = cstr_to_string((api.unicode_as_utf8)(qualname_obj));
         (api.py_decref)(qualname_obj);
@@ -445,16 +443,15 @@ pub unsafe fn extract_function_arguments(frame: *mut c_void) -> Vec<Argument> {
     };
 
     // Need tuple_size, tuple_get_item, object_get_item, object_repr
-    let (tuple_size, tuple_get_item, object_get_item, object_repr) =
-        match (
-            api.tuple_size,
-            api.tuple_get_item,
-            api.object_get_item,
-            api.object_repr,
-        ) {
-            (Some(ts), Some(tgi), Some(ogi), Some(or)) => (ts, tgi, ogi, or),
-            _ => return arguments,
-        };
+    let (tuple_size, tuple_get_item, object_get_item, object_repr) = match (
+        api.tuple_size,
+        api.tuple_get_item,
+        api.object_get_item,
+        api.object_repr,
+    ) {
+        (Some(ts), Some(tgi), Some(ogi), Some(or)) => (ts, tgi, ogi, or),
+        _ => return arguments,
+    };
 
     if frame.is_null() {
         return arguments;
@@ -586,10 +583,7 @@ mod tests {
 
     #[test]
     fn test_simplify_repr_builtin() {
-        assert_eq!(
-            simplify_object_repr("<built-in function print>"),
-            "print"
-        );
+        assert_eq!(simplify_object_repr("<built-in function print>"), "print");
     }
 
     #[test]
@@ -602,18 +596,12 @@ mod tests {
 
     #[test]
     fn test_simplify_repr_class() {
-        assert_eq!(
-            simplify_object_repr("<class 'dict'>"),
-            "dict"
-        );
+        assert_eq!(simplify_object_repr("<class 'dict'>"), "dict");
     }
 
     #[test]
     fn test_simplify_repr_unknown_object() {
-        assert_eq!(
-            simplify_object_repr("<foo at 0x12345>"),
-            "[Object]"
-        );
+        assert_eq!(simplify_object_repr("<foo at 0x12345>"), "[Object]");
     }
 
     #[test]

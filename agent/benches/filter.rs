@@ -4,10 +4,26 @@ use malwi_agent::tracing::filter::{check_filter, Filter, FilterManager};
 
 fn make_filters(count: usize) -> Vec<Filter> {
     let patterns = [
-        "fs.*", "http.*", "net.*", "crypto.*", "os.*",
-        "path.*", "url.*", "dns.*", "tls.*", "zlib.*",
-        "stream.*", "buffer.*", "events.*", "util.*", "vm.*",
-        "child_process.*", "cluster.*", "worker_threads.*", "perf_hooks.*", "async_hooks.*",
+        "fs.*",
+        "http.*",
+        "net.*",
+        "crypto.*",
+        "os.*",
+        "path.*",
+        "url.*",
+        "dns.*",
+        "tls.*",
+        "zlib.*",
+        "stream.*",
+        "buffer.*",
+        "events.*",
+        "util.*",
+        "vm.*",
+        "child_process.*",
+        "cluster.*",
+        "worker_threads.*",
+        "perf_hooks.*",
+        "async_hooks.*",
     ];
     (0..count)
         .map(|i| Filter::new(patterns[i % patterns.len()], i % 3 == 0))

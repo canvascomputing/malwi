@@ -13,15 +13,15 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use core::ffi::c_void;
 use log::{debug, info, warn};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use malwi_intercept::types::ExportInfo;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use malwi_intercept::CallListener;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use malwi_intercept::InvocationContext;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use malwi_intercept::types::ExportInfo;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use core::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 fn agent_debug_enabled() -> bool {
@@ -61,9 +61,13 @@ pub fn enable_envvar_monitoring() {
 /// Check if envvar monitoring is enabled.
 pub fn is_envvar_monitoring_enabled() -> bool {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    { ENVVAR_MONITORING_ENABLED.load(Ordering::SeqCst) }
+    {
+        ENVVAR_MONITORING_ENABLED.load(Ordering::SeqCst)
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    { false }
+    {
+        false
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -249,7 +253,8 @@ impl SpawnMonitor {
         // - function pointers resolved via dlsym() (requires inline attach).
         //
         // Install both strategies best-effort to maximize coverage.
-        let posix_spawn_addr = malwi_intercept::module::find_global_export_by_name("posix_spawn").ok();
+        let posix_spawn_addr =
+            malwi_intercept::module::find_global_export_by_name("posix_spawn").ok();
         let mut posix_spawn_attached = false;
         if let Some(addr) = posix_spawn_addr {
             ORIGINAL_POSIX_SPAWN.store(addr, Ordering::SeqCst);
@@ -271,8 +276,10 @@ impl SpawnMonitor {
 
         // Only rebind if inline attach failed — rebind scans all modules and is slow.
         if !posix_spawn_attached {
-            match malwi_intercept::module::rebind_symbol("posix_spawn", posix_spawn_rebind_wrapper as *const () as usize)
-            {
+            match malwi_intercept::module::rebind_symbol(
+                "posix_spawn",
+                posix_spawn_rebind_wrapper as *const () as usize,
+            ) {
                 Ok(patched) => {
                     info!("Rebound posix_spawn in {} locations", patched.len());
                     if agent_debug_enabled() {
@@ -290,7 +297,8 @@ impl SpawnMonitor {
         }
 
         // Hook posix_spawnp (PATH-searching variant used by many runtimes).
-        let posix_spawnp_addr = malwi_intercept::module::find_global_export_by_name("posix_spawnp").ok();
+        let posix_spawnp_addr =
+            malwi_intercept::module::find_global_export_by_name("posix_spawnp").ok();
         let mut posix_spawnp_attached = false;
         if let Some(addr) = posix_spawnp_addr {
             ORIGINAL_POSIX_SPAWNP.store(addr, Ordering::SeqCst);
@@ -310,11 +318,17 @@ impl SpawnMonitor {
             }
         }
         if !posix_spawnp_attached {
-            match malwi_intercept::module::rebind_symbol("posix_spawnp", posix_spawnp_rebind_wrapper as *const () as usize) {
+            match malwi_intercept::module::rebind_symbol(
+                "posix_spawnp",
+                posix_spawnp_rebind_wrapper as *const () as usize,
+            ) {
                 Ok(patched) => {
                     info!("Rebound posix_spawnp in {} locations", patched.len());
                     if agent_debug_enabled() {
-                        eprintln!("[malwi-agent] rebound posix_spawnp: {} slots", patched.len());
+                        eprintln!(
+                            "[malwi-agent] rebound posix_spawnp: {} slots",
+                            patched.len()
+                        );
                     }
                     self.posix_spawnp_rebind = Some(patched);
                 }
@@ -370,7 +384,10 @@ impl SpawnMonitor {
             #[cfg(target_os = "macos")]
             if !execve_attached {
                 // Only rebind if inline attach failed — rebind scans all modules and is slow.
-                match malwi_intercept::module::rebind_symbol("execve", execve_rebind_wrapper as *const () as usize) {
+                match malwi_intercept::module::rebind_symbol(
+                    "execve",
+                    execve_rebind_wrapper as *const () as usize,
+                ) {
                     Ok(patched) => {
                         info!("Rebound execve in {} locations", patched.len());
                         if agent_debug_enabled() {
@@ -384,11 +401,17 @@ impl SpawnMonitor {
                 // Some runtimes call __execve directly; hook it too when present.
                 if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("__execve") {
                     ORIGINAL___EXECVE.store(addr, Ordering::SeqCst);
-                    match malwi_intercept::module::rebind_symbol("__execve", __execve_rebind_wrapper as *const () as usize) {
+                    match malwi_intercept::module::rebind_symbol(
+                        "__execve",
+                        __execve_rebind_wrapper as *const () as usize,
+                    ) {
                         Ok(patched) => {
                             info!("Rebound __execve in {} locations", patched.len());
                             if agent_debug_enabled() {
-                                eprintln!("[malwi-agent] rebound __execve: {} slots", patched.len());
+                                eprintln!(
+                                    "[malwi-agent] rebound __execve: {} slots",
+                                    patched.len()
+                                );
                             }
                             if self.execve_rebind.is_none() {
                                 self.execve_rebind = Some(patched);
@@ -402,7 +425,6 @@ impl SpawnMonitor {
             warn!("Could not find execve");
         }
     }
-
 
     /// Detect bash process and hook execution functions.
     ///
@@ -461,15 +483,16 @@ impl SpawnMonitor {
 
         // Step 1: Detect bash via dist_version global variable.
         // dist_version is `const char * const` — unique to bash, contains e.g. "5.2"
-        let (bash_module_name, bash_symbols, dist_version_addr) =
-            if let Some(v) = find_symbol_any_module("dist_version") {
-                v
-            } else if let Ok(a) = malwi_intercept::module::find_global_export_by_name("dist_version") {
-                // Extremely rare, but keeps old behavior if dist_version is exported.
-                (String::new(), Vec::new(), a)
-            } else {
-                return; // Not a bash process
-            };
+        let (bash_module_name, bash_symbols, dist_version_addr) = if let Some(v) =
+            find_symbol_any_module("dist_version")
+        {
+            v
+        } else if let Ok(a) = malwi_intercept::module::find_global_export_by_name("dist_version") {
+            // Extremely rare, but keeps old behavior if dist_version is exported.
+            (String::new(), Vec::new(), a)
+        } else {
+            return; // Not a bash process
+        };
 
         // Read the version string for logging
         let version_ptr = *(dist_version_addr as *const *const c_char);
@@ -566,9 +589,16 @@ impl SpawnMonitor {
                 on_leave: None,
                 user_data: ptr::null_mut(),
             };
-            if self.interceptor.attach(eval_addr as *mut c_void, listener).is_ok() {
+            if self
+                .interceptor
+                .attach(eval_addr as *mut c_void, listener)
+                .is_ok()
+            {
                 self.bash_eval_listener = Some(listener);
-                info!("Attached bash monitor to eval_builtin() at {:#x}", eval_addr);
+                info!(
+                    "Attached bash monitor to eval_builtin() at {:#x}",
+                    eval_addr
+                );
             } else {
                 warn!("Failed to attach to eval_builtin");
             }
@@ -591,14 +621,16 @@ impl SpawnMonitor {
                 .is_ok()
             {
                 self.bash_source_listener = Some(listener);
-                info!("Attached bash monitor to source_builtin() at {:#x}", source_addr);
+                info!(
+                    "Attached bash monitor to source_builtin() at {:#x}",
+                    source_addr
+                );
             } else {
                 warn!("Failed to attach to source_builtin");
             }
         } else {
             debug!("source_builtin symbol not found in bash");
         }
-
     }
 
     /// Install the find_variable hook for envvar monitoring.
@@ -637,7 +669,10 @@ impl SpawnMonitor {
             .is_ok()
         {
             self.bash_find_variable_listener = Some(listener);
-            info!("Attached bash envvar monitor to find_variable() at {:#x}", find_var_addr);
+            info!(
+                "Attached bash envvar monitor to find_variable() at {:#x}",
+                find_var_addr
+            );
         } else {
             warn!("Failed to attach to find_variable for envvar monitoring");
         }
@@ -675,7 +710,10 @@ impl SpawnMonitor {
             .is_ok()
         {
             self.getenv_listener = Some(listener);
-            info!("Attached native envvar monitor to getenv() at {:#x}", getenv_addr);
+            info!(
+                "Attached native envvar monitor to getenv() at {:#x}",
+                getenv_addr
+            );
         } else {
             warn!("Failed to attach to getenv for envvar monitoring");
         }
@@ -766,8 +804,7 @@ unsafe extern "C" fn on_posix_spawn_enter(
     //                 const posix_spawnattr_t *attrp, char *const argv[], char *const envp[])
 
     // Get path argument (arg 1)
-    let path_ptr =
-        malwi_intercept::invocation::get_nth_argument(context, 1) as *const c_char;
+    let path_ptr = malwi_intercept::invocation::get_nth_argument(context, 1) as *const c_char;
     let path = if !path_ptr.is_null() {
         Some(CStr::from_ptr(path_ptr).to_string_lossy().into_owned())
     } else {
@@ -775,8 +812,8 @@ unsafe extern "C" fn on_posix_spawn_enter(
     };
 
     // Get argv argument (arg 4)
-    let argv_ptr = malwi_intercept::invocation::get_nth_argument(context, 4)
-        as *const *const c_char;
+    let argv_ptr =
+        malwi_intercept::invocation::get_nth_argument(context, 4) as *const *const c_char;
     let argv = parse_argv(argv_ptr);
 
     debug!("posix_spawn() enter: path={:?}, argv={:?}", path, argv);
@@ -908,7 +945,8 @@ pub(crate) unsafe fn install_dlsym_override() {
         return;
     }
 
-    if let Ok(patched) = malwi_intercept::module::rebind_symbol("dlsym", dlsym_rebind_wrapper as *const () as usize)
+    if let Ok(patched) =
+        malwi_intercept::module::rebind_symbol("dlsym", dlsym_rebind_wrapper as *const () as usize)
     {
         if let Some((_, original)) = patched.first() {
             ORIGINAL_DLSYM.store(*original, Ordering::SeqCst);
@@ -981,7 +1019,10 @@ unsafe extern "C" fn __execve_dlsym_wrapper(
 }
 
 #[cfg(target_os = "macos")]
-unsafe extern "C" fn dlsym_rebind_wrapper(handle: *mut c_void, symbol: *const c_char) -> *mut c_void {
+unsafe extern "C" fn dlsym_rebind_wrapper(
+    handle: *mut c_void,
+    symbol: *const c_char,
+) -> *mut c_void {
     // Return our spawn/exec wrappers for runtimes that resolve via dlsym.
     if !symbol.is_null() {
         let name = CStr::from_ptr(symbol).to_bytes();
@@ -1347,10 +1388,7 @@ fn basename(path: &str) -> &str {
 // ============================================================================
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-unsafe extern "C" fn on_execve_enter(
-    context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data: *mut c_void) {
     // execve signature: int execve(const char *path, char *const argv[], char *const envp[])
 
     // Skip if shell_execve already handled this (it calls execve internally)
@@ -1359,16 +1397,15 @@ unsafe extern "C" fn on_execve_enter(
         return;
     }
 
-    let path_ptr =
-        malwi_intercept::invocation::get_nth_argument(context, 0) as *const c_char;
+    let path_ptr = malwi_intercept::invocation::get_nth_argument(context, 0) as *const c_char;
     let path = if !path_ptr.is_null() {
         Some(CStr::from_ptr(path_ptr).to_string_lossy().into_owned())
     } else {
         None
     };
 
-    let argv_ptr = malwi_intercept::invocation::get_nth_argument(context, 1)
-        as *const *const c_char;
+    let argv_ptr =
+        malwi_intercept::invocation::get_nth_argument(context, 1) as *const *const c_char;
     let argv = parse_argv(argv_ptr);
 
     debug!("execve() enter: path={:?}, argv={:?}", path, argv);
@@ -1405,10 +1442,7 @@ unsafe extern "C" fn on_execve_enter(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-unsafe extern "C" fn on_execve_leave(
-    _context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_execve_leave(_context: *mut InvocationContext, _user_data: *mut c_void) {
     // If we get here, execve failed (otherwise process image would be replaced)
     debug!("execve() failed (returned to caller)");
 }
@@ -1426,7 +1460,11 @@ unsafe fn get_bash_source_location() -> (Option<String>, Option<u32>) {
 
     let line = if line_addr != 0 {
         let n = *(line_addr as *const i32);
-        if n > 0 { Some(n as u32) } else { None }
+        if n > 0 {
+            Some(n as u32)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1468,7 +1506,11 @@ unsafe fn get_bash_command_source_location(cmd_ptr: *const u8) -> (Option<String
             let line_addr = BASH_LINE_NUMBER.load(Ordering::SeqCst);
             if line_addr != 0 {
                 let g = *(line_addr as *const i32);
-                if g > 0 { Some(g as u32) } else { None }
+                if g > 0 {
+                    Some(g as u32)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -1507,8 +1549,7 @@ unsafe extern "C" fn on_shell_execve_enter(
     // shell_execve(char *command, char **args, char **env)
     IN_SHELL_EXECVE.with(|f| f.set(true));
 
-    let path_ptr =
-        malwi_intercept::invocation::get_nth_argument(context, 0) as *const c_char;
+    let path_ptr = malwi_intercept::invocation::get_nth_argument(context, 0) as *const c_char;
     let path = if !path_ptr.is_null() {
         Some(CStr::from_ptr(path_ptr).to_string_lossy().into_owned())
     } else {
@@ -1738,8 +1779,7 @@ unsafe extern "C" fn on_eval_builtin_enter(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
 ) {
-    let list_ptr =
-        malwi_intercept::invocation::get_nth_argument(context, 0) as *const u8;
+    let list_ptr = malwi_intercept::invocation::get_nth_argument(context, 0) as *const u8;
 
     let words = read_word_list_all(list_ptr);
     let eval_code = words.join(" ");
@@ -1785,8 +1825,7 @@ unsafe extern "C" fn on_source_builtin_enter(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
 ) {
-    let list_ptr =
-        malwi_intercept::invocation::get_nth_argument(context, 0) as *const u8;
+    let list_ptr = malwi_intercept::invocation::get_nth_argument(context, 0) as *const u8;
 
     let filename = read_word_list_first(list_ptr).unwrap_or_default();
     debug!("source_builtin() enter: file={}", filename);
@@ -1821,7 +1860,6 @@ unsafe extern "C" fn on_source_builtin_enter(
     }
 }
 
-
 // ============================================================================
 // Native: getenv() hooks (libc environment variable access detection)
 // ============================================================================
@@ -1829,10 +1867,7 @@ unsafe extern "C" fn on_source_builtin_enter(
 /// Enter callback for libc getenv(const char *name).
 /// Stores the name pointer for the leave callback.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-unsafe extern "C" fn on_getenv_enter(
-    context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_getenv_enter(context: *mut InvocationContext, _user_data: *mut c_void) {
     let name_ptr = malwi_intercept::invocation::get_nth_argument(context, 0) as *const c_char;
     GETENV_NAME.with(|cell| cell.set(name_ptr));
 }
@@ -1840,10 +1875,7 @@ unsafe extern "C" fn on_getenv_enter(
 /// Leave callback for libc getenv.
 /// If return value is non-NULL, the variable exists — check deny filter and send event.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-unsafe extern "C" fn on_getenv_leave(
-    context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_getenv_leave(context: *mut InvocationContext, _user_data: *mut c_void) {
     let retval = malwi_intercept::invocation::get_return_value(context) as *const c_char;
     if retval.is_null() {
         return; // Variable doesn't exist — nothing to report
@@ -1856,10 +1888,7 @@ unsafe extern "C" fn on_getenv_leave(
     let name = CStr::from_ptr(name_ptr).to_string_lossy();
 
     // Skip agent-internal variables to avoid noise and infinite recursion
-    if name.starts_with("MALWI_")
-        || name == "LD_PRELOAD"
-        || name == "DYLD_INSERT_LIBRARIES"
-    {
+    if name.starts_with("MALWI_") || name == "LD_PRELOAD" || name == "DYLD_INSERT_LIBRARIES" {
         return;
     }
 
@@ -1954,9 +1983,7 @@ unsafe extern "C" fn on_find_variable_leave(
     let name = CStr::from_ptr(name_ptr).to_string_lossy();
 
     // Dedup: skip if already seen in this command
-    let is_new = ENVVAR_SEEN.with(|set| {
-        set.borrow_mut().insert(name.to_string())
-    });
+    let is_new = ENVVAR_SEEN.with(|set| set.borrow_mut().insert(name.to_string()));
     if !is_new {
         return;
     }

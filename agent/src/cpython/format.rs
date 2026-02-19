@@ -315,11 +315,7 @@ pub fn format_python_arguments(
 
 /// Return Some only if NetworkInfo has at least one field populated.
 fn non_empty_network_info(ni: NetworkInfo) -> Option<NetworkInfo> {
-    if ni.url.is_some()
-        || ni.host.is_some()
-        || ni.port.is_some()
-        || ni.protocol.is_some()
-    {
+    if ni.url.is_some() || ni.host.is_some() || ni.port.is_some() || ni.protocol.is_some() {
         Some(ni)
     } else {
         None
@@ -349,7 +345,10 @@ fn network_info_from_url(raw: &str) -> NetworkInfo {
     };
 
     // Strip userinfo@
-    let authority = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
 
     if authority.starts_with('[') {
         // IPv6
@@ -1932,7 +1931,7 @@ fn format_socket_type(sock_type: i32) -> String {
 fn format_socket_level(level: i32) -> String {
     match level {
         0 => "IPPROTO_IP".to_string(),
-        1 => "SOL_SOCKET".to_string(),    // Linux
+        1 => "SOL_SOCKET".to_string(), // Linux
         6 => "IPPROTO_TCP".to_string(),
         17 => "IPPROTO_UDP".to_string(),
         0xffff => "SOL_SOCKET".to_string(), // macOS
@@ -2252,10 +2251,7 @@ mod tests {
         let args = make_args(&["'https://example.com'"]);
         assert_eq!(find_url_arg_index(&args), Some(0));
 
-        let args_with_self = make_args(&[
-            "<Session object at 0x123>",
-            "'https://example.com'",
-        ]);
+        let args_with_self = make_args(&["<Session object at 0x123>", "'https://example.com'"]);
         assert_eq!(find_url_arg_index(&args_with_self), Some(1));
     }
 

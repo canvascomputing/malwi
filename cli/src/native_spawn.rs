@@ -113,15 +113,13 @@ pub fn spawn_suspended(
             CString::new(format!("DYLD_INSERT_LIBRARIES={}", lib))
                 .map_err(|_| anyhow!("Invalid library path"))?,
         );
-        env_entries
-            .push(CString::new("DYLD_FORCE_FLAT_NAMESPACE=1").expect("static string"));
+        env_entries.push(CString::new("DYLD_FORCE_FLAT_NAMESPACE=1").expect("static string"));
     }
 
     // Add server URL
     if let Some(u) = url {
-        env_entries.push(
-            CString::new(format!("MALWI_URL={}", u)).map_err(|_| anyhow!("Invalid URL"))?,
-        );
+        env_entries
+            .push(CString::new(format!("MALWI_URL={}", u)).map_err(|_| anyhow!("Invalid URL"))?);
     }
 
     let mut envp_ptrs: Vec<*mut libc::c_char> = env_entries
@@ -143,8 +141,7 @@ pub fn spawn_suspended(
         }
 
         // Set POSIX_SPAWN_START_SUSPENDED flag to spawn process in suspended state
-        let ret =
-            posix_spawnattr_setflags(&mut attr, POSIX_SPAWN_START_SUSPENDED as libc::c_short);
+        let ret = posix_spawnattr_setflags(&mut attr, POSIX_SPAWN_START_SUSPENDED as libc::c_short);
         if ret != 0 {
             posix_spawnattr_destroy(&mut attr);
             return Err(anyhow!(
@@ -160,7 +157,7 @@ pub fn spawn_suspended(
         posix_spawn(
             &mut pid,
             program_cstr.as_ptr(),
-            ptr::null(),  // file_actions - inherit file descriptors
+            ptr::null(), // file_actions - inherit file descriptors
             &attr,
             argv_ptrs.as_ptr(),
             envp_ptrs.as_ptr(),
@@ -208,10 +205,7 @@ pub fn spawn_suspended(
     let pid = unsafe { libc::fork() };
 
     match pid {
-        -1 => Err(anyhow!(
-            "fork failed: {}",
-            std::io::Error::last_os_error()
-        )),
+        -1 => Err(anyhow!("fork failed: {}", std::io::Error::last_os_error())),
         0 => {
             // Child process
 
@@ -244,8 +238,7 @@ pub fn spawn_suspended(
 
             // Wait for child to stop itself
             let mut status: libc::c_int = 0;
-            let wait_result =
-                unsafe { libc::waitpid(child_pid, &mut status, libc::WUNTRACED) };
+            let wait_result = unsafe { libc::waitpid(child_pid, &mut status, libc::WUNTRACED) };
 
             if wait_result == -1 {
                 // Kill the child if we failed to wait
@@ -319,8 +312,8 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn test_spawn_and_resume_executes_process() {
-        let pid = spawn_suspended("/bin/echo", &["test".to_string()], None, None)
-            .expect("spawn failed");
+        let pid =
+            spawn_suspended("/bin/echo", &["test".to_string()], None, None).expect("spawn failed");
 
         assert!(pid > 0, "Expected positive PID");
 

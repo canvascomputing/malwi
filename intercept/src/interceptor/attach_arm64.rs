@@ -1,5 +1,5 @@
 use super::{FunctionContext, Interceptor};
-use crate::arch::arm64::relocator::{Arm64Relocator, can_relocate};
+use crate::arch::arm64::relocator::{can_relocate, Arm64Relocator};
 use crate::arch::arm64::writer::{Arm64Writer, Reg};
 use crate::code::allocator::{CodeAllocator, CodeSlice};
 use crate::code::patcher::patch_code;
@@ -16,7 +16,11 @@ struct BeginEndArgs {
 }
 
 /// Returns 1 if the original function should be skipped (replace_return_value was called).
-unsafe extern "C" fn begin_invocation(ctx: *mut FunctionContext, inv: *mut InvocationContext, args: *mut BeginEndArgs) -> u64 {
+unsafe extern "C" fn begin_invocation(
+    ctx: *mut FunctionContext,
+    inv: *mut InvocationContext,
+    args: *mut BeginEndArgs,
+) -> u64 {
     let ctx = &mut *ctx;
     let args = &mut *args;
 
@@ -68,7 +72,11 @@ unsafe extern "C" fn begin_invocation(ctx: *mut FunctionContext, inv: *mut Invoc
     skip as u64
 }
 
-unsafe extern "C" fn end_invocation(ctx: *mut FunctionContext, inv: *mut InvocationContext, args: *mut BeginEndArgs) {
+unsafe extern "C" fn end_invocation(
+    ctx: *mut FunctionContext,
+    inv: *mut InvocationContext,
+    args: *mut BeginEndArgs,
+) {
     let ctx = &mut *ctx;
     let args = &mut *args;
 
@@ -98,7 +106,11 @@ fn read_16(addr: *const u8) -> [u8; 16] {
     unsafe { core::ptr::read_unaligned(addr as *const [u8; 16]) }
 }
 
-unsafe fn restore_prologue(function: *mut c_void, original_bytes: &[u8; 16], size: usize) -> Result<(), HookError> {
+unsafe fn restore_prologue(
+    function: *mut c_void,
+    original_bytes: &[u8; 16],
+    size: usize,
+) -> Result<(), HookError> {
     patch_code(function as *mut u8, size, |p| {
         core::ptr::copy_nonoverlapping(original_bytes.as_ptr(), p, size);
     })
@@ -148,7 +160,11 @@ unsafe fn build_wrapper_in(
 
     // Save x0-x7.
     for i in 0..8 {
-        w.put_str_reg_reg_offset(core::mem::transmute::<u8, Reg>(i as u8), Reg::SP, (i * 8) as i64);
+        w.put_str_reg_reg_offset(
+            core::mem::transmute::<u8, Reg>(i as u8),
+            Reg::SP,
+            (i * 8) as i64,
+        );
     }
     // Save LR.
     w.put_str_reg_reg_offset(Reg::X30, Reg::SP, 64);
@@ -189,7 +205,11 @@ unsafe fn build_wrapper_in(
 
     // Restore (possibly modified) args x0-x7 from saved area.
     for i in 0..8 {
-        w.put_ldr_reg_reg_offset(core::mem::transmute::<u8, Reg>(i as u8), Reg::SP, (i * 8) as i64);
+        w.put_ldr_reg_reg_offset(
+            core::mem::transmute::<u8, Reg>(i as u8),
+            Reg::SP,
+            (i * 8) as i64,
+        );
     }
 
     // Call trampoline (original prologue + resume).
@@ -259,7 +279,11 @@ fn choose_patch_strategy(function: u64, wrapper: u64) -> (usize, usize) {
     }
 }
 
-pub(crate) fn attach(interceptor: &Interceptor, function_address: *mut c_void, listener: CallListener) -> Result<(), HookError> {
+pub(crate) fn attach(
+    interceptor: &Interceptor,
+    function_address: *mut c_void,
+    listener: CallListener,
+) -> Result<(), HookError> {
     let function_address = strip_code_ptr(function_address as usize) as *mut c_void;
     let key = function_address as usize;
 
@@ -296,10 +320,7 @@ pub(crate) fn attach(interceptor: &Interceptor, function_address: *mut c_void, l
     // Validate that the required number of instructions can be safely relocated.
     // can_relocate stops after BL/BLR boundaries (which modify LR). SVC is NOT
     // a boundary — it is position-independent (the relocator copies it verbatim).
-    let (max_safe, _scratch) = unsafe { can_relocate(
-        function_address as *const u32,
-        n_insns,
-    ) };
+    let (max_safe, _scratch) = unsafe { can_relocate(function_address as *const u32, n_insns) };
     if max_safe < n_insns {
         // Reduce patch size to fit within the safe relocation boundary.
         let dist = (wrapper_addr_estimate as i64 - func_addr as i64).unsigned_abs() as usize;
@@ -419,7 +440,8 @@ pub(crate) fn detach(interceptor: &Interceptor, listener: &CallListener) {
         if let Some(ctx) = map.remove(&key) {
             if ctx.patch_size > 0 {
                 unsafe {
-                    let _ = restore_prologue(key as *mut c_void, &ctx.original_bytes, ctx.patch_size);
+                    let _ =
+                        restore_prologue(key as *mut c_void, &ctx.original_bytes, ctx.patch_size);
                 }
             }
         }

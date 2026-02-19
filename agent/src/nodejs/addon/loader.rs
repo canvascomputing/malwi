@@ -12,11 +12,11 @@
 //!
 //! This avoids timing issues with version detection during early init.
 
+use std::ffi::c_void;
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, warn};
 
@@ -351,10 +351,13 @@ fn resolve_direct_load_api() -> Option<DirectLoadApi> {
         };
     }
 
-    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
+    let isolate_get_current: IsolateGetCurrentFn =
+        resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
     let object_new: ObjectNewFn = resolve!(symbols::v8::OBJECT_NEW, ObjectNewFn);
-    let napi_register: NapiModuleRegisterBySymbolFn =
-        resolve!(symbols::napi::MODULE_REGISTER_BY_SYMBOL, NapiModuleRegisterBySymbolFn);
+    let napi_register: NapiModuleRegisterBySymbolFn = resolve!(
+        symbols::napi::MODULE_REGISTER_BY_SYMBOL,
+        NapiModuleRegisterBySymbolFn
+    );
 
     debug!("Direct load API symbols resolved successfully");
 
@@ -440,7 +443,8 @@ unsafe fn load_addon_with_context(addon_path: &Path, context: V8Context) -> bool
         return false;
     }
 
-    let our_init: NapiAddonRegisterFunc = std::mem::transmute::<*mut libc::c_void, NapiAddonRegisterFunc>(init_ptr);
+    let our_init: NapiAddonRegisterFunc =
+        std::mem::transmute::<*mut libc::c_void, NapiAddonRegisterFunc>(init_ptr);
 
     // Register our addon with N-API
     debug!("Calling napi_module_register_by_symbol for our addon...");
@@ -550,7 +554,8 @@ fn install_script_run_hook() -> bool {
     }
 
     // Store trampoline pointer so the hook can call original behavior.
-    let original_fn: ScriptRunMethodFn = unsafe { std::mem::transmute::<*const c_void, ScriptRunMethodFn>(original_ptr) };
+    let original_fn: ScriptRunMethodFn =
+        unsafe { std::mem::transmute::<*const c_void, ScriptRunMethodFn>(original_ptr) };
     let _ = ORIGINAL_SCRIPT_RUN.set(original_fn);
 
     info!("v8::Script::Run hook installed");

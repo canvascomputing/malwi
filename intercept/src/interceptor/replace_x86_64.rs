@@ -58,8 +58,7 @@ pub(crate) fn replace(
 
     let page_is_near =
         ((slice.data as i64) - (patch_pc as i64)).unsigned_abs() as usize <= NEAR_RANGE;
-    let repl_is_near = ((replacement as i64)
-        - (patch_pc as i64 + NEAR_JMP_SIZE as i64))
+    let repl_is_near = ((replacement as i64) - (patch_pc as i64 + NEAR_JMP_SIZE as i64))
         .unsigned_abs() as usize
         <= NEAR_RANGE;
 
@@ -132,7 +131,9 @@ pub(crate) fn replace(
 
     let tramp_ptr = slice.pc as *const c_void;
     if !original_out.is_null() {
-        unsafe { *original_out = tramp_ptr; }
+        unsafe {
+            *original_out = tramp_ptr;
+        }
     }
 
     map.insert(
@@ -147,7 +148,10 @@ pub(crate) fn replace(
     Ok(())
 }
 
-pub(crate) fn revert(interceptor: &Interceptor, function_address: *mut c_void) -> Result<(), HookError> {
+pub(crate) fn revert(
+    interceptor: &Interceptor,
+    function_address: *mut c_void,
+) -> Result<(), HookError> {
     let mut map = interceptor.replace_map.lock().unwrap();
     let function_address = strip_code_ptr(function_address as usize) as *mut c_void;
     let key = function_address as usize;

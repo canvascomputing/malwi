@@ -373,14 +373,22 @@ envvars:
         assert_eq!(rules.len(), 3);
 
         // All should be WithConstraints (operations)
-        if let Rule::WithConstraints { pattern, constraints } = &rules[0] {
+        if let Rule::WithConstraints {
+            pattern,
+            constraints,
+        } = &rules[0]
+        {
             assert_eq!(pattern, "HOME");
             assert_eq!(constraints, &["read"]);
         } else {
             panic!("Expected WithConstraints rule");
         }
 
-        if let Rule::WithConstraints { pattern, constraints } = &rules[2] {
+        if let Rule::WithConstraints {
+            pattern,
+            constraints,
+        } = &rules[2]
+        {
             assert_eq!(pattern, "APP_*");
             assert_eq!(constraints, &["read", "write"]);
         } else {
@@ -406,7 +414,11 @@ files:
     if let SectionValue::RuleList(rules) = section {
         assert_eq!(rules.len(), 3);
 
-        if let Rule::WithConstraints { pattern, constraints } = &rules[1] {
+        if let Rule::WithConstraints {
+            pattern,
+            constraints,
+        } = &rules[1]
+        {
             assert_eq!(pattern, "/app/logs/*");
             assert_eq!(constraints, &["read", "edit", "delete"]);
         } else {

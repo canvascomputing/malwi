@@ -5,9 +5,9 @@
 //! in malwi-hook. These tests will be re-enabled when the feature
 //! is re-implemented.
 
+use crate::common::*;
 use std::io::Write;
 use std::time::Duration;
-use crate::common::*;
 
 fn setup() {
     build_fixtures();
@@ -15,7 +15,11 @@ fn setup() {
 
 /// Write a temporary policy YAML file with the given content.
 fn write_temp_policy(name: &str, content: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("malwi-test-policy-{}-{}.yaml", name, std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "malwi-test-policy-{}-{}.yaml",
+        name,
+        std::process::id()
+    ));
     let mut f = std::fs::File::create(&path).expect("create temp policy");
     f.write_all(content.as_bytes()).expect("write temp policy");
     path
@@ -30,18 +34,23 @@ fn write_temp_policy(name: &str, content: &str) -> std::path::PathBuf {
 fn test_direct_syscall_detected_in_user_binary() {
     setup();
 
-    let policy_path = write_temp_policy("positive", r#"
+    let policy_path = write_temp_policy(
+        "positive",
+        r#"
 version: 1
 syscalls:
   deny:
     - "*"
-"#);
+"#,
+    );
 
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "-p", policy_path.to_str().unwrap(),
-            "-s", "malloc",  // Need at least one hook for the agent to connect
+            "-p",
+            policy_path.to_str().unwrap(),
+            "-s",
+            "malloc", // Need at least one hook for the agent to connect
             "--",
             "./direct_syscall_target",
         ],
@@ -56,16 +65,19 @@ syscalls:
 
     // The target should have run successfully
     assert!(
-        stdout.contains("direct_syscall_target: result=") || stderr.contains("direct_syscall_target:"),
+        stdout.contains("direct_syscall_target: result=")
+            || stderr.contains("direct_syscall_target:"),
         "Target should have executed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should detect the direct socket() syscall — policy deny prints "denied: syscall:socket"
     assert!(
         clean_stdout.contains("denied") && clean_stdout.contains("syscall:socket"),
         "Expected denied syscall:socket event. stdout:\n{}\nstderr:\n{}",
-        clean_stdout, stderr
+        clean_stdout,
+        stderr
     );
 }
 
@@ -78,18 +90,23 @@ syscalls:
 fn test_no_false_positive_direct_syscall_for_libc_calls() {
     setup();
 
-    let policy_path = write_temp_policy("negative", r#"
+    let policy_path = write_temp_policy(
+        "negative",
+        r#"
 version: 1
 syscalls:
   deny:
     - "*"
-"#);
+"#,
+    );
 
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "-p", policy_path.to_str().unwrap(),
-            "-s", "malloc",
+            "-p",
+            policy_path.to_str().unwrap(),
+            "-s",
+            "malloc",
             "--",
             "./simple_target",
         ],
@@ -106,14 +123,16 @@ syscalls:
     assert!(
         !clean_stdout.contains("syscall:"),
         "Should NOT have syscall events for libc calls. stdout:\n{}\nstderr:\n{}",
-        clean_stdout, stderr
+        clean_stdout,
+        stderr
     );
 
     // But should still have normal malloc traces
     assert!(
         clean_stdout.contains("malloc"),
         "Should still have normal malloc traces. stdout:\n{}\nstderr:\n{}",
-        clean_stdout, stderr
+        clean_stdout,
+        stderr
     );
 }
 
@@ -125,17 +144,21 @@ syscalls:
 fn test_no_stalker_without_syscalls_section() {
     setup();
 
-    let policy_path = write_temp_policy("nostalker", r#"
+    let policy_path = write_temp_policy(
+        "nostalker",
+        r#"
 version: 1
 symbols:
   deny:
     - malloc
-"#);
+"#,
+    );
 
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "-p", policy_path.to_str().unwrap(),
+            "-p",
+            policy_path.to_str().unwrap(),
             "--",
             "./direct_syscall_target",
         ],
@@ -152,6 +175,7 @@ symbols:
     assert!(
         !clean_stdout.contains("syscall:"),
         "Should NOT have syscall events without syscalls section. stdout:\n{}\nstderr:\n{}",
-        clean_stdout, stderr
+        clean_stdout,
+        stderr
     );
 }

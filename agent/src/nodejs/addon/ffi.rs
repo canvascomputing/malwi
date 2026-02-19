@@ -52,14 +52,19 @@ pub fn resolve_addon_ffi(addon_path: &std::path::Path) -> Option<AddonFfi> {
             }};
         }
 
-        let enable_tracing: EnableTracingFn = resolve_sym!("malwi_addon_enable_tracing", EnableTracingFn);
+        let enable_tracing: EnableTracingFn =
+            resolve_sym!("malwi_addon_enable_tracing", EnableTracingFn);
         let add_filter: AddFilterFn = resolve_sym!("malwi_addon_add_filter", AddFilterFn);
 
         // Optional: get_module_version (may not exist in older addons)
         let get_module_version_sym = CString::new("malwi_addon_get_module_version").ok()?;
         let get_module_version_ptr = libc::dlsym(handle, get_module_version_sym.as_ptr());
         let get_module_version: Option<GetModuleVersionFn> = if !get_module_version_ptr.is_null() {
-            Some(std::mem::transmute::<*mut libc::c_void, GetModuleVersionFn>(get_module_version_ptr))
+            Some(
+                std::mem::transmute::<*mut libc::c_void, GetModuleVersionFn>(
+                    get_module_version_ptr,
+                ),
+            )
         } else {
             debug!("malwi_addon_get_module_version not found (addon may be older version)");
             None
@@ -109,10 +114,7 @@ pub struct FilterData {
 /// The number of filters written to the output array.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn malwi_addon_get_filters(
-    out_filters: *mut FilterData,
-    max_count: u32,
-) -> u32 {
+pub extern "C" fn malwi_addon_get_filters(out_filters: *mut FilterData, max_count: u32) -> u32 {
     if out_filters.is_null() || max_count == 0 {
         return 0;
     }

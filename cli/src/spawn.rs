@@ -211,7 +211,10 @@ fn prepare_node_options(agent_lib: &str, url: &str) -> Option<String> {
     unsafe { libc::dlclose(handle) };
 
     if len <= 0 {
-        debug!("malwi_prepare_node_options returned {} (no JS tracing)", len);
+        debug!(
+            "malwi_prepare_node_options returned {} (no JS tracing)",
+            len
+        );
         return None;
     }
 
@@ -228,11 +231,7 @@ fn prepare_node_options(agent_lib: &str, url: &str) -> Option<String> {
 /// This spawns the process suspended with DYLD_INSERT_LIBRARIES set,
 /// then resumes the process. The agent is loaded automatically.
 #[cfg(target_os = "macos")]
-pub fn spawn_with_injection(
-    program: &str,
-    args: &[String],
-    url: &str,
-) -> Result<libc::pid_t> {
+pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result<libc::pid_t> {
     let agent_lib = find_agent_library()?;
     debug!("Agent library: {}", agent_lib);
 
@@ -276,10 +275,7 @@ pub fn spawn_with_injection(
     // Resume the process
     if let Err(e) = crate::native_spawn::resume_process(pid) {
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        return Err(e.context(format!(
-            "Failed to resume process {} after spawn",
-            pid
-        )));
+        return Err(e.context(format!("Failed to resume process {} after spawn", pid)));
     }
 
     Ok(pid as libc::pid_t)
@@ -290,11 +286,7 @@ pub fn spawn_with_injection(
 /// This spawns the process suspended with LD_PRELOAD set,
 /// then resumes the process. The agent is loaded automatically.
 #[cfg(target_os = "linux")]
-pub fn spawn_with_injection(
-    program: &str,
-    args: &[String],
-    url: &str,
-) -> Result<libc::pid_t> {
+pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result<libc::pid_t> {
     let agent_lib = find_agent_library()?;
     debug!("Agent library: {}", agent_lib);
 
@@ -329,10 +321,7 @@ pub fn spawn_with_injection(
     // Resume the process
     if let Err(e) = crate::native_spawn::resume_process(pid) {
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        return Err(e.context(format!(
-            "Failed to resume process {} after spawn",
-            pid
-        )));
+        return Err(e.context(format!("Failed to resume process {} after spawn", pid)));
     }
 
     Ok(pid as libc::pid_t)

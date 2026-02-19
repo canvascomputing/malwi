@@ -46,6 +46,9 @@ fn main() {
     if has_any {
         println!("cargo:rustc-cfg=has_v8_addon");
     } else {
-        println!("cargo:warning=V8 addon: no prebuilt binaries found for {}", platform);
+        println!(
+            "cargo:warning=V8 addon: no prebuilt binaries found for {}",
+            platform
+        );
     }
 }

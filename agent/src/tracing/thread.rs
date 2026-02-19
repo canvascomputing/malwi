@@ -36,7 +36,10 @@ mod tests {
     fn test_thread_id_is_consistent() {
         let id1 = id();
         let id2 = id();
-        assert_eq!(id1, id2, "Thread ID should be consistent within same thread");
+        assert_eq!(
+            id1, id2,
+            "Thread ID should be consistent within same thread"
+        );
     }
 
     #[test]

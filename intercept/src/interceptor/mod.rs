@@ -54,7 +54,11 @@ impl Interceptor {
         })
     }
 
-    pub fn attach(&self, _function_address: *mut c_void, _listener: CallListener) -> Result<(), HookError> {
+    pub fn attach(
+        &self,
+        _function_address: *mut c_void,
+        _listener: CallListener,
+    ) -> Result<(), HookError> {
         #[cfg(target_arch = "aarch64")]
         {
             attach_arm64::attach(self, _function_address, _listener)
@@ -193,8 +197,13 @@ mod tests {
         assert_eq!(f(1), 2);
 
         let mut orig: *const c_void = core::ptr::null();
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), &mut orig)
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            &mut orig,
+        )
+        .unwrap();
 
         // Calling through the original symbol should now hit replacement.
         assert_eq!(f(1), 101);
@@ -257,7 +266,6 @@ mod tests {
         assert_eq!(f(1), 2);
     }
 
-
     /// Calling replace_return_value in on_enter skips the original function.
     #[test]
     #[cfg(target_arch = "aarch64")]
@@ -298,7 +306,10 @@ mod tests {
 
         // With skip_original, the result should be -1 regardless of input.
         let result = f(42);
-        assert_eq!(result, -1i64, "should return replacement value (-1), not f(42)=43");
+        assert_eq!(
+            result, -1i64,
+            "should return replacement value (-1), not f(42)=43"
+        );
         assert_eq!(SKIP_ENTER.load(Ordering::Relaxed), 1);
         assert_eq!(SKIP_LEAVE.load(Ordering::Relaxed), 1);
 
@@ -316,7 +327,9 @@ mod tests {
             inv::replace_return_value(ctx, 12345usize as *mut c_void);
         }
 
-        extern "C" { fn getpid() -> libc::pid_t; }
+        extern "C" {
+            fn getpid() -> libc::pid_t;
+        }
 
         let real_pid = unsafe { getpid() };
         assert_ne!(real_pid, 12345, "sanity: real PID should not be 12345");
@@ -328,10 +341,11 @@ mod tests {
             user_data: core::ptr::null_mut(),
         };
 
-        let addr = crate::module::find_global_export_by_name("getpid")
-            .expect("find getpid");
+        let addr = crate::module::find_global_export_by_name("getpid").expect("find getpid");
         let result = i.attach(addr as *mut c_void, listener);
-        if result.is_err() { return; } // Skip if can't hook
+        if result.is_err() {
+            return;
+        } // Skip if can't hook
 
         let f = std::hint::black_box(getpid);
         let pid = unsafe { f() };
@@ -390,7 +404,8 @@ mod tests {
             let map = i.attach_map.lock().unwrap();
             map.get(&(f as usize)).unwrap().wrapper
         };
-        let wrapper_fn: extern "C" fn(i64) -> i64 = unsafe { core::mem::transmute(wrapper as *const c_void) };
+        let wrapper_fn: extern "C" fn(i64) -> i64 =
+            unsafe { core::mem::transmute(wrapper as *const c_void) };
         assert_eq!(wrapper_fn(1), 2);
 
         // Then, call through the patched symbol.
@@ -439,7 +454,10 @@ mod tests {
 
         let result = i.attach(abs as *mut c_void, listener);
         if let Err(e) = &result {
-            eprintln!("attach on abs() failed (may be expected in some environments): {:?}", e);
+            eprintln!(
+                "attach on abs() failed (may be expected in some environments): {:?}",
+                e
+            );
             return;
         }
 
@@ -541,8 +559,18 @@ mod tests {
         SHORT_ENTER.store(0, Ordering::Relaxed);
 
         extern "C" {
-            fn send(socket: libc::c_int, buf: *const c_void, len: libc::size_t, flags: libc::c_int) -> libc::ssize_t;
-            fn recv(socket: libc::c_int, buf: *mut c_void, len: libc::size_t, flags: libc::c_int) -> libc::ssize_t;
+            fn send(
+                socket: libc::c_int,
+                buf: *const c_void,
+                len: libc::size_t,
+                flags: libc::c_int,
+            ) -> libc::ssize_t;
+            fn recv(
+                socket: libc::c_int,
+                buf: *mut c_void,
+                len: libc::size_t,
+                flags: libc::c_int,
+            ) -> libc::ssize_t;
         }
 
         // Record recv's prologue before hooking send.
@@ -571,7 +599,11 @@ mod tests {
         {
             let map = i.attach_map.lock().unwrap();
             let ctx = map.get(&(send as *const () as usize)).unwrap();
-            assert!(ctx.patch_size <= 12, "Short function should use <=12 byte patch, got {}", ctx.patch_size);
+            assert!(
+                ctx.patch_size <= 12,
+                "Short function should use <=12 byte patch, got {}",
+                ctx.patch_size
+            );
         }
 
         // Verify the hook fires (call send on an invalid fd — it will fail but the hook should still trigger).
@@ -641,13 +673,18 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        let (_f_mem, f) = make_add_const(1);   // f(x) = x+1
+        let (_f_mem, f) = make_add_const(1); // f(x) = x+1
         let (_r_mem, r) = make_add_const(100); // r(x) = x+100
 
         assert_eq!(f(1), 2, "original before replace");
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
 
         // Call the replaced function 5000 times (more than V8 bootstrap ~1800).
         for call_num in 0..5000u64 {
@@ -700,13 +737,18 @@ mod tests {
         let i = Interceptor::obtain();
 
         let (_f_mem, f) = make_realistic_function(); // f(x) = x+5
-        let (_r_mem, r) = make_add_const(200);       // r(x) = x+200
+        let (_r_mem, r) = make_add_const(200); // r(x) = x+200
 
         assert_eq!(f(10), 15, "original function should return x+5");
 
         let mut orig: *const c_void = core::ptr::null();
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), &mut orig)
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            &mut orig,
+        )
+        .unwrap();
 
         // Replacement should be active.
         assert_eq!(f(10), 210, "replaced function should return x+200");
@@ -758,24 +800,39 @@ mod tests {
             &mut orig,
         );
         if let Err(e) = &result {
-            eprintln!("replace on abs() failed (may be expected in some environments): {:?}", e);
+            eprintln!(
+                "replace on abs() failed (may be expected in some environments): {:?}",
+                e
+            );
             return;
         }
 
         // Calling abs should now return 999.
         let abs_fn = std::hint::black_box(abs_fn);
-        assert_eq!(unsafe { abs_fn(-42) }, 999, "replaced abs(-42) should return 999");
+        assert_eq!(
+            unsafe { abs_fn(-42) },
+            999,
+            "replaced abs(-42) should return 999"
+        );
 
         // Trampoline should call original → returns 42.
         assert!(!orig.is_null(), "trampoline pointer must not be null");
         let orig_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int =
             unsafe { core::mem::transmute(orig) };
-        assert_eq!(unsafe { orig_fn(-42) }, 42, "trampoline should call original abs");
+        assert_eq!(
+            unsafe { orig_fn(-42) },
+            42,
+            "trampoline should call original abs"
+        );
 
         // Revert and verify original is restored.
         i.revert(abs as *mut c_void);
         let abs_fn = std::hint::black_box(abs_fn);
-        assert_eq!(unsafe { abs_fn(-42) }, 42, "abs(-42) should be 42 after revert");
+        assert_eq!(
+            unsafe { abs_fn(-42) },
+            42,
+            "abs(-42) should be 42 after revert"
+        );
     }
 
     /// Replace abs() and call through a pre-stored function pointer.
@@ -813,7 +870,11 @@ mod tests {
 
         // Call through the stored function pointer — must hit replacement.
         let fptr = std::hint::black_box(fptr);
-        assert_eq!(unsafe { fptr(-10) }, 777, "call through pre-stored fn ptr should hit replacement");
+        assert_eq!(
+            unsafe { fptr(-10) },
+            777,
+            "call through pre-stored fn ptr should hit replacement"
+        );
 
         i.revert(abs as *mut c_void);
         let fptr = std::hint::black_box(fptr);
@@ -853,7 +914,8 @@ mod tests {
 
             let f = std::hint::black_box(abs_fn);
             assert_eq!(
-                unsafe { f(-7) }, 555,
+                unsafe { f(-7) },
+                555,
                 "cycle {cycle}: replaced abs should return 555"
             );
 
@@ -861,7 +923,8 @@ mod tests {
 
             let f = std::hint::black_box(abs_fn);
             assert_eq!(
-                unsafe { f(-7) }, 7,
+                unsafe { f(-7) },
+                7,
                 "cycle {cycle}: reverted abs should return 7"
             );
         }
@@ -907,8 +970,16 @@ mod tests {
         // The original function should NOT be patched.
         let abs_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int = abs;
         let abs_fn = std::hint::black_box(abs_fn);
-        assert_eq!(unsafe { abs_fn(-42) }, 42, "original abs should still work (no patch)");
-        assert_eq!(RB_ENTER.load(Ordering::Relaxed), 0, "calling original should NOT fire callbacks");
+        assert_eq!(
+            unsafe { abs_fn(-42) },
+            42,
+            "original abs should still work (no patch)"
+        );
+        assert_eq!(
+            RB_ENTER.load(Ordering::Relaxed),
+            0,
+            "calling original should NOT fire callbacks"
+        );
 
         // Calling through the wrapper should fire callbacks and return correct value.
         let wrapper_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int =
@@ -916,8 +987,14 @@ mod tests {
         let wrapper_fn = std::hint::black_box(wrapper_fn);
         let val = unsafe { wrapper_fn(-42) };
         assert_eq!(val, 42, "wrapper should return correct abs(-42) value");
-        assert!(RB_ENTER.load(Ordering::Relaxed) > 0, "wrapper call must fire on_enter");
-        assert!(RB_LEAVE.load(Ordering::Relaxed) > 0, "wrapper call must fire on_leave");
+        assert!(
+            RB_ENTER.load(Ordering::Relaxed) > 0,
+            "wrapper call must fire on_enter"
+        );
+        assert!(
+            RB_LEAVE.load(Ordering::Relaxed) > 0,
+            "wrapper call must fire on_leave"
+        );
 
         i.detach(&listener);
     }
@@ -994,7 +1071,8 @@ mod tests {
         let abs_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int = abs;
         let abs_fn = std::hint::black_box(abs_fn);
         assert_eq!(
-            unsafe { abs_fn(-5) }, 888,
+            unsafe { abs_fn(-5) },
+            888,
             "replaced abs should return 888 after CWD change to /tmp"
         );
 
@@ -1002,7 +1080,8 @@ mod tests {
 
         let abs_fn = std::hint::black_box(abs_fn);
         assert_eq!(
-            unsafe { abs_fn(-5) }, 5,
+            unsafe { abs_fn(-5) },
+            5,
             "reverted abs should return 5 after CWD change to /tmp"
         );
 
@@ -1019,11 +1098,16 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        let (_f_mem, f) = make_add_const(1);   // f(x) = x+1
+        let (_f_mem, f) = make_add_const(1); // f(x) = x+1
         let (_r_mem, r) = make_add_const(100); // r(x) = x+100
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
 
         let f_addr = f as usize;
         let handles: Vec<_> = (0..4)
@@ -1071,8 +1155,8 @@ mod tests {
 
         EXECVE_ENTER.store(0, Ordering::Relaxed);
 
-        let execve_addr = crate::module::find_global_export_by_name("execve")
-            .expect("should find execve");
+        let execve_addr =
+            crate::module::find_global_export_by_name("execve").expect("should find execve");
         eprintln!("execve at: {:#x}", execve_addr);
 
         // Print execve prologue for diagnostics.
@@ -1096,7 +1180,11 @@ mod tests {
         {
             let map = i.attach_map.lock().unwrap();
             let ctx = map.get(&execve_addr).unwrap();
-            eprintln!("execve patch_size: {} bytes ({} insns)", ctx.patch_size, ctx.patch_size / 4);
+            eprintln!(
+                "execve patch_size: {} bytes ({} insns)",
+                ctx.patch_size,
+                ctx.patch_size / 4
+            );
         }
 
         i.detach(&listener);
@@ -1122,9 +1210,11 @@ mod tests {
         let i = Interceptor::obtain();
 
         // getpid is a very short syscall wrapper.
-        extern "C" { fn getpid() -> libc::pid_t; }
-        let getpid_addr = crate::module::find_global_export_by_name("getpid")
-            .expect("should find getpid");
+        extern "C" {
+            fn getpid() -> libc::pid_t;
+        }
+        let getpid_addr =
+            crate::module::find_global_export_by_name("getpid").expect("should find getpid");
 
         let expected_pid = unsafe { getpid() };
 
@@ -1137,21 +1227,34 @@ mod tests {
 
         let result = i.attach(getpid_addr as *mut c_void, listener);
         if let Err(e) = &result {
-            eprintln!("attach to getpid failed (may need can_relocate fallback): {:?}", e);
+            eprintln!(
+                "attach to getpid failed (may need can_relocate fallback): {:?}",
+                e
+            );
             return;
         }
 
         // Call through black_box to prevent inlining.
         let f = std::hint::black_box(getpid);
         let pid = unsafe { f() };
-        assert_eq!(pid, expected_pid, "getpid must return correct value after hook");
-        assert!(HITS.load(Ordering::Relaxed) > 0, "on_enter must fire for getpid");
+        assert_eq!(
+            pid, expected_pid,
+            "getpid must return correct value after hook"
+        );
+        assert!(
+            HITS.load(Ordering::Relaxed) > 0,
+            "on_enter must fire for getpid"
+        );
 
         i.detach(&listener);
 
         // Verify restored.
         let f = std::hint::black_box(getpid);
-        assert_eq!(unsafe { f() }, expected_pid, "getpid must work after detach");
+        assert_eq!(
+            unsafe { f() },
+            expected_pid,
+            "getpid must work after detach"
+        );
     }
 
     /// Hook a function with STP/LDP prologue (realistic C function pattern).
@@ -1193,7 +1296,9 @@ mod tests {
             // RET
             w.put_ret();
             // Padding
-            for _ in 0..4 { w.put_u32_raw(0xD503201F); }
+            for _ in 0..4 {
+                w.put_u32_raw(0xD503201F);
+            }
             alloc.make_executable(&slice).expect("rx");
         }
         let f: extern "C" fn(i64) -> i64 = unsafe { core::mem::transmute(slice.pc) };
@@ -1261,7 +1366,11 @@ mod tests {
             0xD503201F, // NOP
         ];
         let (_max, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
-        assert_eq!(scratch, Reg::X17, "should fall back to x17 when x16 is used");
+        assert_eq!(
+            scratch,
+            Reg::X17,
+            "should fall back to x17 when x16 is used"
+        );
     }
 
     /// BL should still be a relocation boundary (it sets LR = pc+4).
@@ -1278,7 +1387,10 @@ mod tests {
             0xD503201F, // NOP
         ];
         let (max_safe, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
-        assert_eq!(max_safe, 2, "BL should stop relocation (include it, stop further)");
+        assert_eq!(
+            max_safe, 2,
+            "BL should stop relocation (include it, stop further)"
+        );
     }
 
     /// Hook a libc syscall wrapper (socket) that starts with MOV X16,#nr; SVC #0x80.
@@ -1302,8 +1414,8 @@ mod tests {
 
         SOCKET_ENTER.store(0, Ordering::Relaxed);
 
-        let socket_addr = crate::module::find_global_export_by_name("socket")
-            .expect("should find socket");
+        let socket_addr =
+            crate::module::find_global_export_by_name("socket").expect("should find socket");
 
         let i = Interceptor::obtain();
         let listener = CallListener {
@@ -1318,16 +1430,23 @@ mod tests {
         // Call socket() — should trigger our hook.
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0, "socket() should succeed");
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
 
-        assert!(SOCKET_ENTER.load(Ordering::Relaxed) >= 1, "hook should fire for socket()");
+        assert!(
+            SOCKET_ENTER.load(Ordering::Relaxed) >= 1,
+            "hook should fire for socket()"
+        );
 
         i.detach(&listener);
 
         // Verify socket() still works after detach.
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0, "socket() should still work after detach");
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
     }
 
     /// Hook connect() (another syscall wrapper) and verify error handling works.
@@ -1349,8 +1468,8 @@ mod tests {
 
         CONNECT_ENTER.store(0, Ordering::Relaxed);
 
-        let connect_addr = crate::module::find_global_export_by_name("connect")
-            .expect("should find connect");
+        let connect_addr =
+            crate::module::find_global_export_by_name("connect").expect("should find connect");
 
         let i = Interceptor::obtain();
         let listener = CallListener {
@@ -1370,14 +1489,18 @@ mod tests {
             sin_len: core::mem::size_of::<libc::sockaddr_in>() as u8,
             sin_family: libc::AF_INET as u8,
             sin_port: 1u16.to_be(), // port 1 — unlikely to be listening
-            sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes([127, 0, 0, 1]) },
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
             sin_zero: [0; 8],
         };
         #[cfg(not(target_os = "macos"))]
         let addr = libc::sockaddr_in {
             sin_family: libc::AF_INET as u16,
             sin_port: 1u16.to_be(), // port 1 — unlikely to be listening
-            sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes([127, 0, 0, 1]) },
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
             sin_zero: [0; 8],
         };
         let ret = unsafe {
@@ -1395,12 +1518,18 @@ mod tests {
         let err = unsafe { *libc::__errno_location() };
         assert!(
             err == libc::ECONNREFUSED || err == libc::EACCES || err == libc::ENETUNREACH,
-            "expected ECONNREFUSED/EACCES/ENETUNREACH, got errno={}", err
+            "expected ECONNREFUSED/EACCES/ENETUNREACH, got errno={}",
+            err
         );
 
-        assert!(CONNECT_ENTER.load(Ordering::Relaxed) >= 1, "hook should fire for connect()");
+        assert!(
+            CONNECT_ENTER.load(Ordering::Relaxed) >= 1,
+            "hook should fire for connect()"
+        );
 
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         i.detach(&listener);
     }
 
@@ -1444,8 +1573,16 @@ mod tests {
 
         let result = f(5);
         assert_eq!(result, 6, "f(5) should return 6");
-        assert_eq!(COUNTER_A.load(Ordering::Relaxed), 1, "listener A should fire");
-        assert_eq!(COUNTER_B.load(Ordering::Relaxed), 1, "listener B should fire");
+        assert_eq!(
+            COUNTER_A.load(Ordering::Relaxed),
+            1,
+            "listener A should fire"
+        );
+        assert_eq!(
+            COUNTER_B.load(Ordering::Relaxed),
+            1,
+            "listener B should fire"
+        );
 
         i.detach(&listener_a);
         i.detach(&listener_b);
@@ -1566,7 +1703,11 @@ mod tests {
         // Detach A — only B fires.
         i.detach(&listener_a);
         assert_eq!(f(5), 6);
-        assert_eq!(DA.load(Ordering::Relaxed), 1, "A must not fire after detach");
+        assert_eq!(
+            DA.load(Ordering::Relaxed),
+            1,
+            "A must not fire after detach"
+        );
         assert_eq!(DB.load(Ordering::Relaxed), 2, "B must still fire");
 
         // Detach B — original restored.
@@ -1791,7 +1932,9 @@ mod tests {
             w.put_u32_raw(0xD503201F); // NOP
             w.put_u32_raw(0xD503201F); // NOP
             w.put_ret();
-            for _ in 0..4 { w.put_u32_raw(0xD503201F); }
+            for _ in 0..4 {
+                w.put_u32_raw(0xD503201F);
+            }
             alloc.make_executable(&slice).expect("rx");
         }
         let f: extern "C" fn() -> u64 = unsafe { core::mem::transmute(slice.pc) };
@@ -1844,12 +1987,17 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        let (_f_mem, f) = make_add_const(1);   // f(x) = x+1
+        let (_f_mem, f) = make_add_const(1); // f(x) = x+1
         let (_r_mem, r) = make_add_const(100); // r(x) = x+100
 
         // Replace f with r.
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
         assert_eq!(f(5), 105, "replaced function should return x+100");
 
         // Now try to attach a listener to the same function.
@@ -1913,13 +2061,18 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        let (_f_mem, f) = make_add_const(1);    // f(x) = x+1
+        let (_f_mem, f) = make_add_const(1); // f(x) = x+1
         let (_r1_mem, r1) = make_add_const(100); // r1(x) = x+100
         let (_r2_mem, r2) = make_add_const(200); // r2(x) = x+200
 
         // First replace succeeds.
-        i.replace(f as *mut c_void, r1 as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r1 as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
         assert_eq!(f(5), 105, "first replacement active");
 
         // Second replace on same function should fail.
@@ -1929,10 +2082,18 @@ mod tests {
             core::ptr::null_mut(),
             core::ptr::null_mut(),
         );
-        assert_eq!(result, Err(HookError::AlreadyAttached), "double replace should return AlreadyAttached");
+        assert_eq!(
+            result,
+            Err(HookError::AlreadyAttached),
+            "double replace should return AlreadyAttached"
+        );
 
         // Original replacement (r1) should still be active.
-        assert_eq!(f(5), 105, "r1 replacement still active after failed second replace");
+        assert_eq!(
+            f(5),
+            105,
+            "r1 replacement still active after failed second replace"
+        );
 
         // Revert restores original.
         i.revert(f as *mut c_void);
@@ -1961,10 +2122,10 @@ mod tests {
         MALLOC_HITS.store(0, Ordering::Relaxed);
         FREE_HITS.store(0, Ordering::Relaxed);
 
-        let malloc_addr = crate::module::find_global_export_by_name("malloc")
-            .expect("should find malloc");
-        let free_addr = crate::module::find_global_export_by_name("free")
-            .expect("should find free");
+        let malloc_addr =
+            crate::module::find_global_export_by_name("malloc").expect("should find malloc");
+        let free_addr =
+            crate::module::find_global_export_by_name("free").expect("should find free");
 
         let i = Interceptor::obtain();
 
@@ -1979,7 +2140,8 @@ mod tests {
             user_data: core::ptr::null_mut(),
         };
 
-        i.attach(malloc_addr as *mut c_void, malloc_listener).unwrap();
+        i.attach(malloc_addr as *mut c_void, malloc_listener)
+            .unwrap();
         i.attach(free_addr as *mut c_void, free_listener).unwrap();
 
         // Use function pointers via black_box to prevent LLVM from optimizing
@@ -1987,18 +2149,24 @@ mod tests {
         // elide allocations that don't escape in release mode).
         let malloc_fn: unsafe extern "C" fn(usize) -> *mut c_void =
             unsafe { core::mem::transmute(malloc_addr) };
-        let free_fn: unsafe extern "C" fn(*mut c_void) =
-            unsafe { core::mem::transmute(free_addr) };
+        let free_fn: unsafe extern "C" fn(*mut c_void) = unsafe { core::mem::transmute(free_addr) };
 
         // Perform 100 malloc+free cycles.
         for _ in 0..100 {
             let f = std::hint::black_box(malloc_fn);
             let ptr = unsafe { f(64) };
-            assert!(!ptr.is_null(), "malloc(64) should succeed with hooks active");
+            assert!(
+                !ptr.is_null(),
+                "malloc(64) should succeed with hooks active"
+            );
             // Write to the allocation to verify it's usable.
-            unsafe { core::ptr::write_bytes(ptr as *mut u8, 0xAB, 64); }
+            unsafe {
+                core::ptr::write_bytes(ptr as *mut u8, 0xAB, 64);
+            }
             let g = std::hint::black_box(free_fn);
-            unsafe { g(ptr); }
+            unsafe {
+                g(ptr);
+            }
         }
 
         let final_hits = MALLOC_HITS.load(Ordering::Relaxed);
@@ -2023,7 +2191,9 @@ mod tests {
         let ptr = unsafe { f(128) };
         assert!(!ptr.is_null(), "malloc should work after detach");
         let g = std::hint::black_box(free_fn);
-        unsafe { g(ptr); }
+        unsafe {
+            g(ptr);
+        }
     }
 
     /// Detach then re-attach 10 times; ensures clean state in attach_map.
@@ -2071,7 +2241,7 @@ mod tests {
     // ── x86_64 tests ─────────────────────────────────────────────────
 
     #[cfg(target_arch = "x86_64")]
-    use crate::arch::x86_64::writer::{X86_64Writer, Reg as X86Reg};
+    use crate::arch::x86_64::writer::{Reg as X86Reg, X86_64Writer};
 
     /// Allocate a code page with f(x) = x + C.
     /// Emits: lea rax, [rdi + C]; ret; nop * 14 (padding for relocation)
@@ -2107,8 +2277,13 @@ mod tests {
         assert_eq!(f(1), 2);
 
         let mut orig: *const c_void = core::ptr::null();
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), &mut orig)
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            &mut orig,
+        )
+        .unwrap();
 
         assert_eq!(f(1), 101);
 
@@ -2129,8 +2304,13 @@ mod tests {
         let (_f_mem, f) = make_add_const(1);
         let (_r_mem, r) = make_add_const(100);
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
 
         for call_num in 0..5000u64 {
             let result = f(call_num as i64);
@@ -2152,11 +2332,19 @@ mod tests {
         let (_r_mem, r) = make_add_const(100);
 
         for cycle in 0..100u32 {
-            i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-                .unwrap();
+            i.replace(
+                f as *mut c_void,
+                r as *const c_void,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+            .unwrap();
 
             let result = f(5);
-            assert_eq!(result, 105, "cycle {cycle}: replaced f(5) should return 105");
+            assert_eq!(
+                result, 105,
+                "cycle {cycle}: replaced f(5) should return 105"
+            );
 
             i.revert(f as *mut c_void);
             assert_eq!(f(5), 6, "cycle {cycle}: reverted f(5) should return 6");
@@ -2173,8 +2361,13 @@ mod tests {
         let (_f_mem, f) = make_add_const(1);
         let (_r_mem, r) = make_add_const(100);
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
 
         let f_addr = f as usize;
         let handles: Vec<_> = (0..4)
@@ -2217,7 +2410,12 @@ mod tests {
         assert_eq!(unsafe { abs_fn(-42) }, 42);
 
         let mut orig: *const c_void = core::ptr::null();
-        let result = i.replace(abs as *mut c_void, fake_abs as *const c_void, core::ptr::null_mut(), &mut orig);
+        let result = i.replace(
+            abs as *mut c_void,
+            fake_abs as *const c_void,
+            core::ptr::null_mut(),
+            &mut orig,
+        );
         if let Err(e) = &result {
             eprintln!("replace on abs() failed: {:?}", e);
             return;
@@ -2227,7 +2425,8 @@ mod tests {
         assert_eq!(unsafe { abs_fn(-42) }, 999);
 
         assert!(!orig.is_null());
-        let orig_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int = unsafe { core::mem::transmute(orig) };
+        let orig_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int =
+            unsafe { core::mem::transmute(orig) };
         assert_eq!(unsafe { orig_fn(-42) }, 42);
 
         i.revert(abs as *mut c_void);
@@ -2382,7 +2581,9 @@ mod tests {
             inv::replace_return_value(ctx, 12345usize as *mut c_void);
         }
 
-        extern "C" { fn getpid() -> libc::pid_t; }
+        extern "C" {
+            fn getpid() -> libc::pid_t;
+        }
 
         let real_pid = unsafe { getpid() };
         assert_ne!(real_pid, 12345);
@@ -2394,10 +2595,11 @@ mod tests {
             user_data: core::ptr::null_mut(),
         };
 
-        let addr = crate::module::find_global_export_by_name("getpid")
-            .expect("find getpid");
+        let addr = crate::module::find_global_export_by_name("getpid").expect("find getpid");
         let result = i.attach(addr as *mut c_void, listener);
-        if result.is_err() { return; }
+        if result.is_err() {
+            return;
+        }
 
         let f = std::hint::black_box(getpid);
         let pid = unsafe { f() };
@@ -2472,10 +2674,8 @@ mod tests {
         MALLOC_HITS.store(0, Ordering::Relaxed);
         FREE_HITS.store(0, Ordering::Relaxed);
 
-        let malloc_addr = crate::module::find_global_export_by_name("malloc")
-            .expect("find malloc");
-        let free_addr = crate::module::find_global_export_by_name("free")
-            .expect("find free");
+        let malloc_addr = crate::module::find_global_export_by_name("malloc").expect("find malloc");
+        let free_addr = crate::module::find_global_export_by_name("free").expect("find free");
 
         let i = Interceptor::obtain();
 
@@ -2490,21 +2690,25 @@ mod tests {
             user_data: core::ptr::null_mut(),
         };
 
-        i.attach(malloc_addr as *mut c_void, malloc_listener).unwrap();
+        i.attach(malloc_addr as *mut c_void, malloc_listener)
+            .unwrap();
         i.attach(free_addr as *mut c_void, free_listener).unwrap();
 
         let malloc_fn: unsafe extern "C" fn(usize) -> *mut c_void =
             unsafe { core::mem::transmute(malloc_addr) };
-        let free_fn: unsafe extern "C" fn(*mut c_void) =
-            unsafe { core::mem::transmute(free_addr) };
+        let free_fn: unsafe extern "C" fn(*mut c_void) = unsafe { core::mem::transmute(free_addr) };
 
         for _ in 0..100 {
             let f = std::hint::black_box(malloc_fn);
             let ptr = unsafe { f(64) };
             assert!(!ptr.is_null());
-            unsafe { core::ptr::write_bytes(ptr as *mut u8, 0xAB, 64); }
+            unsafe {
+                core::ptr::write_bytes(ptr as *mut u8, 0xAB, 64);
+            }
             let g = std::hint::black_box(free_fn);
-            unsafe { g(ptr); }
+            unsafe {
+                g(ptr);
+            }
         }
 
         assert!(MALLOC_HITS.load(Ordering::Relaxed) >= 100);
@@ -2517,7 +2721,9 @@ mod tests {
         let ptr = unsafe { f(128) };
         assert!(!ptr.is_null());
         let g = std::hint::black_box(free_fn);
-        unsafe { g(ptr); }
+        unsafe {
+            g(ptr);
+        }
     }
 
     // ── Multiple listeners ──
@@ -2543,8 +2749,16 @@ mod tests {
         let i = Interceptor::obtain();
         let (_f_mem, f) = make_add_const(1);
 
-        let listener_a = CallListener { on_enter: Some(on_enter_a), on_leave: None, user_data: core::ptr::null_mut() };
-        let listener_b = CallListener { on_enter: Some(on_enter_b), on_leave: None, user_data: core::ptr::null_mut() };
+        let listener_a = CallListener {
+            on_enter: Some(on_enter_a),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        let listener_b = CallListener {
+            on_enter: Some(on_enter_b),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
 
         i.attach(f as *mut c_void, listener_a).unwrap();
         i.attach(f as *mut c_void, listener_b).unwrap();
@@ -2565,8 +2779,12 @@ mod tests {
         static DA: AtomicU32 = AtomicU32::new(0);
         static DB: AtomicU32 = AtomicU32::new(0);
 
-        unsafe extern "C" fn enter_a(_ctx: *mut InvocationContext, _ud: *mut c_void) { DA.fetch_add(1, Ordering::Relaxed); }
-        unsafe extern "C" fn enter_b(_ctx: *mut InvocationContext, _ud: *mut c_void) { DB.fetch_add(1, Ordering::Relaxed); }
+        unsafe extern "C" fn enter_a(_ctx: *mut InvocationContext, _ud: *mut c_void) {
+            DA.fetch_add(1, Ordering::Relaxed);
+        }
+        unsafe extern "C" fn enter_b(_ctx: *mut InvocationContext, _ud: *mut c_void) {
+            DB.fetch_add(1, Ordering::Relaxed);
+        }
 
         DA.store(0, Ordering::Relaxed);
         DB.store(0, Ordering::Relaxed);
@@ -2574,8 +2792,16 @@ mod tests {
         let i = Interceptor::obtain();
         let (_f_mem, f) = make_add_const(1);
 
-        let listener_a = CallListener { on_enter: Some(enter_a), on_leave: None, user_data: core::ptr::null_mut() };
-        let listener_b = CallListener { on_enter: Some(enter_b), on_leave: None, user_data: core::ptr::null_mut() };
+        let listener_a = CallListener {
+            on_enter: Some(enter_a),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        let listener_b = CallListener {
+            on_enter: Some(enter_b),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
 
         i.attach(f as *mut c_void, listener_a).unwrap();
         i.attach(f as *mut c_void, listener_b).unwrap();
@@ -2586,7 +2812,11 @@ mod tests {
 
         i.detach(&listener_a);
         assert_eq!(f(5), 6);
-        assert_eq!(DA.load(Ordering::Relaxed), 1, "A must not fire after detach");
+        assert_eq!(
+            DA.load(Ordering::Relaxed),
+            1,
+            "A must not fire after detach"
+        );
         assert_eq!(DB.load(Ordering::Relaxed), 2, "B must still fire");
 
         i.detach(&listener_b);
@@ -2745,8 +2975,16 @@ mod tests {
 
         assert_eq!(FLAG_ENTER.load(Ordering::Relaxed), 1, "hook should fire");
         // Check CF (bit 0) and OF (bit 11) are preserved
-        assert!(flags_out & 0x01 != 0, "CF must be preserved, flags={:#x}", flags_out);
-        assert!(flags_out & 0x800 != 0, "OF must be preserved, flags={:#x}", flags_out);
+        assert!(
+            flags_out & 0x01 != 0,
+            "CF must be preserved, flags={:#x}",
+            flags_out
+        );
+        assert!(
+            flags_out & 0x800 != 0,
+            "OF must be preserved, flags={:#x}",
+            flags_out
+        );
 
         i.detach(&listener);
     }
@@ -2762,10 +3000,20 @@ mod tests {
         let (_f_mem, f) = make_add_const(1);
         let (_r_mem, r) = make_add_const(100);
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut()).unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
         assert_eq!(f(5), 105);
 
-        let listener = CallListener { on_enter: None, on_leave: None, user_data: core::ptr::null_mut() };
+        let listener = CallListener {
+            on_enter: None,
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
         let result = i.attach(f as *mut c_void, listener);
         assert_eq!(result, Err(HookError::AlreadyAttached));
 
@@ -2782,10 +3030,19 @@ mod tests {
         let (_f_mem, f) = make_add_const(1);
         let (_r_mem, r) = make_add_const(100);
 
-        let listener = CallListener { on_enter: None, on_leave: None, user_data: core::ptr::null_mut() };
+        let listener = CallListener {
+            on_enter: None,
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
         i.attach(f as *mut c_void, listener).unwrap();
 
-        let result = i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut());
+        let result = i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
         assert_eq!(result, Err(HookError::AlreadyAttached));
 
         i.detach(&listener);
@@ -2802,10 +3059,21 @@ mod tests {
         let (_r1_mem, r1) = make_add_const(100);
         let (_r2_mem, r2) = make_add_const(200);
 
-        i.replace(f as *mut c_void, r1 as *const c_void, core::ptr::null_mut(), core::ptr::null_mut()).unwrap();
+        i.replace(
+            f as *mut c_void,
+            r1 as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
         assert_eq!(f(5), 105);
 
-        let result = i.replace(f as *mut c_void, r2 as *const c_void, core::ptr::null_mut(), core::ptr::null_mut());
+        let result = i.replace(
+            f as *mut c_void,
+            r2 as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
         assert_eq!(result, Err(HookError::AlreadyAttached));
 
         i.revert(f as *mut c_void);
@@ -2841,7 +3109,10 @@ mod tests {
 
             let result = f(5);
             assert_eq!(result, 6, "cycle {cycle}: hooked f(5) should return 6");
-            assert!(CYCLE_ENTER.load(Ordering::Relaxed) > 0, "cycle {cycle}: hook should fire");
+            assert!(
+                CYCLE_ENTER.load(Ordering::Relaxed) > 0,
+                "cycle {cycle}: hook should fire"
+            );
 
             i.detach(&listener);
             assert_eq!(f(5), 6, "cycle {cycle}: unhooked f(5) should return 6");
@@ -2863,9 +3134,10 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        extern "C" { fn getpid() -> libc::pid_t; }
-        let getpid_addr = crate::module::find_global_export_by_name("getpid")
-            .expect("find getpid");
+        extern "C" {
+            fn getpid() -> libc::pid_t;
+        }
+        let getpid_addr = crate::module::find_global_export_by_name("getpid").expect("find getpid");
 
         let expected_pid = unsafe { getpid() };
 
@@ -2910,7 +3182,12 @@ mod tests {
         let fptr = std::hint::black_box(fptr);
 
         let i = Interceptor::obtain();
-        let result = i.replace(abs as *mut c_void, fake_abs as *const c_void, core::ptr::null_mut(), core::ptr::null_mut());
+        let result = i.replace(
+            abs as *mut c_void,
+            fake_abs as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
         if let Err(e) = &result {
             eprintln!("replace on abs() failed: {:?}", e);
             return;
@@ -3083,7 +3360,10 @@ mod tests {
     /// Emits: mov rax,rdi; add rax,rsi; add rax,rdx; add rax,rcx;
     ///        add rax,r8; add rax,r9; ret; nop*14
     #[cfg(target_arch = "x86_64")]
-    fn make_sum_6args() -> (CodeSlice, extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64) {
+    fn make_sum_6args() -> (
+        CodeSlice,
+        extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
+    ) {
         let mut alloc = CodeAllocator::default();
         let slice = alloc.alloc_any().expect("alloc");
         unsafe {
@@ -3185,7 +3465,11 @@ mod tests {
         // The original function should NOT be patched — calling f directly should
         // NOT fire callbacks.
         assert_eq!(f(10), 17, "original f should still work (no patch)");
-        assert_eq!(RB_ENTER.load(Ordering::Relaxed), 0, "calling original must NOT fire callbacks");
+        assert_eq!(
+            RB_ENTER.load(Ordering::Relaxed),
+            0,
+            "calling original must NOT fire callbacks"
+        );
 
         // Calling through the wrapper should fire callbacks and return correct value.
         let wrapper_fn: extern "C" fn(i64) -> i64 =
@@ -3193,8 +3477,14 @@ mod tests {
         let wrapper_fn = std::hint::black_box(wrapper_fn);
         let val = wrapper_fn(10);
         assert_eq!(val, 17, "wrapper should return correct f(10) value");
-        assert!(RB_ENTER.load(Ordering::Relaxed) > 0, "wrapper call must fire on_enter");
-        assert!(RB_LEAVE.load(Ordering::Relaxed) > 0, "wrapper call must fire on_leave");
+        assert!(
+            RB_ENTER.load(Ordering::Relaxed) > 0,
+            "wrapper call must fire on_enter"
+        );
+        assert!(
+            RB_LEAVE.load(Ordering::Relaxed) > 0,
+            "wrapper call must fire on_leave"
+        );
 
         i.detach(&listener);
     }
@@ -3287,13 +3577,25 @@ mod tests {
         };
         i.attach(f as *mut c_void, listener).unwrap();
 
-        assert_eq!(f(10), 17, "function behavior preserved through ENDBR64 hook");
-        assert_eq!(ENDBR_ENTER.load(Ordering::Relaxed), 1, "hook fires on ENDBR64 function");
+        assert_eq!(
+            f(10),
+            17,
+            "function behavior preserved through ENDBR64 hook"
+        );
+        assert_eq!(
+            ENDBR_ENTER.load(Ordering::Relaxed),
+            1,
+            "hook fires on ENDBR64 function"
+        );
 
         // Verify ENDBR64 bytes are not overwritten: first 4 bytes should still be F3 0F 1E FA
         let func_ptr = f as *const u8;
         let endbr_bytes = unsafe { core::slice::from_raw_parts(func_ptr, 4) };
-        assert_eq!(endbr_bytes, &[0xF3, 0x0F, 0x1E, 0xFA], "ENDBR64 must not be overwritten");
+        assert_eq!(
+            endbr_bytes,
+            &[0xF3, 0x0F, 0x1E, 0xFA],
+            "ENDBR64 must not be overwritten"
+        );
 
         i.detach(&listener);
         assert_eq!(f(10), 17);
@@ -3317,7 +3619,11 @@ mod tests {
         #[inline(never)]
         extern "C" fn recursive_sum(n: i64) -> i64 {
             let n = std::hint::black_box(n);
-            if n <= 0 { 0 } else { n + recursive_sum(n - 1) }
+            if n <= 0 {
+                0
+            } else {
+                n + recursive_sum(n - 1)
+            }
         }
 
         REC_ENTER.store(0, Ordering::Relaxed);
@@ -3343,8 +3649,16 @@ mod tests {
         let f = std::hint::black_box(recursive_sum);
         assert_eq!(f(5), 15, "recursive_sum(5) must still return 15");
         // n=5,4,3,2,1,0 → 6 calls
-        assert_eq!(REC_ENTER.load(Ordering::Relaxed), 6, "enter count for recursive_sum(5)");
-        assert_eq!(REC_LEAVE.load(Ordering::Relaxed), 6, "leave count for recursive_sum(5)");
+        assert_eq!(
+            REC_ENTER.load(Ordering::Relaxed),
+            6,
+            "enter count for recursive_sum(5)"
+        );
+        assert_eq!(
+            REC_LEAVE.load(Ordering::Relaxed),
+            6,
+            "leave count for recursive_sum(5)"
+        );
 
         i.detach(&listener);
     }
@@ -3388,9 +3702,17 @@ mod tests {
         let result = f(42);
         // The outer call goes through the wrapper; the inner call from on_enter
         // also goes through the wrapper (re-entry).
-        assert_eq!(REENTRY_DEPTH.load(Ordering::Relaxed), 2, "re-entry must happen");
+        assert_eq!(
+            REENTRY_DEPTH.load(Ordering::Relaxed),
+            2,
+            "re-entry must happen"
+        );
         // Inner call: f(99) = 100; outer call: f(42) = 43
-        assert_eq!(REENTRY_RESULT.load(Ordering::Relaxed), 100, "inner call result");
+        assert_eq!(
+            REENTRY_RESULT.load(Ordering::Relaxed),
+            100,
+            "inner call result"
+        );
         assert_eq!(result, 43, "outer call result");
 
         i.detach(&listener);
@@ -3403,12 +3725,17 @@ mod tests {
 
         let i = Interceptor::obtain();
 
-        let (_f_mem, f) = make_add_const(1);  // f(x) = x + 1
+        let (_f_mem, f) = make_add_const(1); // f(x) = x + 1
         let (_r_mem, r) = make_add_const(100); // r(x) = x + 100
 
         let mut orig: *const c_void = core::ptr::null();
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), &mut orig)
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            &mut orig,
+        )
+        .unwrap();
         assert!(!orig.is_null());
 
         let orig_addr = orig as usize;
@@ -3449,17 +3776,28 @@ mod tests {
         let f_ptr = f as *const u8;
         let orig_first_byte = unsafe { f_ptr.read() };
 
-        i.replace(f as *mut c_void, r as *const c_void, core::ptr::null_mut(), core::ptr::null_mut())
-            .unwrap();
+        i.replace(
+            f as *mut c_void,
+            r as *const c_void,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+        .unwrap();
 
         // Read first byte of patched function — should be E9 (near JMP).
         let patched_first_byte = unsafe { f_ptr.read() };
-        assert_eq!(patched_first_byte, 0xE9, "patched prologue should start with near JMP");
+        assert_eq!(
+            patched_first_byte, 0xE9,
+            "patched prologue should start with near JMP"
+        );
 
         i.revert(f as *mut c_void);
 
         // After revert, original bytes should be restored.
         let restored_first_byte = unsafe { f_ptr.read() };
-        assert_eq!(restored_first_byte, orig_first_byte, "original bytes restored after revert");
+        assert_eq!(
+            restored_first_byte, orig_first_byte,
+            "original bytes restored after revert"
+        );
     }
 }

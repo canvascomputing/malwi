@@ -2,10 +2,10 @@
 //!
 //! Loads policies, derives hook configurations, and evaluates trace events.
 
-use malwi_protocol::{HookConfig, HookType, NetworkInfo, TraceEvent};
 use malwi_policy::{
     EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
 };
+use malwi_protocol::{HookConfig, HookType, NetworkInfo, TraceEvent};
 
 #[cfg(test)]
 use crate::default_policy::DEFAULT_SECURITY_YAML;
@@ -35,20 +35,11 @@ pub enum EventDisposition {
     /// Matched a deny rule with Log mode — display the event.
     Display,
     /// Matched a deny rule with Warn mode.
-    Warn {
-        rule: String,
-        section: String,
-    },
+    Warn { rule: String, section: String },
     /// Matched a deny rule with Block mode.
-    Block {
-        rule: String,
-        section: String,
-    },
+    Block { rule: String, section: String },
     /// Matched a deny rule with Review mode.
-    Review {
-        rule: String,
-        section: String,
-    },
+    Review { rule: String, section: String },
     /// No deny match (allowed by policy) — nothing to show.
     Suppress,
 }
@@ -118,14 +109,20 @@ impl ActivePolicy {
             .map_err(|e| anyhow::anyhow!("Failed to read policy file '{}': {}", path, e))?;
         let engine = PolicyEngine::from_yaml(&yaml)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy file '{}': {}", path, e))?;
-        Ok(Self { engine, fn_cache: Default::default() })
+        Ok(Self {
+            engine,
+            fn_cache: Default::default(),
+        })
     }
 
     /// Load a policy from a YAML string.
     pub fn from_yaml(yaml: &str) -> anyhow::Result<Self> {
         let engine = PolicyEngine::from_yaml(yaml)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy YAML: {}", e))?;
-        Ok(Self { engine, fn_cache: Default::default() })
+        Ok(Self {
+            engine,
+            fn_cache: Default::default(),
+        })
     }
 
     /// Load the built-in default security policy.
@@ -133,7 +130,10 @@ impl ActivePolicy {
     pub fn default_security() -> anyhow::Result<Self> {
         let engine = PolicyEngine::from_yaml(DEFAULT_SECURITY_YAML)
             .map_err(|e| anyhow::anyhow!("Failed to parse default security policy: {}", e))?;
-        Ok(Self { engine, fn_cache: Default::default() })
+        Ok(Self {
+            engine,
+            fn_cache: Default::default(),
+        })
     }
 
     /// Derive hook configurations from policy rules.
@@ -195,25 +195,22 @@ impl ActivePolicy {
             HookType::Native => self.engine.evaluate_native_function(func, &args),
             HookType::Exec => {
                 // Unwrap shell wrappers: sh -c "curl ..." → evaluate as "curl ..."
-                let full_cmd = unwrap_shell_exec_args(func, &args)
-                    .unwrap_or_else(|| {
-                        // Build full command string: "cmd arg1 arg2" (skip argv[0])
-                        let cmd_args: Vec<&str> = args.get(1..).unwrap_or(&[]).to_vec();
-                        if cmd_args.is_empty() {
-                            func.to_string()
-                        } else {
-                            format!("{} {}", func, cmd_args.join(" "))
-                        }
-                    });
+                let full_cmd = unwrap_shell_exec_args(func, &args).unwrap_or_else(|| {
+                    // Build full command string: "cmd arg1 arg2" (skip argv[0])
+                    let cmd_args: Vec<&str> = args.get(1..).unwrap_or(&[]).to_vec();
+                    if cmd_args.is_empty() {
+                        func.to_string()
+                    } else {
+                        format!("{} {}", func, cmd_args.join(" "))
+                    }
+                });
                 self.engine.evaluate_execution(&full_cmd)
             }
             HookType::DirectSyscall => {
                 let syscall_name = func.strip_prefix("syscall:").unwrap_or(func);
                 self.engine.evaluate_syscall(syscall_name)
             }
-            HookType::EnvVar => {
-                self.engine.evaluate_envvar(func)
-            }
+            HookType::EnvVar => self.engine.evaluate_envvar(func),
         };
 
         let disp = decision_to_disposition(decision);
@@ -233,7 +230,11 @@ impl ActivePolicy {
 
     /// Evaluate networking policy (URL, domain, endpoint, protocol) against a trace event.
     /// Takes the function-level disposition and returns the strictest combined result.
-    fn evaluate_network_phase(&self, event: &TraceEvent, mut disp: EventDisposition) -> EventDisposition {
+    fn evaluate_network_phase(
+        &self,
+        event: &TraceEvent,
+        mut disp: EventDisposition,
+    ) -> EventDisposition {
         // Prefer structured NetworkInfo when available (populated agent-side).
         // Falls back to text-based extraction for events without it.
         if let Some(ref net) = event.network_info {
@@ -265,10 +266,7 @@ impl ActivePolicy {
     ///
     /// Checks HTTP URL rules, domain, endpoint, and protocol policies using
     /// the structured fields from `NetworkInfo` — no text parsing needed.
-    fn evaluate_network_info(
-        &self,
-        info: &NetworkInfo,
-    ) -> Option<EventDisposition> {
+    fn evaluate_network_info(&self, info: &NetworkInfo) -> Option<EventDisposition> {
         let mut strictest: Option<EventDisposition> = None;
 
         // HTTP URL rules (network section, URL patterns)
@@ -277,9 +275,7 @@ impl ActivePolicy {
                 if let Some(parsed) = ParsedUrl::parse(url) {
                     let full_url = parsed.full_url();
                     let no_scheme_url = parsed.url_without_scheme();
-                    let decision =
-                        self.engine
-                            .evaluate_http_url(&full_url, &no_scheme_url);
+                    let decision = self.engine.evaluate_http_url(&full_url, &no_scheme_url);
                     let disp = decision_to_disposition(decision);
                     if disp.should_display() {
                         strictest = Some(pick_stricter_opt(strictest, disp));
@@ -319,18 +315,13 @@ impl ActivePolicy {
     }
 
     /// Extract URL from arguments and evaluate against network URL rules.
-    fn evaluate_http_from_args(
-        &self,
-        args: &[&str],
-    ) -> Option<EventDisposition> {
+    fn evaluate_http_from_args(&self, args: &[&str]) -> Option<EventDisposition> {
         for arg in args {
             if let Some(url) = extract_url_from_arg(arg) {
                 if let Some(parsed) = ParsedUrl::parse(&url) {
                     let full_url = parsed.full_url();
                     let no_scheme_url = parsed.url_without_scheme();
-                    let decision =
-                        self.engine
-                            .evaluate_http_url(&full_url, &no_scheme_url);
+                    let decision = self.engine.evaluate_http_url(&full_url, &no_scheme_url);
                     let disp = decision_to_disposition(decision);
                     if disp.should_display() {
                         return Some(disp);
@@ -411,7 +402,10 @@ impl ParsedUrl {
         };
 
         // Strip userinfo@ if present
-        let authority = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+        let authority = authority
+            .rsplit_once('@')
+            .map(|(_, h)| h)
+            .unwrap_or(authority);
 
         let (host, explicit_port) = if authority.starts_with('[') {
             // IPv6: [::1]:port
@@ -464,7 +458,10 @@ impl ParsedUrl {
             Some(p) if Some(p) != default_port => format!(":{}", p),
             _ => String::new(),
         };
-        format!("{}://{}{}{}", self.scheme, self.host, port_suffix, self.path)
+        format!(
+            "{}://{}{}{}",
+            self.scheme, self.host, port_suffix, self.path
+        )
     }
 
     /// Return the URL without scheme for matching patterns that omit the scheme.
@@ -493,7 +490,8 @@ impl ParsedUrl {
 /// - `uri='wss://example.com'`
 fn extract_url_from_arg(arg: &str) -> Option<String> {
     // Try "url=..." or "uri=..." prefix
-    let value = if let Some(rest) = arg.strip_prefix("url=")
+    let value = if let Some(rest) = arg
+        .strip_prefix("url=")
         .or_else(|| arg.strip_prefix("uri="))
     {
         rest
@@ -529,7 +527,11 @@ fn disposition_severity(d: &EventDisposition) -> u8 {
 
 /// Return the stricter of two dispositions.
 fn pick_stricter(a: EventDisposition, b: EventDisposition) -> EventDisposition {
-    if disposition_severity(&b) > disposition_severity(&a) { b } else { a }
+    if disposition_severity(&b) > disposition_severity(&a) {
+        b
+    } else {
+        a
+    }
 }
 
 /// Return the stricter of an optional and a new disposition.
@@ -579,9 +581,7 @@ fn decision_to_disposition(decision: PolicyDecision) -> EventDisposition {
 fn unwrap_shell_exec_args(func: &str, args: &[&str]) -> Option<String> {
     const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
-    let shell_basename = std::path::Path::new(func)
-        .file_name()?
-        .to_str()?;
+    let shell_basename = std::path::Path::new(func).file_name()?.to_str()?;
     if !SHELLS.contains(&shell_basename) {
         return None;
     }
@@ -596,9 +596,7 @@ fn unwrap_shell_exec_args(func: &str, args: &[&str]) -> Option<String> {
         Some(idx) => &cmd_str[..idx],
         None => cmd_str,
     };
-    let cmd_basename = std::path::Path::new(cmd_path)
-        .file_name()?
-        .to_str()?;
+    let cmd_basename = std::path::Path::new(cmd_path).file_name()?.to_str()?;
     match first_space {
         Some(idx) => Some(format!("{}{}", cmd_basename, &cmd_str[idx..])),
         None => Some(cmd_basename.to_string()),
@@ -656,7 +654,7 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             Some(Runtime::Python) => HookConfig {
                 hook_type: HookType::Python,
                 symbol: spec.pattern.clone(),
-    
+
                 arg_count: None,
                 capture_return: true,
                 capture_stack,
@@ -664,7 +662,7 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             Some(Runtime::Node) => HookConfig {
                 hook_type: HookType::Nodejs,
                 symbol: spec.pattern.clone(),
-    
+
                 arg_count: None,
                 capture_return: true,
                 capture_stack,
@@ -672,7 +670,7 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             None => HookConfig {
                 hook_type: HookType::Native,
                 symbol: spec.pattern.clone(),
-    
+
                 arg_count: Some(6),
                 capture_return: true,
                 capture_stack,
@@ -792,10 +790,18 @@ mod tests {
         let policy = ActivePolicy::default_security().unwrap();
         let configs = policy.derive_hook_configs(false);
 
-        let has_native = configs.iter().any(|c| matches!(c.hook_type, HookType::Native));
-        let has_python = configs.iter().any(|c| matches!(c.hook_type, HookType::Python));
-        let has_nodejs = configs.iter().any(|c| matches!(c.hook_type, HookType::Nodejs));
-        let has_exec = configs.iter().any(|c| matches!(c.hook_type, HookType::Exec));
+        let has_native = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native));
+        let has_python = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Python));
+        let has_nodejs = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Nodejs));
+        let has_exec = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Exec));
 
         assert!(has_native, "Should have native hooks");
         assert!(has_python, "Should have Python hooks");
@@ -812,7 +818,12 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for config in &configs {
             let key = (format!("{:?}", config.hook_type), config.symbol.clone());
-            assert!(seen.insert(key), "Duplicate hook: {:?} {}", config.hook_type, config.symbol);
+            assert!(
+                seen.insert(key),
+                "Duplicate hook: {:?} {}",
+                config.hook_type,
+                config.symbol
+            );
         }
     }
 
@@ -820,11 +831,12 @@ mod tests {
     fn test_disposition_block() {
         let policy = ActivePolicy::from_file("/dev/null").unwrap_or_else(|_| {
             // Use inline YAML
-            let engine = PolicyEngine::from_yaml(
-                "version: 1\npython:\n  deny:\n    - eval\n",
-            )
-            .unwrap();
-            ActivePolicy { engine, fn_cache: Default::default() }
+            let engine =
+                PolicyEngine::from_yaml("version: 1\npython:\n  deny:\n    - eval\n").unwrap();
+            ActivePolicy {
+                engine,
+                fn_cache: Default::default(),
+            }
         });
 
         let event = make_trace_event(HookType::Python, "eval", &[]);
@@ -879,7 +891,10 @@ commands:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // "curl example.com" should be allowed (specific allow overrides general deny)
         let event = make_exec_event("curl", &["example.com"]);
@@ -910,18 +925,27 @@ commands:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // After shell unwrapping, "sh -c 'curl example.com'" becomes exec event:
         // function="curl", args=["curl", "example.com"]
         let event = make_exec_event("curl", &["example.com"]);
         let disp = policy.evaluate_trace(&event);
-        assert!(!disp.should_display(), "unwrapped 'curl example.com' should be allowed");
+        assert!(
+            !disp.should_display(),
+            "unwrapped 'curl example.com' should be allowed"
+        );
 
         // "sh -c 'curl evil.com'" → function="curl", args=["curl", "evil.com"]
         let event = make_exec_event("curl", &["evil.com"]);
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.is_blocked(), "unwrapped 'curl evil.com' should be blocked");
+        assert!(
+            disp.is_blocked(),
+            "unwrapped 'curl evil.com' should be blocked"
+        );
     }
 
     // =====================================================================
@@ -1052,7 +1076,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Python requests.get with URL to evil domain
         let event = make_trace_event(
@@ -1083,7 +1110,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // HTTP (not in allowed list) — should be denied
         let event = make_trace_event(
@@ -1092,7 +1122,10 @@ network:
             &["url='http://example.com/insecure'"],
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "http should be denied when only https allowed");
+        assert!(
+            disp.should_display(),
+            "http should be denied when only https allowed"
+        );
 
         // HTTPS — should be allowed
         let event = make_trace_event(
@@ -1116,7 +1149,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Port 22 should be denied
         let event = make_trace_event(
@@ -1151,7 +1187,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Both function and domain denied — should be blocked
         let event = make_trace_event(
@@ -1174,7 +1213,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Function is allowed (no function rules), but domain is denied
         let event = make_trace_event(
@@ -1197,14 +1239,13 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Event with no URL in args — networking check skipped
-        let event = make_trace_event(
-            HookType::Python,
-            "json.loads",
-            &["'{\"key\": \"value\"}'"],
-        );
+        let event = make_trace_event(HookType::Python, "json.loads", &["'{\"key\": \"value\"}'"]);
         let disp = policy.evaluate_trace(&event);
         assert!(!disp.should_display(), "no URL = no networking check");
     }
@@ -1220,7 +1261,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Node.js may pass URLs as bare string args without url= prefix
         let event = make_trace_event(
@@ -1234,15 +1278,26 @@ network:
 
     #[test]
     fn test_disposition_severity_ordering() {
-        assert!(disposition_severity(&EventDisposition::Suppress) < disposition_severity(&EventDisposition::Display));
-        assert!(disposition_severity(&EventDisposition::Display) < disposition_severity(&EventDisposition::Warn {
-            rule: String::new(), section: String::new()
-        }));
-        assert!(disposition_severity(&EventDisposition::Warn {
-            rule: String::new(), section: String::new()
-        }) < disposition_severity(&EventDisposition::Block {
-            rule: String::new(), section: String::new()
-        }));
+        assert!(
+            disposition_severity(&EventDisposition::Suppress)
+                < disposition_severity(&EventDisposition::Display)
+        );
+        assert!(
+            disposition_severity(&EventDisposition::Display)
+                < disposition_severity(&EventDisposition::Warn {
+                    rule: String::new(),
+                    section: String::new()
+                })
+        );
+        assert!(
+            disposition_severity(&EventDisposition::Warn {
+                rule: String::new(),
+                section: String::new()
+            }) < disposition_severity(&EventDisposition::Block {
+                rule: String::new(),
+                section: String::new()
+            })
+        );
     }
 
     // =====================================================================
@@ -1260,7 +1315,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let event = make_trace_event(
             HookType::Python,
@@ -1268,7 +1326,10 @@ network:
             &["url='https://malware.evil.com/payload'"],
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "evil.com URL should be denied by http section");
+        assert!(
+            disp.should_display(),
+            "evil.com URL should be denied by http section"
+        );
     }
 
     #[test]
@@ -1282,7 +1343,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let event = make_trace_event(
             HookType::Python,
@@ -1304,7 +1368,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let event = make_trace_event(
             HookType::Python,
@@ -1334,7 +1401,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let event = make_trace_event(
             HookType::Python,
@@ -1364,7 +1434,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Allowed URL — should be suppressed
         let event = make_trace_event(
@@ -1391,7 +1464,10 @@ network:
             &["url='https://evil.com/malware'"],
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "global network section affects all runtimes");
+        assert!(
+            disp.should_display(),
+            "global network section affects all runtimes"
+        );
     }
 
     #[test]
@@ -1408,7 +1484,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // evil.com caught by URL pattern (has /)
         let event = make_trace_event(
@@ -1417,7 +1496,10 @@ network:
             &["url='https://x.evil.com/path'"],
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "evil.com should be denied by URL pattern");
+        assert!(
+            disp.should_display(),
+            "evil.com should be denied by URL pattern"
+        );
 
         // bad.com caught by domain pattern (bare hostname)
         let event = make_trace_event(
@@ -1426,7 +1508,10 @@ network:
             &["url='https://x.bad.com/path'"],
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "bad.com should be denied by domain pattern");
+        assert!(
+            disp.should_display(),
+            "bad.com should be denied by domain pattern"
+        );
     }
 
     // =====================================================================
@@ -1444,7 +1529,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let net = NetworkInfo {
             url: Some("https://malware.evil.com/payload".to_string()),
@@ -1459,7 +1547,10 @@ network:
             net,
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "evil.com domain via NetworkInfo should be flagged");
+        assert!(
+            disp.should_display(),
+            "evil.com domain via NetworkInfo should be flagged"
+        );
     }
 
     #[test]
@@ -1473,7 +1564,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Port 22 via raw socket — NetworkInfo has host+port but no URL
         let net = NetworkInfo {
@@ -1489,7 +1583,10 @@ network:
             net,
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "port 22 via socket.connect should be denied");
+        assert!(
+            disp.should_display(),
+            "port 22 via socket.connect should be denied"
+        );
 
         // Port 80 should be allowed
         let net = NetworkInfo {
@@ -1518,7 +1615,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // HTTP via NetworkInfo — should be denied
         let net = NetworkInfo {
@@ -1534,7 +1634,10 @@ network:
             net,
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "http protocol should be denied when only https allowed");
+        assert!(
+            disp.should_display(),
+            "http protocol should be denied when only https allowed"
+        );
     }
 
     #[test]
@@ -1548,7 +1651,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         let net = NetworkInfo {
             url: Some("https://x.evil.com/payload".to_string()),
@@ -1556,14 +1662,12 @@ network:
             port: Some(443),
             protocol: Some(Protocol::Https),
         };
-        let event = make_trace_event_with_net(
-            HookType::Python,
-            "requests.get",
-            &[],
-            net,
-        );
+        let event = make_trace_event_with_net(HookType::Python, "requests.get", &[], net);
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "evil.com URL via NetworkInfo should be denied by network section");
+        assert!(
+            disp.should_display(),
+            "evil.com URL via NetworkInfo should be denied by network section"
+        );
     }
 
     #[test]
@@ -1579,7 +1683,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // socket.connect to Redis port — no URL, just host+port
         let net = NetworkInfo {
@@ -1595,7 +1702,10 @@ network:
             net,
         );
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "port 6379 via socket.connect should be denied");
+        assert!(
+            disp.should_display(),
+            "port 6379 via socket.connect should be denied"
+        );
     }
 
     #[test]
@@ -1610,7 +1720,10 @@ network:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy { engine, fn_cache: Default::default() };
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
 
         // Event without network_info — should use text extraction fallback
         let event = make_trace_event(
@@ -1657,7 +1770,11 @@ commands:
             .filter(|c| matches!(c.hook_type, HookType::Exec))
             .collect();
         // Both patterns should produce a single "curl" filter (deduped)
-        assert_eq!(exec_configs.len(), 1, "should deduplicate to single 'curl' filter");
+        assert_eq!(
+            exec_configs.len(),
+            1,
+            "should deduplicate to single 'curl' filter"
+        );
         assert_eq!(exec_configs[0].symbol, "curl");
     }
 
@@ -1671,7 +1788,10 @@ commands:
 
         let event = make_trace_event(HookType::EnvVar, "AWS_SECRET_ACCESS_KEY", &[]);
         let disp = policy.evaluate_trace(&event);
-        assert!(disp.should_display(), "AWS_SECRET_ACCESS_KEY should be warned");
+        assert!(
+            disp.should_display(),
+            "AWS_SECRET_ACCESS_KEY should be warned"
+        );
     }
 
     #[test]
@@ -1696,7 +1816,12 @@ commands:
     fn test_envvar_hook_config_emitted() {
         let policy = ActivePolicy::default_security().unwrap();
         let configs = policy.derive_hook_configs(false);
-        let has_envvar = configs.iter().any(|c| matches!(c.hook_type, HookType::EnvVar));
-        assert!(has_envvar, "Should have EnvVar hook config from default policy");
+        let has_envvar = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::EnvVar));
+        assert!(
+            has_envvar,
+            "Should have EnvVar hook config from default policy"
+        );
     }
 }

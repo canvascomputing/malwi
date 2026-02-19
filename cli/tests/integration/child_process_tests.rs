@@ -16,12 +16,7 @@ fn setup() {
 fn test_fork_syscall_detected_in_child_process() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "spawner_marker",
-        "--",
-        "./spawner", "fork",
-    ]);
+    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "fork"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -31,18 +26,20 @@ fn test_fork_syscall_detected_in_child_process() {
     assert!(
         output.status.success(),
         "Fork test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should detect fork operation
-    let has_fork = has_child_event(&combined, "Fork") ||
-                   combined.contains("fork") ||
-                   combined.contains("child");
+    let has_fork = has_child_event(&combined, "Fork")
+        || combined.contains("fork")
+        || combined.contains("child");
 
     assert!(
         has_fork || combined.contains("spawner"),
         "Expected fork detection. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -50,12 +47,7 @@ fn test_fork_syscall_detected_in_child_process() {
 fn test_exec_syscall_detected_when_process_replaced() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "spawner_marker",
-        "--",
-        "./spawner", "exec",
-    ]);
+    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "exec"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -65,7 +57,8 @@ fn test_exec_syscall_detected_when_process_replaced() {
     assert!(
         output.status.success() || stderr.contains("exec") || stdout.contains("simple_target"),
         "Exec test had unexpected failure. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -73,12 +66,7 @@ fn test_exec_syscall_detected_when_process_replaced() {
 fn test_posix_spawn_detected_in_spawned_process() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s", "spawner_marker",
-        "--",
-        "./spawner", "spawn",
-    ]);
+    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "spawn"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -87,6 +75,7 @@ fn test_posix_spawn_detected_in_spawned_process() {
     assert!(
         output.status.success(),
         "Spawn test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }

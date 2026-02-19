@@ -126,10 +126,7 @@ impl FilterManager {
 
     /// Check if any filters are registered.
     pub fn has_any(&self) -> bool {
-        self.filters
-            .read()
-            .map(|f| !f.is_empty())
-            .unwrap_or(false)
+        self.filters.read().map(|f| !f.is_empty()).unwrap_or(false)
     }
 
     /// Get a copy of all registered filters.
@@ -154,10 +151,7 @@ mod tests {
 
     #[test]
     fn test_filter_matches_function_against_glob_pattern() {
-        let filters = vec![
-            Filter::new("fs.*", true),
-            Filter::new("http.*", false),
-        ];
+        let filters = vec![Filter::new("fs.*", true), Filter::new("http.*", false)];
 
         assert_eq!(check_filter(&filters, "fs.readFile"), (true, true));
         assert_eq!(check_filter(&filters, "http.request"), (true, false));
@@ -172,10 +166,7 @@ mod tests {
 
     #[test]
     fn test_filter_returns_first_matching_pattern_settings() {
-        let filters = vec![
-            Filter::new("fs.*", true),
-            Filter::new("http.*", false),
-        ];
+        let filters = vec![Filter::new("fs.*", true), Filter::new("http.*", false)];
 
         // fs.* should capture stack
         assert_eq!(check_filter(&filters, "fs.readFile"), (true, true));

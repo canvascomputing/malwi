@@ -112,8 +112,8 @@ pub fn resolve_export_as<T>(module: Option<&str>, symbol: &str) -> Option<T> {
 /// If pattern has wildcards, enumerates all modules and returns all matches.
 /// Deduplicates by symbol name (first match wins, similar to how the dynamic linker resolves symbols).
 pub fn find_exports_matching(module: Option<&str>, pattern: &str) -> Vec<ExportInfo> {
-    use std::collections::HashSet;
     use log::debug;
+    use std::collections::HashSet;
 
     if !is_glob_pattern(pattern) {
         // Exact match - use fast path
@@ -141,8 +141,8 @@ pub fn find_exports_matching(module: Option<&str>, pattern: &str) -> Vec<ExportI
                 // enumerate_exports() can differ from what the dynamic linker resolves
                 // (e.g., for weak symbols or interposed functions). Using find_export
                 // ensures we hook the same address that explicit -s hooks would use.
-                let final_addr = find_export(Some(mod_name), &export.name)
-                    .unwrap_or(export.address);
+                let final_addr =
+                    find_export(Some(mod_name), &export.name).unwrap_or(export.address);
 
                 seen_names.insert(export.name.clone());
                 matches.push(ExportInfo {
@@ -160,8 +160,7 @@ pub fn find_exports_matching(module: Option<&str>, pattern: &str) -> Vec<ExportI
                     debug!("Glob match: {} in {}", export.name, module_info.name);
 
                     // Use find_export for authoritative address (see comment above)
-                    let final_addr = find_export(None, &export.name)
-                        .unwrap_or(export.address);
+                    let final_addr = find_export(None, &export.name).unwrap_or(export.address);
 
                     seen_names.insert(export.name.clone());
                     matches.push(ExportInfo {
@@ -183,8 +182,8 @@ pub fn find_exports_matching(module: Option<&str>, pattern: &str) -> Vec<ExportI
 /// (e.g., test fixtures, bash builtins, etc.). On Mach-O, names in the raw
 /// symbol table usually start with '_' so we match against the stripped name.
 pub fn find_symbols_matching(module: Option<&str>, pattern: &str) -> Vec<ExportInfo> {
-    use std::collections::HashSet;
     use log::debug;
+    use std::collections::HashSet;
 
     fn normalize(name: &str) -> &str {
         name.strip_prefix('_').unwrap_or(name)
@@ -203,7 +202,10 @@ pub fn find_symbols_matching(module: Option<&str>, pattern: &str) -> Vec<ExportI
         // Exact, non-exported symbol: scan symbols in requested module(s).
         let mut out = Vec::new();
         let modules: Vec<ModuleInfo> = if let Some(mod_name) = module {
-            enumerate_modules().into_iter().filter(|m| m.name == mod_name).collect()
+            enumerate_modules()
+                .into_iter()
+                .filter(|m| m.name == mod_name)
+                .collect()
         } else {
             enumerate_modules()
         };
@@ -230,7 +232,10 @@ pub fn find_symbols_matching(module: Option<&str>, pattern: &str) -> Vec<ExportI
     let mut seen_names: HashSet<String> = HashSet::new();
 
     let modules: Vec<ModuleInfo> = if let Some(mod_name) = module {
-        enumerate_modules().into_iter().filter(|m| m.name == mod_name).collect()
+        enumerate_modules()
+            .into_iter()
+            .filter(|m| m.name == mod_name)
+            .collect()
     } else {
         enumerate_modules()
     };
@@ -292,16 +297,19 @@ mod tests {
         init_gum();
         let modules = enumerate_modules();
         // Should have at least some modules loaded
-        assert!(!modules.is_empty(), "Should have at least one module loaded");
+        assert!(
+            !modules.is_empty(),
+            "Should have at least one module loaded"
+        );
 
         // Should include libc or libSystem on macOS
         let has_system_lib = modules.iter().any(|m| {
-            m.name.contains("libc")
-                || m.name.contains("libSystem")
-                || m.name.contains("dyld")
+            m.name.contains("libc") || m.name.contains("libSystem") || m.name.contains("dyld")
         });
-        assert!(has_system_lib, "Should find system library. Found: {:?}",
-            modules.iter().map(|m| &m.name).collect::<Vec<_>>());
+        assert!(
+            has_system_lib,
+            "Should find system library. Found: {:?}",
+            modules.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
     }
-
 }

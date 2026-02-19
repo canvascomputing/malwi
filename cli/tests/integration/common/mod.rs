@@ -84,7 +84,11 @@ pub fn find_all_runtimes(runtime: Runtime) -> Vec<PathBuf> {
         let project_binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("binaries");
-        if project_binaries.is_dir() { Some(project_binaries) } else { None }
+        if project_binaries.is_dir() {
+            Some(project_binaries)
+        } else {
+            None
+        }
     };
 
     if let Some(base) = base {
@@ -330,7 +334,7 @@ pub fn strip_ansi_codes(s: &str) -> String {
             // Skip escape sequence
             if chars.peek() == Some(&'[') {
                 chars.next(); // consume '['
-                // Skip until we hit a letter (end of escape sequence)
+                              // Skip until we hit a letter (end of escape sequence)
                 while let Some(&next) = chars.peek() {
                     chars.next();
                     if next.is_ascii_alphabetic() {
@@ -397,8 +401,16 @@ pub fn build_fixtures() {
 
 /// Detect current platform (arch, os)
 fn current_platform() -> (&'static str, &'static str) {
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
-    let os = if cfg!(target_os = "macos") { "mac" } else { "linux" };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let os = if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "linux"
+    };
     (arch, os)
 }
 
@@ -418,10 +430,7 @@ pub fn get_python_minor_version(python: &std::path::Path) -> Option<u32> {
     }
 
     // Fallback: run python --version
-    let output = Command::new(python)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new(python).arg("--version").output().ok()?;
     let version_str = String::from_utf8_lossy(&output.stdout);
     // Parse "Python 3.12.0" format
     let version_str = version_str.trim();
@@ -460,10 +469,7 @@ pub fn get_node_major_version(node: &std::path::Path) -> Option<u32> {
     }
 
     // Fallback: run node --version
-    let output = Command::new(node)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new(node).arg("--version").output().ok()?;
     let version_str = String::from_utf8_lossy(&output.stdout);
     // Parse "v23.11.1" format
     let version_str = version_str.trim();
@@ -521,10 +527,7 @@ pub fn get_bash_major_version(bash: &std::path::Path) -> Option<u32> {
     }
 
     // Fallback: run bash --version and parse "GNU bash, version 5.2.0(...)"
-    let output = Command::new(bash)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new(bash).arg("--version").output().ok()?;
     let version_str = String::from_utf8_lossy(&output.stdout);
     // Parse "GNU bash, version 5.2.0(1)-release" format
     for line in version_str.lines() {
@@ -601,14 +604,22 @@ pub fn run_tracer_with_timeout_in_dir(args: &[&str], timeout: Duration, dir: &Pa
             Ok(Some(status)) => {
                 let stdout = stdout_thread.join().unwrap_or_default();
                 let stderr = stderr_thread.join().unwrap_or_default();
-                return Output { status, stdout, stderr };
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let status = terminate_child_with_timeout(&mut child);
                     let stdout = stdout_thread.join().unwrap_or_default();
                     let stderr = stderr_thread.join().unwrap_or_default();
-                    return Output { status, stdout, stderr };
+                    return Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -657,14 +668,22 @@ pub fn run_tracer_with_timeout(args: &[&str], timeout: Duration) -> Output {
             Ok(Some(status)) => {
                 let stdout = stdout_thread.join().unwrap_or_default();
                 let stderr = stderr_thread.join().unwrap_or_default();
-                return Output { status, stdout, stderr };
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let status = terminate_child_with_timeout(&mut child);
                     let stdout = stdout_thread.join().unwrap_or_default();
                     let stderr = stderr_thread.join().unwrap_or_default();
-                    return Output { status, stdout, stderr };
+                    return Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -711,14 +730,22 @@ pub fn run_tracer_with_timeout_noninteractive(args: &[&str], timeout: Duration) 
             Ok(Some(status)) => {
                 let stdout = stdout_thread.join().unwrap_or_default();
                 let stderr = stderr_thread.join().unwrap_or_default();
-                return Output { status, stdout, stderr };
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let status = terminate_child_with_timeout(&mut child);
                     let stdout = stdout_thread.join().unwrap_or_default();
                     let stderr = stderr_thread.join().unwrap_or_default();
-                    return Output { status, stdout, stderr };
+                    return Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -732,29 +759,32 @@ pub fn run_tracer_with_timeout_noninteractive(args: &[&str], timeout: Duration) 
 /// Check if output contains an ENTER event for a function
 pub fn has_enter_event(output: &str, function: &str) -> bool {
     // Look for patterns like "[ENTER] function" or "function → ENTER"
-    output.lines().any(|line| {
-        line.contains(function) && (line.contains("ENTER") || line.contains("→"))
-    })
+    output
+        .lines()
+        .any(|line| line.contains(function) && (line.contains("ENTER") || line.contains("→")))
 }
 
 /// Check if output contains a LEAVE event for a function
 pub fn has_leave_event(output: &str, function: &str) -> bool {
-    output.lines().any(|line| {
-        line.contains(function) && (line.contains("LEAVE") || line.contains("←"))
-    })
+    output
+        .lines()
+        .any(|line| line.contains(function) && (line.contains("LEAVE") || line.contains("←")))
 }
 
 /// Check if output contains a child process event
 pub fn has_child_event(output: &str, operation: &str) -> bool {
     // Look for "[CHILD]" events with Fork/Exec/Spawn
-    output.lines().any(|line| {
-        line.contains("[CHILD]") && line.contains(operation)
-    })
+    output
+        .lines()
+        .any(|line| line.contains("[CHILD]") && line.contains(operation))
 }
 
 /// Count the number of events for a function
 pub fn count_events(output: &str, function: &str) -> usize {
-    output.lines().filter(|line| line.contains(function)).count()
+    output
+        .lines()
+        .filter(|line| line.contains(function))
+        .count()
 }
 
 /// Extract unique thread IDs from trace output
@@ -777,7 +807,9 @@ fn extract_thread_id_from_line(line: &str) -> Option<&str> {
     // Try different patterns
     if let Some(idx) = line.find("thread=") {
         let rest = &line[idx + 7..];
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         if end > 0 {
             return Some(&rest[..end]);
         }
@@ -801,40 +833,43 @@ pub fn has_stack_trace(output: &str) -> bool {
 /// Count stack trace frames in output
 pub fn count_stack_frames(output: &str) -> usize {
     let clean = strip_ansi_codes(output);
-    clean.lines().filter(|line| line.starts_with("    at ")).count()
+    clean
+        .lines()
+        .filter(|line| line.starts_with("    at "))
+        .count()
 }
 
 /// Check if output contains a Python stack frame with expected format: "    at function (file:line)"
 pub fn has_python_stack_frame(output: &str, function: &str) -> bool {
     let clean = strip_ansi_codes(output);
     clean.lines().any(|line| {
-        line.starts_with("    at ") &&
-        line.contains(function) &&
-        line.contains(".py:")  // Python files end in .py
+        line.starts_with("    at ") && line.contains(function) && line.contains(".py:")
+        // Python files end in .py
     })
 }
 
 /// Check if output contains a Node.js/JavaScript trace event
 pub fn has_js_trace_event(output: &str, function: &str) -> bool {
-    output.lines().any(|line| {
-        line.contains("[malwi]") && line.contains(function)
-    })
+    output
+        .lines()
+        .any(|line| line.contains("[malwi]") && line.contains(function))
 }
 
 /// Count Node.js/JavaScript trace events for a function pattern
 pub fn count_js_events(output: &str, pattern: &str) -> usize {
-    output.lines().filter(|line| {
-        line.contains("[malwi]") && line.contains(pattern)
-    }).count()
+    output
+        .lines()
+        .filter(|line| line.contains("[malwi]") && line.contains(pattern))
+        .count()
 }
 
 /// Check if output contains Node.js stack frames (for native hooks with Node.js stack)
 pub fn has_nodejs_stack_frame(output: &str, function: &str) -> bool {
     let clean = strip_ansi_codes(output);
     clean.lines().any(|line| {
-        line.starts_with("    at ") &&
-        line.contains(function) &&
-        (line.contains(".js:") || line.contains("<anonymous>"))
+        line.starts_with("    at ")
+            && line.contains(function)
+            && (line.contains(".js:") || line.contains("<anonymous>"))
     })
 }
 
@@ -861,7 +896,11 @@ pub fn run_tracer_with_stdin(args: &[&str], stdin_input: &str) -> Output {
 }
 
 /// Run malwi with stdin input and a timeout (for review mode hang detection)
-pub fn run_tracer_with_stdin_timeout(args: &[&str], stdin_input: &str, timeout: Duration) -> Output {
+pub fn run_tracer_with_stdin_timeout(
+    args: &[&str],
+    stdin_input: &str,
+    timeout: Duration,
+) -> Output {
     use std::io::Write;
     use std::thread;
 
@@ -903,14 +942,22 @@ pub fn run_tracer_with_stdin_timeout(args: &[&str], stdin_input: &str, timeout: 
             Ok(Some(status)) => {
                 let stdout = stdout_thread.join().unwrap_or_default();
                 let stderr = stderr_thread.join().unwrap_or_default();
-                return Output { status, stdout, stderr };
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let status = terminate_child_with_timeout(&mut child);
                     let stdout = stdout_thread.join().unwrap_or_default();
                     let stderr = stderr_thread.join().unwrap_or_default();
-                    return Output { status, stdout, stderr };
+                    return Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -985,9 +1032,9 @@ pub fn has_review_prompt(output: &str) -> bool {
 
 /// Check if output contains review mode block message
 pub fn has_review_blocked(output: &str, function: &str) -> bool {
-    output.lines().any(|line| {
-        line.contains("[malwi]") && line.contains("denied:") && line.contains(function)
-    })
+    output
+        .lines()
+        .any(|line| line.contains("[malwi]") && line.contains("denied:") && line.contains(function))
 }
 
 /// Check if output contains review mode details section

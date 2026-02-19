@@ -3,20 +3,20 @@
 //! This library is compiled as a cdylib and loaded into the target process
 //! via LD_PRELOAD (Linux), DYLD_INSERT_LIBRARIES (macOS), or injection.
 
+pub mod cpython;
+pub mod envvar_filter; // Envvar deny patterns for agent-side blocking
+pub mod exec_filter; // Exec command filtering for child processes
 #[cfg(unix)]
 pub mod fork_monitor;
 pub mod glob;
 pub mod hooks;
 pub mod http_client;
-pub mod cpython;
-pub mod envvar_filter; // Envvar deny patterns for agent-side blocking
-pub mod exec_filter;  // Exec command filtering for child processes
-pub mod native;   // Native symbol resolution and argument formatting
-pub mod tracing;  // Shared tracing utilities (thread, time, filter, event)
-pub mod nodejs;   // Node.js tracing (addon, bytecode hooks, filters)
+pub mod native; // Native symbol resolution and argument formatting
+pub mod nodejs; // Node.js tracing (addon, bytecode hooks, filters)
 pub mod spawn_monitor;
 pub mod stack;
 pub mod syscall_monitor;
+pub mod tracing; // Shared tracing utilities (thread, time, filter, event)
 
 #[cfg(test)]
 mod test_utils;
@@ -145,7 +145,10 @@ impl Agent {
                     }
                     consecutive_errors += 1;
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        info!("Server unreachable after {} attempts, shutting down", consecutive_errors);
+                        info!(
+                            "Server unreachable after {} attempts, shutting down",
+                            consecutive_errors
+                        );
                         break;
                     }
                     debug!("Command poll error (attempt {}): {}", consecutive_errors, e);
@@ -175,18 +178,16 @@ impl Agent {
     /// Install a hook locally (no HTTP call needed — agent manages hooks directly).
     fn add_hook_local(&self, config: HookConfig) -> Result<()> {
         match config.hook_type {
-            HookType::Native => {
-                match self.hook_manager.add_hook(&config) {
-                    Ok(result) => {
-                        for (symbol, address) in &result.symbols {
-                            debug!("Hooked {} at {:#x}", symbol, address);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to hook {}: {}", config.symbol, e);
+            HookType::Native => match self.hook_manager.add_hook(&config) {
+                Ok(result) => {
+                    for (symbol, address) in &result.symbols {
+                        debug!("Hooked {} at {:#x}", symbol, address);
                     }
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to hook {}: {}", config.symbol, e);
+                }
+            },
             HookType::Python => {
                 cpython::add_python_filter(&config.symbol, config.capture_stack);
                 debug!("Added Python filter: {}", config.symbol);
@@ -262,7 +263,10 @@ impl Agent {
     /// Wait for user decision in review mode.
     /// Blocks on HTTP response — no condvar needed.
     /// Returns the `ReviewDecision` from the CLI.
-    pub fn await_review_decision(&self, event: malwi_protocol::TraceEvent) -> malwi_protocol::ReviewDecision {
+    pub fn await_review_decision(
+        &self,
+        event: malwi_protocol::TraceEvent,
+    ) -> malwi_protocol::ReviewDecision {
         // Fast path: already blocked → skip HTTP round-trip
         let key = (event.hook_type.clone(), event.function.clone());
         if let Ok(cache) = self.review_blocked_cache.lock() {
@@ -323,7 +327,11 @@ impl Agent {
         self.enable_child_gating_internal();
 
         // Enable direct syscall detection if any DirectSyscall hook is present
-        if config.hooks.iter().any(|h| h.hook_type == HookType::DirectSyscall) {
+        if config
+            .hooks
+            .iter()
+            .any(|h| h.hook_type == HookType::DirectSyscall)
+        {
             self.enable_syscall_monitor();
         }
 
@@ -353,14 +361,24 @@ impl Agent {
             hooks.len(),
             modules.len()
         );
-        self.http.ready(pid, hooks, nodejs_version, python_version, bash_version, modules)?;
+        self.http.ready(
+            pid,
+            hooks,
+            nodejs_version,
+            python_version,
+            bash_version,
+            modules,
+        )?;
 
         Ok(())
     }
 
     /// Enable scan+patch syscall monitor for direct syscall detection.
     fn enable_syscall_monitor(&self) {
-        let mut guard = self.syscall_monitor.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .syscall_monitor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return;
         }
@@ -384,7 +402,12 @@ impl Agent {
     /// Ensure spawn/fork monitors are installed (idempotent).
     /// Called during configuration phase when exec filters are added.
     fn ensure_monitors_installed(&self) {
-        if self.spawn_monitor.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self
+            .spawn_monitor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             return;
         }
 
@@ -649,10 +672,12 @@ impl SpawnHandler for Agent {
     }
 
     fn is_child_gating_enabled(&self) -> bool {
-        self.spawn_monitor.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        self.spawn_monitor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 }
-
 
 /// Agent entry point called when the library is loaded.
 ///
@@ -850,9 +875,7 @@ fn prepare_node_options_internal() -> Option<String> {
         true
     };
 
-    if should_write
-        && std::fs::write(&wrapper_path, &wrapper_js).is_err()
-    {
+    if should_write && std::fs::write(&wrapper_path, &wrapper_js).is_err() {
         return None;
     }
 

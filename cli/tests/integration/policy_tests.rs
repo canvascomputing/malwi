@@ -2,10 +2,10 @@
 //!
 //! Tests for policy-driven blocking, BLOCKED output, and proper error signaling.
 
+use crate::common::*;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use crate::common::*;
 
 fn setup() {
     build_fixtures();
@@ -24,7 +24,8 @@ fn write_temp_policy(content: &str) -> (PathBuf, std::fs::File) {
         id
     ));
     let mut f = std::fs::File::create(&path).expect("failed to create temp policy file");
-    f.write_all(content.as_bytes()).expect("failed to write policy");
+    f.write_all(content.as_bytes())
+        .expect("failed to write policy");
     f.flush().expect("failed to flush policy");
     (path, f)
 }
@@ -50,10 +51,12 @@ fn test_policy_block_exec_shows_blocked_message() {
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "-p", policy_path.to_str().unwrap(),
+            "-p",
+            policy_path.to_str().unwrap(),
             "--",
             node.to_str().unwrap(),
-            "-e", "require('child_process').spawnSync('echo', ['hello'])",
+            "-e",
+            "require('child_process').spawnSync('echo', ['hello'])",
         ],
         std::time::Duration::from_secs(10),
     );
@@ -68,7 +71,8 @@ fn test_policy_block_exec_shows_blocked_message() {
     assert!(
         stdout.contains("denied:") && stdout.contains("echo"),
         "Expected denied message for echo. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -89,12 +93,14 @@ fn test_policy_block_socket_terminates_instead_of_looping() {
     };
 
     // Policy that blocks socket
-    let (policy_path, _f) = write_temp_policy(r#"
+    let (policy_path, _f) = write_temp_policy(
+        r#"
 version: 1
 symbols:
   deny:
     - socket
-"#);
+"#,
+    );
 
     // Try to make a network connection — socket() will be blocked.
     // The process should fail quickly with an error, NOT loop infinitely.
@@ -127,7 +133,8 @@ symbols:
     assert!(
         blocked_count >= 1,
         "Expected at least one denied socket message (got {}). stderr: {}",
-        blocked_count, stderr
+        blocked_count,
+        stderr
     );
 
     // The process should have exited (not been killed by timeout).
@@ -162,10 +169,12 @@ fn test_nodejs_execsync_does_not_crash_v8() {
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "--js", "*",
+            "--js",
+            "*",
             "--",
             node.to_str().unwrap(),
-            "-e", "require('child_process').execSync('echo test').toString()",
+            "-e",
+            "require('child_process').execSync('echo test').toString()",
         ],
         std::time::Duration::from_secs(15),
     );
@@ -189,7 +198,8 @@ fn test_nodejs_execsync_does_not_crash_v8() {
     assert!(
         output.status.success(),
         "execSync test should succeed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -246,11 +256,14 @@ fn test_policy_block_in_monitor_mode_sends_to_monitor() {
         &[
             "x",
             "--monitor",
-            "--monitor-port", &port.to_string(),
-            "-p", policy_path.to_str().unwrap(),
+            "--monitor-port",
+            &port.to_string(),
+            "-p",
+            policy_path.to_str().unwrap(),
             "--",
             node.to_str().unwrap(),
-            "-e", "require('child_process').spawnSync('echo', ['hello'])",
+            "-e",
+            "require('child_process').spawnSync('echo', ['hello'])",
         ],
         std::time::Duration::from_secs(10),
     );
@@ -260,7 +273,9 @@ fn test_policy_block_in_monitor_mode_sends_to_monitor() {
     // Give monitor a moment to flush output, then kill it
     std::thread::sleep(std::time::Duration::from_millis(200));
     monitor.kill().ok();
-    let monitor_output = monitor.wait_with_output().expect("failed to read monitor output");
+    let monitor_output = monitor
+        .wait_with_output()
+        .expect("failed to read monitor output");
 
     let tracer_stdout = strip_ansi_codes(&String::from_utf8_lossy(&tracer_output.stdout));
     let monitor_stdout = strip_ansi_codes(&String::from_utf8_lossy(&monitor_output.stdout));
@@ -269,7 +284,8 @@ fn test_policy_block_in_monitor_mode_sends_to_monitor() {
     assert!(
         monitor_stdout.contains("denied:"),
         "Expected denied message in monitor output. monitor: {}, tracer: {}",
-        monitor_stdout, tracer_stdout
+        monitor_stdout,
+        tracer_stdout
     );
     assert!(
         !tracer_stdout.contains("denied:"),
@@ -295,17 +311,17 @@ fn test_policy_warn_exec_shows_single_warning_with_full_command() {
     };
 
     // Policy with warn mode that denies echo
-    let (policy_path, _f) = write_temp_policy(
-        "version: 1\ncommands:\n  warn:\n    - echo\n",
-    );
+    let (policy_path, _f) = write_temp_policy("version: 1\ncommands:\n  warn:\n    - echo\n");
 
     let output = run_tracer_with_timeout(
         &[
             "x",
-            "-p", policy_path.to_str().unwrap(),
+            "-p",
+            policy_path.to_str().unwrap(),
             "--",
             node.to_str().unwrap(),
-            "-e", "require('child_process').spawnSync('echo', ['hello'])",
+            "-e",
+            "require('child_process').spawnSync('echo', ['hello'])",
         ],
         std::time::Duration::from_secs(10),
     );
@@ -320,9 +336,7 @@ fn test_policy_warn_exec_shows_single_warning_with_full_command() {
     println!("stderr:\n{}", stderr);
 
     // Count [malwi] lines — should be exactly one warning line
-    let malwi_lines: Vec<&str> = stdout.lines()
-        .filter(|l| l.contains("[malwi]"))
-        .collect();
+    let malwi_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("[malwi]")).collect();
 
     assert!(
         malwi_lines.len() == 1,
@@ -339,11 +353,7 @@ fn test_policy_warn_exec_shows_single_warning_with_full_command() {
         "Expected 'warning:' in line: {}",
         line
     );
-    assert!(
-        line.contains("echo"),
-        "Expected 'echo' in line: {}",
-        line
-    );
+    assert!(line.contains("echo"), "Expected 'echo' in line: {}", line);
     assert!(
         line.contains("hello"),
         "Expected 'hello' (argument) in line: {}",
@@ -474,7 +484,10 @@ base64 --help
     let denied_commands = ["python3", "crontab", "base64"];
     let mut denied_count = 0;
     for cmd in &denied_commands {
-        if stdout.lines().any(|l| l.contains("denied:") && l.contains(cmd)) {
+        if stdout
+            .lines()
+            .any(|l| l.contains("denied:") && l.contains(cmd))
+        {
             denied_count += 1;
             println!("  DENIED (expected): {}", cmd);
         } else {
@@ -484,12 +497,17 @@ base64 --help
     assert!(
         denied_count >= 2,
         "Expected at least 2 denied commands, got {}. Checked: {:?}\nstdout:\n{}\nstderr:\n{}",
-        denied_count, denied_commands, stdout, stderr
+        denied_count,
+        denied_commands,
+        stdout,
+        stderr
     );
 
     // Legitimate command (mkdir) should NOT be denied.
     assert!(
-        !stdout.lines().any(|l| l.contains("denied:") && l.contains("mkdir")),
+        !stdout
+            .lines()
+            .any(|l| l.contains("denied:") && l.contains("mkdir")),
         "mkdir should NOT be denied (it's in the allow list). stdout:\n{}",
         stdout
     );

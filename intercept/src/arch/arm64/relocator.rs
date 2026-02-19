@@ -172,11 +172,15 @@ fn estimated_size(kind: InsnKind) -> usize {
     match kind {
         InsnKind::Other => 4,
         InsnKind::Adr | InsnKind::Adrp => 16,
-        InsnKind::LdrLiteral64 | InsnKind::LdrLiteral32 | InsnKind::LdrLiteralFp64
-        | InsnKind::LdrLiteralFp32 | InsnKind::LdrLiteralFp128 | InsnKind::Ldrsw => 20,
-        InsnKind::B => 16,      // LDR+BR+literal
-        InsnKind::BL => 20,     // MOVZ/MOVK*4 + BLR
-        InsnKind::BCond => 20,  // b.<invcond> + long branch
+        InsnKind::LdrLiteral64
+        | InsnKind::LdrLiteral32
+        | InsnKind::LdrLiteralFp64
+        | InsnKind::LdrLiteralFp32
+        | InsnKind::LdrLiteralFp128
+        | InsnKind::Ldrsw => 20,
+        InsnKind::B => 16,     // LDR+BR+literal
+        InsnKind::BL => 20,    // MOVZ/MOVK*4 + BLR
+        InsnKind::BCond => 20, // b.<invcond> + long branch
         InsnKind::CbzCbnz => 20,
         InsnKind::TbzTbnz => 20,
     }
@@ -199,8 +203,12 @@ fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
 
     // Don't flag SP (31) as X16/X17.
     for r in [rd, rn, rt2, rm] {
-        if r == 16 { x16 = true; }
-        if r == 17 { x17 = true; }
+        if r == 16 {
+            x16 = true;
+        }
+        if r == 17 {
+            x17 = true;
+        }
     }
 
     (x16, x17)
@@ -347,7 +355,8 @@ impl Arm64Relocator {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     writer.put_ldr_reg_reg_offset(
                         core::mem::transmute::<u8, Reg>(rt as u8),
                         core::mem::transmute::<u8, Reg>(scratch),
@@ -359,7 +368,8 @@ impl Arm64Relocator {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Wt, [Xscratch, #0] — 32-bit unsigned offset load.
                     // Encoding: 0xB9400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xB940_0000 | ((scratch as u32) << 5) | rt);
@@ -370,7 +380,8 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Dt, [X16, #0] — FP 64-bit load from GPR base.
                     // Encoding: 0xFD400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xFD40_0000 | ((scratch as u32) << 5) | rt);
@@ -381,7 +392,8 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR St, [X16, #0] — FP 32-bit load from GPR base.
                     // Encoding: 0xBD400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xBD40_0000 | ((scratch as u32) << 5) | rt);
@@ -392,7 +404,8 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Qt, [X16, #0] — FP 128-bit load from GPR base.
                     // Encoding: 0x3DC00000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0x3DC0_0000 | ((scratch as u32) << 5) | rt);
@@ -402,7 +415,8 @@ impl Arm64Relocator {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
+                    writer
+                        .put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDRSW Xt, [Xscratch, #0] — signed 32-bit load.
                     // Encoding: 0xB9800000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xB980_0000 | ((scratch as u32) << 5) | rt);
@@ -632,7 +646,10 @@ mod tests {
             0xD503201F, // NOP
         ];
         let (limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
-        assert_eq!(limit, 2, "BLR should stop relocation (include it, stop after)");
+        assert_eq!(
+            limit, 2,
+            "BLR should stop relocation (include it, stop after)"
+        );
         assert_eq!(scratch, Reg::X17, "x17 since x16 is used");
     }
 
@@ -751,7 +768,10 @@ mod tests {
             0xD503201F, // NOP
         ];
         let (limit, _scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
-        assert_eq!(limit, 4, "BR is position-independent and should not stop relocation");
+        assert_eq!(
+            limit, 4,
+            "BR is position-independent and should not stop relocation"
+        );
     }
 
     /// LDR S0, [PC, #+8] → scratch-load + FP 32-bit deref.
@@ -813,7 +833,10 @@ mod tests {
         // Same as above but Rt2=17: 0xA9BF47F3
         let insns: [u32; 1] = [0xA9BF47F3];
         let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
-        assert_eq!(scratch, Reg::X16, "X17 in Rt2 should cause X16 to be chosen");
+        assert_eq!(
+            scratch,
+            Reg::X16,
+            "X17 in Rt2 should cause X16 to be chosen"
+        );
     }
 }
-

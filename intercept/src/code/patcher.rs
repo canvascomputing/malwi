@@ -7,14 +7,14 @@ mod darwin {
 
     use mach2::boolean::boolean_t;
     use mach2::kern_return::KERN_SUCCESS;
+    use mach2::message::mach_msg_type_number_t;
     use mach2::traps::mach_task_self;
+    use mach2::vm::{mach_vm_allocate, mach_vm_deallocate, mach_vm_write};
     use mach2::vm_inherit::{VM_INHERIT_COPY, VM_INHERIT_NONE};
     use mach2::vm_prot::{vm_prot_t, VM_PROT_COPY, VM_PROT_EXECUTE, VM_PROT_READ, VM_PROT_WRITE};
-    use mach2::vm::{mach_vm_allocate, mach_vm_deallocate, mach_vm_write};
     use mach2::vm_statistics::{VM_FLAGS_ANYWHERE, VM_FLAGS_FIXED};
-    use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t, vm_address_t, vm_size_t};
     use mach2::vm_types::vm_offset_t;
-    use mach2::message::mach_msg_type_number_t;
+    use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t, vm_address_t, vm_size_t};
 
     const FALSE: boolean_t = 0;
     const TRUE: boolean_t = 1;
@@ -50,7 +50,8 @@ mod darwin {
         new_protection: vm_prot_t,
     ) -> i32 {
         // Try the library wrapper first — it works in CI and most environments.
-        let kr = mach2::vm::mach_vm_protect(target_task, address, size, set_maximum, new_protection);
+        let kr =
+            mach2::vm::mach_vm_protect(target_task, address, size, set_maximum, new_protection);
         if kr == 0 {
             return kr;
         }
@@ -94,7 +95,11 @@ mod darwin {
         unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
-    pub unsafe fn patch_code(addr: *mut u8, size: usize, apply: impl FnOnce(*mut u8)) -> Result<(), HookError> {
+    pub unsafe fn patch_code(
+        addr: *mut u8,
+        size: usize,
+        apply: impl FnOnce(*mut u8),
+    ) -> Result<(), HookError> {
         if size == 0 {
             return Ok(());
         }
@@ -208,7 +213,11 @@ mod darwin {
             );
             if kr2 == KERN_SUCCESS {
                 invalidate_icache(orig_addr, patched.len());
-                let _ = mach_vm_deallocate(task, writable as mach_vm_address_t, map_size as mach_vm_size_t);
+                let _ = mach_vm_deallocate(
+                    task,
+                    writable as mach_vm_address_t,
+                    map_size as mach_vm_size_t,
+                );
                 return Ok(());
             } else if debug_enabled() {
                 eprintln!(
@@ -219,7 +228,11 @@ mod darwin {
                 );
             }
 
-            let _ = mach_vm_deallocate(task, writable as mach_vm_address_t, map_size as mach_vm_size_t);
+            let _ = mach_vm_deallocate(
+                task,
+                writable as mach_vm_address_t,
+                map_size as mach_vm_size_t,
+            );
 
             // mprotect often fails on code-signed pages. Try a Mach write to the original
             // mapping before giving up.
@@ -233,7 +246,11 @@ mod darwin {
         let patched = prepare_patched_bytes(orig_addr, orig_size, apply);
 
         // Write through the writable alias.
-        core::ptr::copy_nonoverlapping(patched.as_ptr(), (writable as *mut u8).add(page_off), patched.len());
+        core::ptr::copy_nonoverlapping(
+            patched.as_ptr(),
+            (writable as *mut u8).add(page_off),
+            patched.len(),
+        );
         invalidate_icache(orig_addr, orig_size);
 
         // Verify the write is visible at the original address.
@@ -242,7 +259,11 @@ mod darwin {
         // while the original page remains unchanged.
         let visible = core::slice::from_raw_parts(orig_addr, orig_size) == patched.as_slice();
 
-        let _ = mach_vm_deallocate(task, writable as mach_vm_address_t, map_size as mach_vm_size_t);
+        let _ = mach_vm_deallocate(
+            task,
+            writable as mach_vm_address_t,
+            map_size as mach_vm_size_t,
+        );
 
         if visible {
             return Ok(());
@@ -291,8 +312,7 @@ mod darwin {
             if debug_enabled() {
                 eprintln!(
                     "[malwi-intercept] patcher: direct protect RW failed kr={} page=0x{:x}",
-                    kr,
-                    page_start as usize
+                    kr, page_start as usize
                 );
             }
             return Err(HookError::AllocationFailed);
@@ -358,11 +378,7 @@ mod darwin {
         }
 
         // 2. Copy entire original page content to the temp page.
-        core::ptr::copy_nonoverlapping(
-            page_start as *const u8,
-            temp_addr as *mut u8,
-            map_size,
-        );
+        core::ptr::copy_nonoverlapping(page_start as *const u8, temp_addr as *mut u8, map_size);
 
         // 3. Apply patches at the correct offset within the temp page.
         let page_off = orig_addr as usize - page_start as usize;
@@ -499,7 +515,12 @@ mod darwin {
 
         // Best-effort fallback for cases where `mach_vm_remap` cannot create a writable alias
         // (e.g., some locally built/test binaries). This may fail on hardened/signed mappings.
-        if libc::mprotect(page_start as *mut _, map_size, libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0 {
+        if libc::mprotect(
+            page_start as *mut _,
+            map_size,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+        ) != 0
+        {
             if debug_enabled() {
                 let errno = *libc::__error();
                 eprintln!(
@@ -517,7 +538,11 @@ mod darwin {
             invalidate_icache(orig_addr, patched.len());
         }
 
-        let _ = libc::mprotect(page_start as *mut _, map_size, libc::PROT_READ | libc::PROT_EXEC);
+        let _ = libc::mprotect(
+            page_start as *mut _,
+            map_size,
+            libc::PROT_READ | libc::PROT_EXEC,
+        );
         Ok(())
     }
 }
@@ -526,7 +551,11 @@ mod darwin {
 mod linux {
     use super::*;
 
-    pub unsafe fn patch_code(addr: *mut u8, size: usize, apply: impl FnOnce(*mut u8)) -> Result<(), HookError> {
+    pub unsafe fn patch_code(
+        addr: *mut u8,
+        size: usize,
+        apply: impl FnOnce(*mut u8),
+    ) -> Result<(), HookError> {
         if size == 0 {
             return Ok(());
         }
@@ -570,7 +599,11 @@ mod linux {
 ///
 /// # Safety
 /// `addr` must point to `size` bytes of executable memory. `apply` must write within that range.
-pub unsafe fn patch_code(addr: *mut u8, size: usize, apply: impl FnOnce(*mut u8)) -> Result<(), HookError> {
+pub unsafe fn patch_code(
+    addr: *mut u8,
+    size: usize,
+    apply: impl FnOnce(*mut u8),
+) -> Result<(), HookError> {
     #[cfg(target_os = "macos")]
     {
         darwin::patch_code(addr, size, apply)
@@ -812,7 +845,7 @@ mod tests {
 
             // Patch A: MOV W0, #100; RET
             let patch_a: [u32; 2] = [0x52800C80, 0xD65F03C0]; // MOVZ W0, #0x64
-            // Patch B: MOV W0, #200; RET
+                                                              // Patch B: MOV W0, #200; RET
             let patch_b: [u32; 2] = [0x52801900, 0xD65F03C0]; // MOVZ W0, #0xC8
 
             for cycle in 0..50u32 {
@@ -971,7 +1004,8 @@ mod tests {
             // THE CRITICAL CHECK: A must still return 42 after B's patch.
             let call_a = std::hint::black_box(call_a);
             assert_eq!(
-                call_a(0), 42,
+                call_a(0),
+                42,
                 "A must still return 42 after patching B on the same page (I-cache coherency)"
             );
 
@@ -1032,13 +1066,15 @@ mod tests {
                 let call_b: extern "C" fn(u64) -> u64 = core::mem::transmute(func_b);
                 let call_b = std::hint::black_box(call_b);
                 assert_eq!(
-                    call_b(0), val as u64,
+                    call_b(0),
+                    val as u64,
                     "iteration {i}: B should return {val}"
                 );
 
                 let call_a = std::hint::black_box(call_a);
                 assert_eq!(
-                    call_a(0), 42,
+                    call_a(0),
+                    42,
                     "iteration {i}: A must still return 42 after re-patching B"
                 );
             }

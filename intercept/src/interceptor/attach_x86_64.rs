@@ -408,7 +408,11 @@ pub(crate) fn attach(
     let wrapper_addr_estimate = wrapper_slice.data as u64;
 
     let dist = (wrapper_addr_estimate as i64 - patch_pc as i64).unsigned_abs() as usize;
-    let redirect_size = if dist < NEAR_RANGE { NEAR_JMP_SIZE } else { FAR_JMP_SIZE };
+    let redirect_size = if dist < NEAR_RANGE {
+        NEAR_JMP_SIZE
+    } else {
+        FAR_JMP_SIZE
+    };
 
     // Validate relocation.
     let max_safe = can_relocate(patch_addr, redirect_size);
@@ -417,7 +421,8 @@ pub(crate) fn attach(
         return Err(HookError::RelocationFailed);
     }
 
-    let (trampoline, relocated_bytes) = unsafe { build_trampoline(patch_addr, patch_pc, redirect_size)? };
+    let (trampoline, relocated_bytes) =
+        unsafe { build_trampoline(patch_addr, patch_pc, redirect_size)? };
 
     let patch_size = relocated_bytes;
 

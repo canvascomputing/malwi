@@ -28,7 +28,10 @@ pub unsafe fn invalidate_icache(addr: *mut u8, size: usize) {
         extern "C" {
             fn __clear_cache(beg: *mut libc::c_void, end: *mut libc::c_void);
         }
-        __clear_cache(addr as *mut libc::c_void, addr.add(size) as *mut libc::c_void);
+        __clear_cache(
+            addr as *mut libc::c_void,
+            addr.add(size) as *mut libc::c_void,
+        );
     }
 
     // x86_64 has coherent I-cache, no flush needed.
@@ -42,4 +45,3 @@ pub unsafe fn invalidate_icache(addr: *mut u8, size: usize) {
         let _ = (addr, size);
     }
 }
-

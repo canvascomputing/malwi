@@ -9,15 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use log::{debug, error};
-use malwi_protocol::RuntimeStack;
 use malwi_intercept::CallListener;
 use malwi_intercept::InvocationContext;
+use malwi_protocol::RuntimeStack;
 
 use crate::native;
 
 use super::ffi::{
-    init_python_api, Py_IsInitializedFn, PyEval_SetProfileAllThreadsFn, PyEval_SetProfileFn,
-    PyGILState_EnsureFn, PyGILState_ReleaseFn, PYTRACE_CALL, PYTHON_API,
+    init_python_api, PyEval_SetProfileAllThreadsFn, PyEval_SetProfileFn, PyGILState_EnsureFn,
+    PyGILState_ReleaseFn, Py_IsInitializedFn, PYTHON_API, PYTRACE_CALL,
 };
 use super::filters::matches_filter;
 use super::helpers::{extract_function_arguments, get_code_filename, get_qualified_function_name};
@@ -34,7 +34,9 @@ thread_local! {
 /// Caller must ensure GIL is held.
 unsafe fn raise_permission_error() {
     let Some(api) = PYTHON_API.get() else { return };
-    let Some(err_set_string) = api.err_set_string else { return };
+    let Some(err_set_string) = api.err_set_string else {
+        return;
+    };
     if api.exc_permission_error.is_null() {
         return;
     }
@@ -425,7 +427,9 @@ pub fn do_register_profile_hook() -> bool {
     let set_profile_all: Option<PyEval_SetProfileAllThreadsFn> =
         native::find_export(None, "PyEval_SetProfileAllThreads")
             .ok()
-            .map(|addr| unsafe { std::mem::transmute::<usize, PyEval_SetProfileAllThreadsFn>(addr) });
+            .map(|addr| unsafe {
+                std::mem::transmute::<usize, PyEval_SetProfileAllThreadsFn>(addr)
+            });
 
     let set_profile: Option<PyEval_SetProfileFn> = native::find_export(None, "PyEval_SetProfile")
         .ok()
@@ -467,7 +471,9 @@ pub fn do_register_profile_hook() -> bool {
         );
         if !install_thread_creation_hook() {
             // Non-fatal: thread propagation won't work but single-threaded tracing will
-            debug!("Thread creation hook installation failed - multi-threaded tracing may not work");
+            debug!(
+                "Thread creation hook installation failed - multi-threaded tracing may not work"
+            );
         }
     }
 
@@ -496,14 +502,14 @@ pub fn register_profile_hook_with_gil() -> bool {
     }
 
     // Check if Python is fully initialized before acquiring GIL
-    let py_is_initialized: Py_IsInitializedFn =
-        match native::find_export(None, "Py_IsInitialized") {
-            Ok(addr) => unsafe { std::mem::transmute::<usize, Py_IsInitializedFn>(addr) },
-            Err(e) => {
-                error!("Failed to find Py_IsInitialized: {}", e);
-                return false;
-            }
-        };
+    let py_is_initialized: Py_IsInitializedFn = match native::find_export(None, "Py_IsInitialized")
+    {
+        Ok(addr) => unsafe { std::mem::transmute::<usize, Py_IsInitializedFn>(addr) },
+        Err(e) => {
+            error!("Failed to find Py_IsInitialized: {}", e);
+            return false;
+        }
+    };
 
     if unsafe { py_is_initialized() } == 0 {
         debug!("Python not yet initialized, deferring profile hook registration");
@@ -602,7 +608,10 @@ pub unsafe fn propagate_profile_to_threads() {
     }
 
     if propagated > 0 {
-        debug!("propagate_profile_to_threads: propagated to {} threads", propagated);
+        debug!(
+            "propagate_profile_to_threads: propagated to {} threads",
+            propagated
+        );
     }
 }
 
@@ -692,10 +701,7 @@ fn install_thread_creation_hook() -> bool {
 /// Called by malwi-intercept with valid context. The main thread holds the GIL here because
 /// it's still executing Python code (returning from threading.Thread.start() or
 /// _thread.start_new_thread()).
-unsafe extern "C" fn on_thread_created(
-    _context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_thread_created(_context: *mut InvocationContext, _user_data: *mut c_void) {
     debug!("Thread creation detected, flagging for propagation");
 
     // Set flag so profile hook propagates on next Python call (CALL or RETURN)

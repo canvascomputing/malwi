@@ -6,10 +6,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
+use core::ffi::c_void;
 use log::{debug, info, warn};
 use malwi_intercept::CallListener;
 use malwi_intercept::InvocationContext;
-use core::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 fn agent_debug_enabled() -> bool {
@@ -127,7 +127,9 @@ impl ForkMonitor {
         } else {
             info!("Attached fork monitor to fork() at {:#x}", fork_addr);
             #[cfg(target_os = "macos")]
-            { fork_attached = true; }
+            {
+                fork_attached = true;
+            }
         }
 
         // Replace vfork with fork
@@ -164,7 +166,10 @@ impl ForkMonitor {
         {
             // If attach failed, rebind fork().
             if !fork_attached {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol("fork", fork_rebind_wrapper as *const () as usize) {
+                if let Ok(patched) = malwi_intercept::module::rebind_symbol(
+                    "fork",
+                    fork_rebind_wrapper as *const () as usize,
+                ) {
                     info!("Rebound fork in {} locations", patched.len());
                     fork_rebind = Some(patched);
                     if agent_debug_enabled() {
@@ -172,7 +177,10 @@ impl ForkMonitor {
                     }
                 }
                 if !__FORK_IMPL.load(Ordering::SeqCst).is_null() {
-                    if let Ok(patched) = malwi_intercept::module::rebind_symbol("__fork", __fork_rebind_wrapper as *const () as usize) {
+                    if let Ok(patched) = malwi_intercept::module::rebind_symbol(
+                        "__fork",
+                        __fork_rebind_wrapper as *const () as usize,
+                    ) {
                         info!("Rebound __fork in {} locations", patched.len());
                         fork_rebind = Some(patched);
                         if agent_debug_enabled() {
@@ -184,7 +192,10 @@ impl ForkMonitor {
 
             // If replace failed, rebind vfork() to call fork().
             if vfork_revert_addr.is_none() {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol("vfork", vfork_rebind_wrapper as *const () as usize) {
+                if let Ok(patched) = malwi_intercept::module::rebind_symbol(
+                    "vfork",
+                    vfork_rebind_wrapper as *const () as usize,
+                ) {
                     info!("Rebound vfork in {} locations", patched.len());
                     vfork_rebind = Some(patched);
                 }
@@ -305,19 +316,13 @@ pub(crate) unsafe extern "C" fn __fork_rebind_wrapper() -> libc::pid_t {
 }
 
 /// Callback when fork is about to be called.
-unsafe extern "C" fn on_fork_enter(
-    _context: *mut InvocationContext,
-    _user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_fork_enter(_context: *mut InvocationContext, _user_data: *mut c_void) {
     debug!("fork() enter");
     // Nothing to do on enter - we just need to track the call
 }
 
 /// Callback when fork returns.
-unsafe extern "C" fn on_fork_leave(
-    context: *mut InvocationContext,
-    user_data: *mut c_void,
-) {
+unsafe extern "C" fn on_fork_leave(context: *mut InvocationContext, user_data: *mut c_void) {
     let result = malwi_intercept::invocation::get_return_value(context) as isize as i64;
 
     debug!("fork() leave, result = {}", result);

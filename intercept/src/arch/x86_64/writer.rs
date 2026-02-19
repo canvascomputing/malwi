@@ -152,14 +152,24 @@ impl X86_64Writer {
 
     /// `mov dst, [base + offset]` (64-bit load)
     pub unsafe fn put_mov_reg_mem(&mut self, dst: Reg, base: Reg, offset: i32) {
-        self.emit(Self::rex(true, dst.is_extended(), false, base.is_extended()));
+        self.emit(Self::rex(
+            true,
+            dst.is_extended(),
+            false,
+            base.is_extended(),
+        ));
         self.emit(0x8B);
         self.emit_modrm_base_disp32(dst.lo3(), base, offset);
     }
 
     /// `mov [base + offset], src` (64-bit store)
     pub unsafe fn put_mov_mem_reg(&mut self, base: Reg, offset: i32, src: Reg) {
-        self.emit(Self::rex(true, src.is_extended(), false, base.is_extended()));
+        self.emit(Self::rex(
+            true,
+            src.is_extended(),
+            false,
+            base.is_extended(),
+        ));
         self.emit(0x89);
         self.emit_modrm_base_disp32(src.lo3(), base, offset);
     }
@@ -168,7 +178,12 @@ impl X86_64Writer {
 
     /// `lea dst, [base + offset]` (64-bit)
     pub unsafe fn put_lea_reg_mem(&mut self, dst: Reg, base: Reg, offset: i32) {
-        self.emit(Self::rex(true, dst.is_extended(), false, base.is_extended()));
+        self.emit(Self::rex(
+            true,
+            dst.is_extended(),
+            false,
+            base.is_extended(),
+        ));
         self.emit(0x8D);
         self.emit_modrm_base_disp32(dst.lo3(), base, offset);
     }
@@ -340,18 +355,77 @@ impl X86_64Writer {
         let mut remaining = n;
         while remaining > 0 {
             match remaining {
-                1 => { self.emit(0x90); remaining -= 1; }
-                2 => { self.emit(0x66); self.emit(0x90); remaining -= 2; }
-                3 => { self.emit(0x0F); self.emit(0x1F); self.emit(0x00); remaining -= 3; }
-                4 => { self.emit(0x0F); self.emit(0x1F); self.emit(0x40); self.emit(0x00); remaining -= 4; }
-                5 => { self.emit(0x0F); self.emit(0x1F); self.emit(0x44); self.emit(0x00); self.emit(0x00); remaining -= 5; }
-                6 => { self.emit(0x66); self.emit(0x0F); self.emit(0x1F); self.emit(0x44); self.emit(0x00); self.emit(0x00); remaining -= 6; }
-                7 => { self.emit(0x0F); self.emit(0x1F); self.emit(0x80); self.emit(0x00); self.emit(0x00); self.emit(0x00); self.emit(0x00); remaining -= 7; }
-                8 => { self.emit(0x0F); self.emit(0x1F); self.emit(0x84); self.emit(0x00); self.emit(0x00); self.emit(0x00); self.emit(0x00); self.emit(0x00); remaining -= 8; }
+                1 => {
+                    self.emit(0x90);
+                    remaining -= 1;
+                }
+                2 => {
+                    self.emit(0x66);
+                    self.emit(0x90);
+                    remaining -= 2;
+                }
+                3 => {
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x00);
+                    remaining -= 3;
+                }
+                4 => {
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x40);
+                    self.emit(0x00);
+                    remaining -= 4;
+                }
+                5 => {
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x44);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    remaining -= 5;
+                }
+                6 => {
+                    self.emit(0x66);
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x44);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    remaining -= 6;
+                }
+                7 => {
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x80);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    remaining -= 7;
+                }
+                8 => {
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x84);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    remaining -= 8;
+                }
                 _ => {
                     // 9-byte NOP: 66 0F 1F 84 00 00 00 00 00
-                    self.emit(0x66); self.emit(0x0F); self.emit(0x1F); self.emit(0x84);
-                    self.emit(0x00); self.emit(0x00); self.emit(0x00); self.emit(0x00); self.emit(0x00);
+                    self.emit(0x66);
+                    self.emit(0x0F);
+                    self.emit(0x1F);
+                    self.emit(0x84);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
+                    self.emit(0x00);
                     remaining -= 9;
                 }
             }
@@ -397,8 +471,14 @@ mod tests {
 
     #[test]
     fn push_pop_r12() {
-        assert_eq!(encode(|w| unsafe { w.put_push_reg(Reg::R12) }), &[0x41, 0x54]);
-        assert_eq!(encode(|w| unsafe { w.put_pop_reg(Reg::R12) }), &[0x41, 0x5C]);
+        assert_eq!(
+            encode(|w| unsafe { w.put_push_reg(Reg::R12) }),
+            &[0x41, 0x54]
+        );
+        assert_eq!(
+            encode(|w| unsafe { w.put_pop_reg(Reg::R12) }),
+            &[0x41, 0x5C]
+        );
     }
 
     #[test]
@@ -408,7 +488,10 @@ mod tests {
         assert_eq!(bytes.len(), 10);
         assert_eq!(bytes[0], 0x48);
         assert_eq!(bytes[1], 0xB8);
-        assert_eq!(u64::from_le_bytes(bytes[2..10].try_into().unwrap()), 0xDEADBEEFCAFEBABE);
+        assert_eq!(
+            u64::from_le_bytes(bytes[2..10].try_into().unwrap()),
+            0xDEADBEEFCAFEBABE
+        );
     }
 
     #[test]
@@ -473,7 +556,10 @@ mod tests {
         assert_eq!(bytes.len(), 16);
         assert_eq!(&bytes[0..6], &[0xFF, 0x25, 0x02, 0x00, 0x00, 0x00]);
         assert_eq!(&bytes[6..8], &[0x0F, 0x0B]); // UD2
-        assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 0xDEADBEEFCAFEBABE);
+        assert_eq!(
+            u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            0xDEADBEEFCAFEBABE
+        );
     }
 
     #[test]

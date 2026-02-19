@@ -116,7 +116,11 @@ fn compile_pattern_with_options(
 /// - `**/` matches zero or more path segments
 /// - `?` matches any single character
 /// - All other characters are escaped for literal matching
-fn glob_to_regex(glob: &str, case_insensitive: bool, force_path_mode: bool) -> PatternResult<Regex> {
+fn glob_to_regex(
+    glob: &str,
+    case_insensitive: bool,
+    force_path_mode: bool,
+) -> PatternResult<Regex> {
     let mut regex = String::new();
 
     if case_insensitive {

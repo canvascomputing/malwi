@@ -13,9 +13,9 @@ use anyhow::Result;
 use log::debug;
 
 use malwi_protocol::{
-    ChildReconnectRequest, CommandResponse, ConfigureRequest, ConfigureResponse, HostChildInfo,
-    ReadyRequest, ReviewDecision, ReviewRequest, ReviewResponse, RuntimeInfoRequest,
-    ShutdownRequest, TraceEvent, protocol::ModuleInfo,
+    protocol::ModuleInfo, ChildReconnectRequest, CommandResponse, ConfigureRequest,
+    ConfigureResponse, HostChildInfo, ReadyRequest, ReviewDecision, ReviewRequest, ReviewResponse,
+    RuntimeInfoRequest, ShutdownRequest, TraceEvent,
 };
 
 /// HTTP client for communicating with the CLI server.
@@ -82,12 +82,10 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(u16, String)> {
         .unwrap_or(0);
 
     // Check for chunked transfer encoding
-    let is_chunked = header_str
-        .lines()
-        .any(|line| {
-            line.to_ascii_lowercase().starts_with("transfer-encoding:")
-                && line.to_ascii_lowercase().contains("chunked")
-        });
+    let is_chunked = header_str.lines().any(|line| {
+        line.to_ascii_lowercase().starts_with("transfer-encoding:")
+            && line.to_ascii_lowercase().contains("chunked")
+    });
 
     // Read body
     let body = if is_chunked {
@@ -140,10 +138,7 @@ impl HttpClient {
     /// Create a new HTTP client pointing at the CLI server.
     pub fn new(url: &str) -> Self {
         // Extract host:port from URL like "http://127.0.0.1:12345"
-        let addr = url
-            .strip_prefix("http://")
-            .unwrap_or(url)
-            .to_string();
+        let addr = url.strip_prefix("http://").unwrap_or(url).to_string();
 
         HttpClient {
             addr: addr.clone(),
@@ -171,10 +166,7 @@ impl HttpClient {
         }
 
         // Create new connection
-        let stream = TcpStream::connect_timeout(
-            &self.addr.parse()?,
-            timeout,
-        )?;
+        let stream = TcpStream::connect_timeout(&self.addr.parse()?, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         stream.set_nodelay(true)?;
@@ -244,10 +236,7 @@ impl HttpClient {
                 Err(e) => return Err(e),
             };
 
-            let request = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\n\r\n",
-                path, self.addr
-            );
+            let request = format!("GET {} HTTP/1.1\r\nHost: {}\r\n\r\n", path, self.addr);
 
             if let Err(e) = stream.write_all(request.as_bytes()) {
                 if attempt == 0 {
@@ -288,7 +277,13 @@ impl HttpClient {
             match self.post(path, body, Duration::from_secs(10)) {
                 Ok(resp) => return Ok(resp),
                 Err(e) => {
-                    debug!("POST {} attempt {}/{} failed: {}", path, attempt + 1, max_retries + 1, e);
+                    debug!(
+                        "POST {} attempt {}/{} failed: {}",
+                        path,
+                        attempt + 1,
+                        max_retries + 1,
+                        e
+                    );
                     last_err = Some(e);
                 }
             }
@@ -298,11 +293,7 @@ impl HttpClient {
 
     /// Request configuration from the CLI (POST /configure).
     /// Retries with backoff to handle race between agent init and CLI server start.
-    pub fn configure(
-        &self,
-        pid: u32,
-        nodejs_version: Option<u32>,
-    ) -> Result<ConfigureResponse> {
+    pub fn configure(&self, pid: u32, nodejs_version: Option<u32>) -> Result<ConfigureResponse> {
         let req = ConfigureRequest {
             pid,
             nodejs_version,

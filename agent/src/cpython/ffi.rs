@@ -95,32 +95,25 @@ pub type Py_IsInitializedFn = unsafe extern "C" fn() -> c_int;
 /// Returns thread ID on success, PYTHREAD_INVALID_THREAD_ID (-1) on failure
 /// This is the low-level C function called by both threading.Thread and _thread.start_new_thread
 #[allow(dead_code)] // Documented for reference; we hook by address not by type
-pub type PyThread_start_new_threadFn = unsafe extern "C" fn(
-    func: extern "C" fn(*mut c_void),
-    arg: *mut c_void,
-) -> std::ffi::c_ulong;
+pub type PyThread_start_new_threadFn =
+    unsafe extern "C" fn(func: extern "C" fn(*mut c_void), arg: *mut c_void) -> std::ffi::c_ulong;
 
 /// PyAuditHookFunction type for PySys_AddAuditHook
-pub type PyAuditHookFunction = unsafe extern "C" fn(
-    event: *const c_char,
-    args: *mut c_void,
-    user_data: *mut c_void,
-) -> c_int;
+pub type PyAuditHookFunction =
+    unsafe extern "C" fn(event: *const c_char, args: *mut c_void, user_data: *mut c_void) -> c_int;
 
 /// PySys_AddAuditHook function type
 pub type PySys_AddAuditHookFn =
     unsafe extern "C" fn(hook: PyAuditHookFunction, user_data: *mut c_void) -> c_int;
 
 /// PyInterpreterState_ThreadHead - get first thread in interpreter
-pub type PyInterpreterState_ThreadHeadFn =
-    unsafe extern "C" fn(interp: *mut c_void) -> *mut c_void;
+pub type PyInterpreterState_ThreadHeadFn = unsafe extern "C" fn(interp: *mut c_void) -> *mut c_void;
 
 /// PyThreadState_Next - get next thread in list
 pub type PyThreadState_NextFn = unsafe extern "C" fn(tstate: *mut c_void) -> *mut c_void;
 
 /// PyThreadState_GetInterpreter - get interpreter from thread state (Python 3.9+)
-pub type PyThreadState_GetInterpreterFn =
-    unsafe extern "C" fn(tstate: *mut c_void) -> *mut c_void;
+pub type PyThreadState_GetInterpreterFn = unsafe extern "C" fn(tstate: *mut c_void) -> *mut c_void;
 
 /// _PyThreadState_UncheckedGet - get current thread state (may be NULL)
 pub type PyThreadState_UncheckedGetFn = unsafe extern "C" fn() -> *mut c_void;
@@ -227,10 +220,9 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         .ok()
         .map(|addr| unsafe { std::mem::transmute(addr) });
 
-    let object_get_item: Option<PyObject_GetItemFn> =
-        native::find_export(None, "PyObject_GetItem")
-            .ok()
-            .map(|addr| unsafe { std::mem::transmute(addr) });
+    let object_get_item: Option<PyObject_GetItemFn> = native::find_export(None, "PyObject_GetItem")
+        .ok()
+        .map(|addr| unsafe { std::mem::transmute(addr) });
 
     let object_repr: Option<PyObject_ReprFn> = native::find_export(None, "PyObject_Repr")
         .ok()
@@ -261,10 +253,9 @@ pub fn resolve_python_api() -> Option<PythonApi> {
             .ok()
             .map(|addr| unsafe { std::mem::transmute(addr) });
 
-    let tstate_next: Option<PyThreadState_NextFn> =
-        native::find_export(None, "PyThreadState_Next")
-            .ok()
-            .map(|addr| unsafe { std::mem::transmute(addr) });
+    let tstate_next: Option<PyThreadState_NextFn> = native::find_export(None, "PyThreadState_Next")
+        .ok()
+        .map(|addr| unsafe { std::mem::transmute(addr) });
 
     let tstate_get_interp: Option<PyThreadState_GetInterpreterFn> =
         native::find_export(None, "PyThreadState_GetInterpreter")

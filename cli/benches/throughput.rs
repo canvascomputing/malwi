@@ -101,7 +101,9 @@ fn bench_throughput(c: &mut Criterion) {
         let addr = addr_from_url(&url);
         let mut stream = TcpStream::connect(addr).unwrap();
         stream.set_nodelay(true).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         c.bench_function("single_event_roundtrip", |b| {
             let event = make_event(0);
             let json = serde_json::to_string(&event).unwrap();
@@ -117,7 +119,9 @@ fn bench_throughput(c: &mut Criterion) {
         let addr = addr_from_url(&url);
         let mut stream = TcpStream::connect(addr).unwrap();
         stream.set_nodelay(true).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         c.bench_function("burst_100_events", |b| {
             b.iter(|| {
                 for i in 0..100u64 {
@@ -135,7 +139,9 @@ fn bench_throughput(c: &mut Criterion) {
         let addr = addr_from_url(&url);
         let mut stream = TcpStream::connect(addr).unwrap();
         stream.set_nodelay(true).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let batch: Vec<TraceEvent> = (0..64).map(make_event).collect();
         let batch_json = serde_json::to_string(&batch).unwrap();
         c.bench_function("batch_64_events", |b| {

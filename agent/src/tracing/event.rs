@@ -222,7 +222,11 @@ mod tests {
 
     #[test]
     fn test_exec_event() {
-        let event = exec_event("curl", Some(vec!["curl".to_string(), "--version".to_string()])).build();
+        let event = exec_event(
+            "curl",
+            Some(vec!["curl".to_string(), "--version".to_string()]),
+        )
+        .build();
         assert_eq!(event.function, "curl");
         assert_eq!(event.hook_type, HookType::Exec);
         assert!(matches!(event.event_type, EventType::Enter));

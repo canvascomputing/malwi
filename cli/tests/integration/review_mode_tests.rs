@@ -2,10 +2,10 @@
 //!
 //! Tests for the interactive review mode that prompts before function execution.
 
-use std::path::PathBuf;
 use crate::common::*;
-use crate::skip_if_no_node_primary;
 use crate::skip_if_no_bash_primary;
+use crate::skip_if_no_node_primary;
+use std::path::PathBuf;
 
 fn setup() {
     build_fixtures();
@@ -13,10 +13,7 @@ fn setup() {
 
 /// Find Python 3.11+ specifically (required for argument extraction)
 fn find_python311() -> Option<PathBuf> {
-    for path in [
-        "/usr/local/bin/python3.12",
-        "/usr/local/bin/python3.11",
-    ] {
+    for path in ["/usr/local/bin/python3.12", "/usr/local/bin/python3.11"] {
         let p = PathBuf::from(path);
         if p.exists() {
             return Some(p);
@@ -35,8 +32,15 @@ fn test_review_mode_approve_allows_native_execution() {
 
     // Test review mode with approve (Y) - function should execute
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "Y\nY\n",  // Approve all calls
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "Y\nY\n", // Approve all calls
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -47,7 +51,8 @@ fn test_review_mode_approve_allows_native_execution() {
     assert!(
         output.status.success(),
         "Review mode approve test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should show review prompt
@@ -71,8 +76,15 @@ fn test_review_mode_deny_blocks_native_execution() {
 
     // Test review mode with deny (n) - function should be blocked
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "n\nn\n",  // Deny all calls
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "n\nn\n", // Deny all calls
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -90,7 +102,8 @@ fn test_review_mode_deny_blocks_native_execution() {
     assert!(
         has_review_blocked(&stdout, "simple_target_marker"),
         "Expected BLOCKED message for simple_target_marker. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -100,8 +113,15 @@ fn test_review_mode_inspect_shows_details_then_reprompts() {
 
     // Test review mode with inspect (i) then approve - should show details
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "i\nY\ni\nY\n",  // Inspect then approve for each call
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "i\nY\ni\nY\n", // Inspect then approve for each call
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -112,7 +132,8 @@ fn test_review_mode_inspect_shows_details_then_reprompts() {
     assert!(
         output.status.success(),
         "Review mode inspect test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should show review prompt
@@ -158,13 +179,15 @@ print(f"Result: {result}")
 
     let output = run_tracer_with_stdin(
         &[
-            "x", "-r",
-            "--py", "target_func",
+            "x",
+            "-r",
+            "--py",
+            "target_func",
             "--",
             python.to_str().unwrap(),
             "/tmp/test_review_py.py",
         ],
-        "Y\n",  // Approve
+        "Y\n", // Approve
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -175,7 +198,8 @@ print(f"Result: {result}")
     assert!(
         output.status.success(),
         "Python review approve test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should show review prompt with Python function
@@ -220,13 +244,15 @@ except PermissionError as e:
 
     let output = run_tracer_with_stdin(
         &[
-            "x", "-r",
-            "--py", "target_func",
+            "x",
+            "-r",
+            "--py",
+            "target_func",
             "--",
             python.to_str().unwrap(),
             "/tmp/test_review_py_deny.py",
         ],
-        "n\n",  // Deny
+        "n\n", // Deny
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -237,13 +263,14 @@ except PermissionError as e:
     assert!(
         has_review_blocked(&stdout, "target_func"),
         "Expected BLOCKED message for target_func. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Function should have been blocked (PermissionError caught or uncaught)
-    let was_blocked = stdout.contains("Blocked:") ||
-                      stdout.contains("PermissionError") ||
-                      stderr.contains("PermissionError");
+    let was_blocked = stdout.contains("Blocked:")
+        || stdout.contains("PermissionError")
+        || stderr.contains("PermissionError");
     assert!(
         was_blocked,
         "Expected PermissionError when function blocked. stdout: {}, stderr: {}",
@@ -281,13 +308,15 @@ print(greet("World", "Hi"))
 
     let output = run_tracer_with_stdin(
         &[
-            "x", "-r",
-            "--py", "greet",
+            "x",
+            "-r",
+            "--py",
+            "greet",
             "--",
             python.to_str().unwrap(),
             "/tmp/test_review_py_inspect.py",
         ],
-        "i\nY\n",  // Inspect then approve
+        "i\nY\n", // Inspect then approve
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -298,7 +327,8 @@ print(greet("World", "Hi"))
     assert!(
         has_review_details(&stdout),
         "Expected details section. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Details should show argument values (World, Hi)
@@ -412,8 +442,15 @@ fn test_review_mode_empty_input_defaults_to_approve() {
 
     // Empty input (just Enter) should default to approve (Y)
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "\n\n",  // Just Enter = approve
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "\n\n", // Just Enter = approve
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -424,7 +461,8 @@ fn test_review_mode_empty_input_defaults_to_approve() {
     assert!(
         output.status.success(),
         "Review mode empty input test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should NOT show denied
@@ -443,12 +481,14 @@ fn test_review_mode_prompts_for_each_call() {
     // simple_target calls simple_target_marker twice
     let output = run_tracer_with_stdin(
         &[
-            "x", "-r",
-            "-s", "simple_target_marker",
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
             "--",
             "./simple_target",
         ],
-        "Y\nY\n",  // Approve both calls
+        "Y\nY\n", // Approve both calls
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -459,7 +499,8 @@ fn test_review_mode_prompts_for_each_call() {
     assert!(
         output.status.success(),
         "Review mode multiple calls test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have multiple prompts for the same function
@@ -467,7 +508,8 @@ fn test_review_mode_prompts_for_each_call() {
     assert!(
         prompt_count >= 2,
         "Expected at least 2 review prompts for simple_target_marker. Got {}. stdout: {}",
-        prompt_count, stdout
+        prompt_count,
+        stdout
     );
 }
 
@@ -477,8 +519,15 @@ fn test_review_mode_approve_is_case_insensitive() {
 
     // Test that 'y' (lowercase) also approves
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "y\ny\n",  // lowercase y
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "y\ny\n", // lowercase y
     );
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -489,7 +538,8 @@ fn test_review_mode_approve_is_case_insensitive() {
     assert!(
         output.status.success(),
         "Review mode lowercase 'y' test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should NOT show denied
@@ -506,7 +556,14 @@ fn test_review_mode_enabled_with_short_flag() {
 
     // Test -r short flag works
     let output = run_tracer_with_stdin(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
         "Y\nY\n",
     );
 
@@ -526,7 +583,14 @@ fn test_review_mode_enabled_with_long_flag() {
 
     // Test --review long flag works
     let output = run_tracer_with_stdin(
-        &["x", "--review", "-s", "simple_target_marker", "--", "./simple_target"],
+        &[
+            "x",
+            "--review",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
         "Y\nY\n",
     );
 
@@ -558,8 +622,15 @@ fn test_review_mode_deny_caches_block_decision() {
     // should cache the block; the second call should be blocked instantly.
     // The process must complete within the timeout (no hang).
     let output = run_tracer_with_stdin_timeout(
-        &["x", "-r", "-s", "simple_target_marker", "--", "./simple_target"],
-        "n\n",  // Deny the first call; second should be cached
+        &[
+            "x",
+            "-r",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
+        "n\n", // Deny the first call; second should be cached
         std::time::Duration::from_secs(10),
     );
 
@@ -572,7 +643,8 @@ fn test_review_mode_deny_caches_block_decision() {
     assert!(
         output.status.success() || output.status.code().is_some(),
         "Process should complete, not hang. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should show exactly one BLOCKED message (first call denied by user)
@@ -580,7 +652,8 @@ fn test_review_mode_deny_caches_block_decision() {
     assert!(
         has_review_blocked(&stdout, "simple_target_marker"),
         "Expected BLOCKED message for simple_target_marker. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should show exactly one review prompt (not two — second call is cached)

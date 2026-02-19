@@ -32,7 +32,10 @@ python@warn:
     - eval
 "#;
     let result = parse_and_validate(yaml);
-    assert!(matches!(result, Err(ValidationError::DeprecatedAtSyntax(_))));
+    assert!(matches!(
+        result,
+        Err(ValidationError::DeprecatedAtSyntax(_))
+    ));
 }
 
 #[test]
@@ -180,7 +183,8 @@ version: 1
         assert!(
             matches!(result, Err(ValidationError::UnknownSection(_))),
             "{} should be rejected, got {:?}",
-            name, result
+            name,
+            result
         );
     }
 }

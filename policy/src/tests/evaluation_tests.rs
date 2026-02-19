@@ -699,23 +699,16 @@ commands:
     assert_eq!(f1.section_mode(), EnforcementMode::Log);
 
     assert_eq!(
-        engine
-            .evaluate_file("/etc/passwd", Operation::Read)
-            .action,
+        engine.evaluate_file("/etc/passwd", Operation::Read).action,
         PolicyAction::Deny
     );
 
     // Envvar tests (global)
     assert_eq!(
-        engine
-            .evaluate_envvar("AWS_SECRET")
-            .action,
+        engine.evaluate_envvar("AWS_SECRET").action,
         PolicyAction::Deny
     );
-    assert_eq!(
-        engine.evaluate_envvar("HOME").action,
-        PolicyAction::Allow
-    );
+    assert_eq!(engine.evaluate_envvar("HOME").action, PolicyAction::Allow);
 
     // Node.js tests
     assert_eq!(
@@ -725,17 +718,12 @@ commands:
         PolicyAction::Allow
     );
     assert_eq!(
-        engine
-            .evaluate_function(Runtime::Node, "eval", &[])
-            .action,
+        engine.evaluate_function(Runtime::Node, "eval", &[]).action,
         PolicyAction::Deny
     ); // Not in allow list
 
     // Networking tests
-    assert_eq!(
-        engine.evaluate_protocol("tcp").action,
-        PolicyAction::Allow
-    );
+    assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Allow);
     assert_eq!(engine.evaluate_protocol("ftp").action, PolicyAction::Deny);
     assert_eq!(
         engine.evaluate_domain("hidden.onion").action,
@@ -780,18 +768,26 @@ nodejs:
 
     // Listed functions allowed
     assert_eq!(
-        engine.evaluate_function(Runtime::Node, "JSON.parse", &[]).action,
+        engine
+            .evaluate_function(Runtime::Node, "JSON.parse", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
-        engine.evaluate_function(Runtime::Node, "console.log", &[]).action,
+        engine
+            .evaluate_function(Runtime::Node, "console.log", &[])
+            .action,
         PolicyAction::Allow
     );
 
     // axios with allowed URL
     assert_eq!(
         engine
-            .evaluate_function(Runtime::Node, "axios.get", &["https://api.example.com/users"])
+            .evaluate_function(
+                Runtime::Node,
+                "axios.get",
+                &["https://api.example.com/users"]
+            )
             .action,
         PolicyAction::Allow
     );
@@ -944,21 +940,29 @@ nodejs:
 
     // Old format works
     assert_eq!(
-        engine.evaluate_function(Runtime::Python, "json.loads", &[]).action,
+        engine
+            .evaluate_function(Runtime::Python, "json.loads", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
-        engine.evaluate_function(Runtime::Python, "eval", &[]).action,
+        engine
+            .evaluate_function(Runtime::Python, "eval", &[])
+            .action,
         PolicyAction::Deny
     );
 
     // New format works
     assert_eq!(
-        engine.evaluate_function(Runtime::Node, "JSON.parse", &[]).action,
+        engine
+            .evaluate_function(Runtime::Node, "JSON.parse", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
-        engine.evaluate_function(Runtime::Node, "console.log", &[]).action,
+        engine
+            .evaluate_function(Runtime::Node, "console.log", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
@@ -1058,11 +1062,15 @@ commands:
 
     // Test python section (old format with allow/deny)
     assert_eq!(
-        engine.evaluate_function(Runtime::Python, "json.loads", &[]).action,
+        engine
+            .evaluate_function(Runtime::Python, "json.loads", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
-        engine.evaluate_function(Runtime::Python, "eval", &[]).action,
+        engine
+            .evaluate_function(Runtime::Python, "eval", &[])
+            .action,
         PolicyAction::Deny
     );
     assert_eq!(
@@ -1078,16 +1086,24 @@ commands:
 
     // Test nodejs section (new format - direct list)
     assert_eq!(
-        engine.evaluate_function(Runtime::Node, "JSON.parse", &[]).action,
-        PolicyAction::Allow
-    );
-    assert_eq!(
-        engine.evaluate_function(Runtime::Node, "console.log", &[]).action,
+        engine
+            .evaluate_function(Runtime::Node, "JSON.parse", &[])
+            .action,
         PolicyAction::Allow
     );
     assert_eq!(
         engine
-            .evaluate_function(Runtime::Node, "axios.get", &["https://api.example.com/users"])
+            .evaluate_function(Runtime::Node, "console.log", &[])
+            .action,
+        PolicyAction::Allow
+    );
+    assert_eq!(
+        engine
+            .evaluate_function(
+                Runtime::Node,
+                "axios.get",
+                &["https://api.example.com/users"]
+            )
             .action,
         PolicyAction::Allow
     );
@@ -1114,7 +1130,10 @@ commands:
 
     // Test network section — protocols
     assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Allow);
-    assert_eq!(engine.evaluate_protocol("https").action, PolicyAction::Allow);
+    assert_eq!(
+        engine.evaluate_protocol("https").action,
+        PolicyAction::Allow
+    );
     assert_eq!(engine.evaluate_protocol("ftp").action, PolicyAction::Deny);
 
     // Test network section — domain patterns
@@ -1310,13 +1329,15 @@ python:
     );
 
     // evil.com is denied (deny constraint matches)
-    let d1 =
-        engine.evaluate_function(Runtime::Python, "requests.get", &["https://evil.com/malware"]);
+    let d1 = engine.evaluate_function(
+        Runtime::Python,
+        "requests.get",
+        &["https://evil.com/malware"],
+    );
     assert_eq!(d1.action, PolicyAction::Deny);
 
     // api.com is allowed (no deny match, allow constraint matches)
-    let d2 =
-        engine.evaluate_function(Runtime::Python, "requests.get", &["https://api.com/users"]);
+    let d2 = engine.evaluate_function(Runtime::Python, "requests.get", &["https://api.com/users"]);
     assert_eq!(d2.action, PolicyAction::Allow);
 
     // other.com is denied (has allow rules but none match)
@@ -1372,11 +1393,7 @@ python:
     assert_eq!(d1.action, PolicyAction::Deny);
 
     // Different function with non-matching URL
-    let d2 = engine.evaluate_function(
-        Runtime::Python,
-        "requests.post",
-        &["https://api2.com/data"],
-    );
+    let d2 = engine.evaluate_function(Runtime::Python, "requests.post", &["https://api2.com/data"]);
     assert_eq!(d2.action, PolicyAction::Deny);
 
     // Completely unlisted function
@@ -1604,17 +1621,11 @@ files:
     );
 
     // Deeply nested py file allowed
-    let d1 = engine.evaluate_file(
-        "/app/src/lib/utils/helpers/core/main.py",
-        Operation::Read,
-    );
+    let d1 = engine.evaluate_file("/app/src/lib/utils/helpers/core/main.py", Operation::Read);
     assert_eq!(d1.action, PolicyAction::Allow);
 
     // Deeply nested secret file denied
-    let d2 = engine.evaluate_file(
-        "/app/src/lib/secret/password.py",
-        Operation::Read,
-    );
+    let d2 = engine.evaluate_file("/app/src/lib/secret/password.py", Operation::Read);
     assert_eq!(d2.action, PolicyAction::Deny);
 }
 
@@ -1905,18 +1916,12 @@ network:
     assert_eq!(d1.mode, EnforcementMode::Block);
 
     // http:// → denied with Warn
-    let d2 = engine.evaluate_http_url(
-        "http://example.com/insecure",
-        "example.com/insecure",
-    );
+    let d2 = engine.evaluate_http_url("http://example.com/insecure", "example.com/insecure");
     assert_eq!(d2.action, PolicyAction::Deny);
     assert_eq!(d2.mode, EnforcementMode::Warn);
 
     // https safe site → allowed
-    let d3 = engine.evaluate_http_url(
-        "https://example.com/safe",
-        "example.com/safe",
-    );
+    let d3 = engine.evaluate_http_url("https://example.com/safe", "example.com/safe");
     assert_eq!(d3.action, PolicyAction::Allow);
 }
 
@@ -2127,13 +2132,11 @@ python:
   deny:
     - "os.path.*"
 "#,
-            checks: vec![
-                SpecificityCheck {
-                    target: EvalTarget::Function(Runtime::Python, "os.path.join"),
-                    expected_action: PolicyAction::Allow,
-                    expected_rule: Some("os.path.join"),
-                },
-            ],
+            checks: vec![SpecificityCheck {
+                target: EvalTarget::Function(Runtime::Python, "os.path.join"),
+                expected_action: PolicyAction::Allow,
+                expected_rule: Some("os.path.join"),
+            }],
         },
         // --- Tie: same pattern both sides → deny wins ---
         SpecificityCase {
@@ -2146,13 +2149,11 @@ python:
   deny:
     - eval
 "#,
-            checks: vec![
-                SpecificityCheck {
-                    target: EvalTarget::Function(Runtime::Python, "eval"),
-                    expected_action: PolicyAction::Deny,
-                    expected_rule: Some("eval"),
-                },
-            ],
+            checks: vec![SpecificityCheck {
+                target: EvalTarget::Function(Runtime::Python, "eval"),
+                expected_action: PolicyAction::Deny,
+                expected_rule: Some("eval"),
+            }],
         },
         // --- Commands: exact allow + glob deny ---
         SpecificityCase {
@@ -2263,9 +2264,7 @@ files:
             let decision = match &check.target {
                 EvalTarget::Function(rt, name) => engine.evaluate_function(*rt, name, &[]),
                 EvalTarget::Execution(cmd) => engine.evaluate_execution(cmd),
-                EvalTarget::HttpUrl(full, no_scheme) => {
-                    engine.evaluate_http_url(full, no_scheme)
-                }
+                EvalTarget::HttpUrl(full, no_scheme) => engine.evaluate_http_url(full, no_scheme),
                 EvalTarget::Domain(d) => engine.evaluate_domain(d),
                 EvalTarget::File(path) => engine.evaluate_file(path, Operation::Read),
             };
@@ -2279,7 +2278,10 @@ files:
                     decision.matched_rule.as_deref(),
                     Some(expected_rule),
                     "[{}] check #{}: expected rule {:?}, got {:?}",
-                    case.name, i, expected_rule, decision.matched_rule,
+                    case.name,
+                    i,
+                    expected_rule,
+                    decision.matched_rule,
                 );
             }
         }

@@ -44,16 +44,17 @@ fn test_air_gap_bypass_attempts() {
             let output = run_tracer_with_timeout(
                 &[
                     "x",
-                    "-p", POLICY,
+                    "-p",
+                    POLICY,
                     "--",
                     target.to_str().unwrap(),
-                    "/dev/null", "127.0.0.1", "4444",
+                    "/dev/null",
+                    "127.0.0.1",
+                    "4444",
                 ],
                 Duration::from_secs(10),
             );
-            let stdout = strip_ansi_codes(
-                &String::from_utf8_lossy(&output.stdout),
-            );
+            let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
             // The native connect() or socket() should be denied by the policy.
             assert!(
                 stdout.contains("denied:"),
@@ -138,7 +139,6 @@ fn test_air_gap_bypass_attempts() {
     // a socket without going through libc. This vector requires the
     // syscall monitor which is not yet implemented in malwi-hook.
     // TODO: Re-enable when syscall detection is re-implemented.
-
 }
 
 /// Exfiltration-specific vectors: attempts to smuggle data out through

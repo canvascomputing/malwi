@@ -10,7 +10,8 @@ use std::sync::LazyLock;
 use crate::tracing::filter::FilterManager;
 
 /// Global filter manager for envvar deny patterns.
-static ENVVAR_DENY_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| FilterManager::new("EnvVar"));
+static ENVVAR_DENY_FILTERS: LazyLock<FilterManager> =
+    LazyLock::new(|| FilterManager::new("EnvVar"));
 
 /// Add an envvar deny pattern (e.g. "AWS_*", "*SECRET*").
 pub fn add_deny_pattern(pattern: &str) {

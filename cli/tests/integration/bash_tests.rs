@@ -28,7 +28,8 @@ fn write_temp_policy(content: &str) -> (PathBuf, std::fs::File) {
         id
     ));
     let mut f = std::fs::File::create(&path).expect("failed to create temp policy file");
-    f.write_all(content.as_bytes()).expect("failed to write policy");
+    f.write_all(content.as_bytes())
+        .expect("failed to write policy");
     f.flush().expect("failed to flush policy");
     (path, f)
 }

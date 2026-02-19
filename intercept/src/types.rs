@@ -7,9 +7,9 @@ pub struct Arm64CpuContext {
     pub pc: u64,
     pub sp: u64,
     pub nzcv: u64,
-    pub x: [u64; 29], // x0-x28
-    pub fp: u64,      // x29
-    pub lr: u64,      // x30
+    pub x: [u64; 29],  // x0-x28
+    pub fp: u64,       // x29
+    pub lr: u64,       // x30
     pub v: [u128; 32], // q0-q31
 }
 

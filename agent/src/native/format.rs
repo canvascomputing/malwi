@@ -47,7 +47,7 @@ pub fn format_native_arguments(function: &str, arguments: &mut [Argument]) {
         "fcntl" | "_fcntl" => format_fcntl(arguments),
         "ioctl" | "_ioctl" => format_ioctl(arguments),
         "getpid" | "_getpid" | "getppid" | "_getppid" => {} // No args
-        "fork" | "_fork" | "vfork" | "_vfork" => {} // No args
+        "fork" | "_fork" | "vfork" | "_vfork" => {}         // No args
         "chdir" | "_chdir" => format_path_arg(arguments, 0),
         "getcwd" | "_getcwd" => {} // Returns path, hard to preview
         "link" | "_link" | "symlink" | "_symlink" => format_link(arguments),

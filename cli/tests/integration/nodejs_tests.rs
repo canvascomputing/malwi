@@ -10,7 +10,8 @@ fn setup() {
 }
 
 fn write_temp_node_module(name: &str, contents: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("malwi-nodejs-{}-{}.js", name, std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("malwi-nodejs-{}-{}.js", name, std::process::id()));
     std::fs::write(&path, contents).expect("failed to write temp js module");
     path
 }
@@ -515,10 +516,12 @@ fn test_nodejs_arguments_display_strings_with_quotes() {
     // Test that string arguments are displayed as quoted strings
     let output = run_tracer(&[
         "x",
-        "--js", "myFunc",
+        "--js",
+        "myFunc",
         "--",
         node.to_str().unwrap(),
-        "--eval", &eval,
+        "--eval",
+        &eval,
     ]);
 
     let _ = std::fs::remove_file(&script_path);
@@ -530,7 +533,8 @@ fn test_nodejs_arguments_display_strings_with_quotes() {
     assert!(
         output.status.success(),
         "V8 string argument test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced myFunc with the string argument "hello"
@@ -569,10 +573,12 @@ fn test_nodejs_arguments_display_mixed_types_correctly() {
     // Test mixed argument types: string, number, boolean
     let output = run_tracer(&[
         "x",
-        "--js", "mixedArgs",
+        "--js",
+        "mixedArgs",
         "--",
         node.to_str().unwrap(),
-        "--eval", &eval,
+        "--eval",
+        &eval,
     ]);
 
     let _ = std::fs::remove_file(&script_path);
@@ -584,7 +590,8 @@ fn test_nodejs_arguments_display_mixed_types_correctly() {
     assert!(
         output.status.success(),
         "V8 mixed arguments test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced mixedArgs
@@ -637,10 +644,12 @@ fn test_nodejs_arguments_handle_empty_string_correctly() {
     // Test empty string argument
     let output = run_tracer(&[
         "x",
-        "--js", "emptyStr",
+        "--js",
+        "emptyStr",
         "--",
         node.to_str().unwrap(),
-        "--eval", &eval,
+        "--eval",
+        &eval,
     ]);
 
     let _ = std::fs::remove_file(&script_path);
@@ -652,7 +661,8 @@ fn test_nodejs_arguments_handle_empty_string_correctly() {
     assert!(
         output.status.success(),
         "V8 empty string test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced emptyStr
@@ -687,10 +697,12 @@ fn test_nodejs_arguments_display_long_strings_visibly() {
     // Test longer string argument
     let output = run_tracer(&[
         "x",
-        "--js", "processData",
+        "--js",
+        "processData",
         "--",
         node.to_str().unwrap(),
-        "--eval", &eval,
+        "--eval",
+        &eval,
     ]);
 
     let _ = std::fs::remove_file(&script_path);
@@ -702,7 +714,8 @@ fn test_nodejs_arguments_display_long_strings_visibly() {
     assert!(
         output.status.success(),
         "V8 longer string test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced processData
@@ -741,10 +754,12 @@ fn test_nodejs_arguments_show_values_not_type_names() {
     // Verify strings are NOT displayed as just "String" type name
     let output = run_tracer(&[
         "x",
-        "--js", "checkStr",
+        "--js",
+        "checkStr",
         "--",
         node.to_str().unwrap(),
-        "--eval", &eval,
+        "--eval",
+        &eval,
     ]);
 
     let _ = std::fs::remove_file(&script_path);
@@ -756,7 +771,8 @@ fn test_nodejs_arguments_show_values_not_type_names() {
     assert!(
         output.status.success(),
         "V8 string type name test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced checkStr
@@ -842,10 +858,12 @@ fn test_nodejs_hybrid_traces_module_functions_once() {
     // The wrapper handles CommonJS module exports, v8_trace should skip them
     let output = run_tracer(&[
         "x",
-        "--js", "fs.existsSync",
+        "--js",
+        "fs.existsSync",
         "--",
         node.to_str().unwrap(),
-        "--eval", "require('fs').existsSync('/tmp');",
+        "--eval",
+        "require('fs').existsSync('/tmp');",
     ]);
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -855,7 +873,8 @@ fn test_nodejs_hybrid_traces_module_functions_once() {
     assert!(
         output.status.success(),
         "V8 hybrid module test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced fs.existsSync
@@ -870,7 +889,8 @@ fn test_nodejs_hybrid_traces_module_functions_once() {
     assert!(
         fs_count == 1,
         "Expected exactly 1 trace for fs.existsSync (no duplicates), got {}. stdout: {}",
-        fs_count, stdout
+        fs_count,
+        stdout
     );
 }
 
@@ -894,7 +914,8 @@ fn test_nodejs_hybrid_traces_esm_module_functions() {
     // ESM bypasses the require hook, so v8_trace should NOT skip them
     let output = run_tracer(&[
         "x",
-        "--js", "esmFunc",
+        "--js",
+        "esmFunc",
         "--",
         node.to_str().unwrap(),
         "/tmp/test_esm.mjs",
@@ -910,7 +931,8 @@ fn test_nodejs_hybrid_traces_esm_module_functions() {
     assert!(
         output.status.success(),
         "V8 hybrid ESM test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced esmFunc
@@ -981,11 +1003,14 @@ fn test_nodejs_hybrid_no_duplicate_events_for_mixed_calls() {
     // No duplicates for either
     let output = run_tracer(&[
         "x",
-        "--js", "userFn",
-        "--js", "fs.existsSync",
+        "--js",
+        "userFn",
+        "--js",
+        "fs.existsSync",
         "--",
         node.to_str().unwrap(),
-        "--eval", "function userFn() { return 1; } userFn(); require('fs').existsSync('/');",
+        "--eval",
+        "function userFn() { return 1; } userFn(); require('fs').existsSync('/');",
     ]);
 
     let stdout_raw = String::from_utf8_lossy(&output.stdout);
@@ -995,7 +1020,8 @@ fn test_nodejs_hybrid_no_duplicate_events_for_mixed_calls() {
     assert!(
         output.status.success(),
         "V8 hybrid mixed test failed. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // Should have traced userFn (from eval, by v8_trace)
@@ -1019,13 +1045,15 @@ fn test_nodejs_hybrid_no_duplicate_events_for_mixed_calls() {
     assert!(
         user_fn_count == 1,
         "Expected exactly 1 trace for userFn, got {}. stdout: {}",
-        user_fn_count, stdout
+        user_fn_count,
+        stdout
     );
 
     assert!(
         fs_count == 1,
         "Expected exactly 1 trace for fs.existsSync, got {}. stdout: {}",
-        fs_count, stdout
+        fs_count,
+        stdout
     );
 }
 
@@ -1169,13 +1197,7 @@ fn test_npm_postinstall_exec_tracing() {
 
     // Run npm install with exec tracing for curl
     let output = run_tracer_with_timeout_in_dir(
-        &[
-            "x",
-            "-c", "curl",
-            "--",
-            npm.to_str().unwrap(),
-            "install",
-        ],
+        &["x", "-c", "curl", "--", npm.to_str().unwrap(), "install"],
         std::time::Duration::from_secs(30),
         &pkg_dir,
     );
@@ -1188,7 +1210,8 @@ fn test_npm_postinstall_exec_tracing() {
     assert!(
         stdout.contains("[malwi]") && stdout.contains("curl"),
         "Expected curl trace from npm postinstall script. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -1229,7 +1252,8 @@ fn test_npm_postinstall_exec_tracing_macos() {
     let output = run_tracer_with_timeout_in_dir(
         &[
             "x",
-            "-c", "sh",  // npm runs scripts via sh -c
+            "-c",
+            "sh", // npm runs scripts via sh -c
             "--",
             npm.to_str().unwrap(),
             "run",
@@ -1247,7 +1271,8 @@ fn test_npm_postinstall_exec_tracing_macos() {
     assert!(
         stdout.contains("sh -c") && stdout.contains("curl"),
         "Expected 'sh -c ...' trace with curl from npm postinstall. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 

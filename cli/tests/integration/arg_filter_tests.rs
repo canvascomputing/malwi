@@ -27,10 +27,12 @@ fn test_per_function_arg_filter_shows_matching_exec() {
     // Filter for echo calls whose args contain "hello"
     let output = run_tracer(&[
         "x",
-        "-c", "echo[*hello*]",
+        "-c",
+        "echo[*hello*]",
         "--",
         node.to_str().unwrap(),
-        "-e", "require('child_process').spawnSync('echo', ['hello world'])",
+        "-e",
+        "require('child_process').spawnSync('echo', ['hello world'])",
     ]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -40,11 +42,14 @@ fn test_per_function_arg_filter_shows_matching_exec() {
     assert!(
         output.status.success(),
         "Arg filter matching test failed. stdout: {}, stderr: {}",
-        stdout_clean, stderr
+        stdout_clean,
+        stderr
     );
 
     // Should show echo trace because args contain "hello"
-    let has_echo_trace = stdout_clean.lines().any(|l| l.contains("[malwi]") && l.contains("echo"));
+    let has_echo_trace = stdout_clean
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("echo"));
     assert!(
         has_echo_trace,
         "Expected echo trace with matching arg filter. stdout: {}",
@@ -67,10 +72,12 @@ fn test_per_function_arg_filter_hides_non_matching_exec() {
     // Filter for echo calls whose args contain "hello" — but the actual arg is "goodbye"
     let output = run_tracer(&[
         "x",
-        "-c", "echo[*hello*]",
+        "-c",
+        "echo[*hello*]",
         "--",
         node.to_str().unwrap(),
-        "-e", "require('child_process').spawnSync('echo', ['goodbye'])",
+        "-e",
+        "require('child_process').spawnSync('echo', ['goodbye'])",
     ]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -80,11 +87,14 @@ fn test_per_function_arg_filter_hides_non_matching_exec() {
     assert!(
         output.status.success(),
         "Arg filter non-matching test failed. stdout: {}, stderr: {}",
-        stdout_clean, stderr
+        stdout_clean,
+        stderr
     );
 
     // Should NOT show echo trace because args don't contain "hello"
-    let has_echo_trace = stdout_clean.lines().any(|l| l.contains("[malwi]") && l.contains("echo"));
+    let has_echo_trace = stdout_clean
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("echo"));
     assert!(
         !has_echo_trace,
         "Should NOT show echo when arg filter doesn't match. stdout: {}",
@@ -121,11 +131,13 @@ fn test_inverted_arg_filter_excludes_matching_exec() {
     assert!(
         output.status.success(),
         "Inverted arg filter test failed. stdout: {}, stderr: {}",
-        stdout_clean, stderr
+        stdout_clean,
+        stderr
     );
 
     // Should show "goodbye" but NOT "hello"
-    let lines: Vec<&str> = stdout_clean.lines()
+    let lines: Vec<&str> = stdout_clean
+        .lines()
         .filter(|l| l.contains("[malwi]") && l.contains("echo"))
         .collect();
 

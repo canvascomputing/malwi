@@ -21,7 +21,11 @@ pub struct Version {
 
 impl Version {
     pub const fn new(major: u8, minor: u8, patch: u8) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Check if this version is at least major.minor
@@ -41,7 +45,11 @@ impl Version {
         let major = parts[0].parse().ok()?;
         let minor = parts[1].parse().ok()?;
         let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-        Some(Self { major, minor, patch })
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 

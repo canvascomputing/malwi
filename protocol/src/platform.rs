@@ -14,7 +14,11 @@ pub const LIB_EXTENSION: &str = if cfg!(target_os = "macos") {
 };
 
 /// Library file prefix for the current platform.
-pub const LIB_PREFIX: &str = if cfg!(target_os = "windows") { "" } else { "lib" };
+pub const LIB_PREFIX: &str = if cfg!(target_os = "windows") {
+    ""
+} else {
+    "lib"
+};
 
 /// Returns the agent library filename for the current platform.
 pub fn agent_lib_name() -> String {

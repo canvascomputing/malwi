@@ -9,4 +9,3 @@ pub use arm64::capture_backtrace;
 
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::capture_backtrace;
-

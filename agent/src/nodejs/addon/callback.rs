@@ -78,7 +78,11 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
         // Capture caller source location from V8 stack (Enter events only)
         let (caller_file, caller_line) = if is_enter {
             crate::nodejs::stack::capture_stack_trace(std::ptr::null_mut(), 2)
-                .and_then(|frames| frames.get(1).map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32))))
+                .and_then(|frames| {
+                    frames
+                        .get(1)
+                        .map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32)))
+                })
                 .unwrap_or((None, None))
         } else {
             (None, None)
@@ -86,15 +90,12 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
 
         // Build event using EventBuilder
         let builder = if is_enter {
-            crate::tracing::event::js_enter(&function)
-                .arguments(arguments)
+            crate::tracing::event::js_enter(&function).arguments(arguments)
         } else {
             crate::tracing::event::js_leave(&function, return_value)
         };
 
-        let event = builder
-            .source_location(caller_file, caller_line)
-            .build();
+        let event = builder.source_location(caller_file, caller_line).build();
 
         (event, is_enter)
     };
@@ -106,7 +107,11 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
     // Only check review mode for ENTER events (can't block Leave events)
     if agent.is_review_mode() && is_enter {
         // await_review_decision sends the event and waits for user decision
-        return if agent.await_review_decision(event).is_allowed() { 1 } else { 0 };
+        return if agent.await_review_decision(event).is_allowed() {
+            1
+        } else {
+            0
+        };
     }
 
     // Normal mode: just send the event
@@ -154,10 +159,18 @@ pub extern "C" fn malwi_nodejs_envvar_access(key_ptr: *const u8, key_len: usize)
     };
 
     if agent.is_review_mode() {
-        return if agent.await_review_decision(event).is_allowed() { 1 } else { 0 };
+        return if agent.await_review_decision(event).is_allowed() {
+            1
+        } else {
+            0
+        };
     }
 
     let _ = agent.send_event(event);
 
-    if blocked { 0 } else { 1 }
+    if blocked {
+        0
+    } else {
+        1
+    }
 }

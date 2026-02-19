@@ -1,2 +1,2 @@
-pub mod writer;
 pub mod relocator;
+pub mod writer;

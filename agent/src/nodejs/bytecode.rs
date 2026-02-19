@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, error, info, warn};
 
-use crate::native;
 use super::stack;
+use crate::native;
 use core::ptr;
 
 // =============================================================================
@@ -29,7 +29,6 @@ static NODEJS_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Whether hooks are installed.
 static HOOKS_INSTALLED: AtomicBool = AtomicBool::new(false);
-
 
 // =============================================================================
 // V8 SYMBOL NAMES
@@ -57,7 +56,6 @@ const V8_PRINTF: &str = "_ZN2v88internal6PrintFEPKcz";
 const V8_PRINTF_FILE: &str = "_ZN2v88internal6PrintFEP7__sFILEPKcz";
 #[cfg(target_os = "linux")]
 const V8_PRINTF_FILE: &str = "_ZN2v88internal6PrintFEP8_IO_FILEPKcz";
-
 
 // =============================================================================
 // FUNCTION TYPES
@@ -137,7 +135,8 @@ pub fn enable_v8_tracing() -> bool {
         }
     };
 
-    let set_flags: SetFlagsFromStringFn = unsafe { std::mem::transmute::<usize, SetFlagsFromStringFn>(set_flags_addr) };
+    let set_flags: SetFlagsFromStringFn =
+        unsafe { std::mem::transmute::<usize, SetFlagsFromStringFn>(set_flags_addr) };
 
     // Enable --trace flag. This instruments the bytecode interpreter only.
     // Sparkplug/Maglev JIT tiers bypass trace calls, but we don't disable them:
@@ -232,7 +231,9 @@ pub fn install_trace_hooks() -> bool {
         );
         if result.is_ok() {
             unsafe {
-                ORIGINAL_TRACE_ENTER = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(original_ptr));
+                ORIGINAL_TRACE_ENTER = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(
+                    original_ptr,
+                ));
             }
             info!("Replaced Runtime_TraceEnter at {:#x}", addr);
             hooks_installed += 1;
@@ -242,7 +243,9 @@ pub fn install_trace_hooks() -> bool {
             // On some macOS configurations inline patching of __TEXT is not possible.
             // V8 dispatches runtime calls through tables stored in __DATA; patch those.
             let replacement = replacement_trace_enter as *const () as usize;
-            match unsafe { malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement) } {
+            match unsafe {
+                malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
+            } {
                 Ok(n) if n > 0 => {
                     info!(
                         "Rebound {} pointer(s) for Runtime_TraceEnter ({:#x} -> {:#x})",
@@ -273,7 +276,9 @@ pub fn install_trace_hooks() -> bool {
         );
         if result.is_ok() {
             unsafe {
-                ORIGINAL_TRACE_EXIT = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(original_ptr));
+                ORIGINAL_TRACE_EXIT = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(
+                    original_ptr,
+                ));
             }
             info!("Replaced Runtime_TraceExit at {:#x}", addr);
             hooks_installed += 1;
@@ -281,7 +286,9 @@ pub fn install_trace_hooks() -> bool {
             debug!("Failed to replace Runtime_TraceExit: {:?}", result.err());
 
             let replacement = replacement_trace_exit as *const () as usize;
-            match unsafe { malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement) } {
+            match unsafe {
+                malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
+            } {
                 Ok(n) if n > 0 => {
                     info!(
                         "Rebound {} pointer(s) for Runtime_TraceExit ({:#x} -> {:#x})",
@@ -344,7 +351,10 @@ pub fn install_trace_hooks() -> bool {
     interceptor.end_transaction();
 
     if hooks_installed > 0 {
-        info!("V8 trace hooks installed ({} replacements)", hooks_installed);
+        info!(
+            "V8 trace hooks installed ({} replacements)",
+            hooks_installed
+        );
         true
     } else {
         warn!("No V8 trace hooks could be installed");
@@ -456,7 +466,8 @@ unsafe extern "C" fn replacement_trace_enter(
     let v8_frames = stack::capture_stack_trace(isolate, max_frames);
 
     // Extract caller source location from frame[1] (frame[0] is callee)
-    let (caller_file, caller_line) = v8_frames.as_ref()
+    let (caller_file, caller_line) = v8_frames
+        .as_ref()
         .and_then(|frames| frames.get(1))
         .map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32)))
         .unwrap_or((None, None));

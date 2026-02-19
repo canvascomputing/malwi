@@ -54,7 +54,9 @@ pub fn enumerate_modules() -> Vec<ModuleInfo> {
                 Err(_) => String::new(),
             }
         } else {
-            CStr::from_ptr(info.dlpi_name).to_string_lossy().into_owned()
+            CStr::from_ptr(info.dlpi_name)
+                .to_string_lossy()
+                .into_owned()
         };
 
         // Compute module size from PT_LOAD segments.
@@ -105,7 +107,9 @@ pub fn enumerate_modules() -> Vec<ModuleInfo> {
 }
 
 pub fn find_module_by_name(name: &str) -> Option<ModuleInfo> {
-    enumerate_modules().into_iter().find(|m| m.name == name || m.path.ends_with(name))
+    enumerate_modules()
+        .into_iter()
+        .find(|m| m.name == name || m.path.ends_with(name))
 }
 
 /// Resolve a symbol globally (across all loaded modules) using `dlsym(RTLD_DEFAULT, ...)`.
@@ -132,7 +136,9 @@ pub fn find_export_by_name(module_name: &str, symbol: &str) -> Result<usize, Hoo
         if path.is_empty() {
             continue;
         }
-        let Ok(path_cstr) = std::ffi::CString::new(path.as_str()) else { continue };
+        let Ok(path_cstr) = std::ffi::CString::new(path.as_str()) else {
+            continue;
+        };
         unsafe {
             let handle = libc::dlopen(path_cstr.as_ptr(), libc::RTLD_NOLOAD | libc::RTLD_NOW);
             if handle.is_null() {
@@ -230,7 +236,10 @@ pub fn enumerate_symbols(module_name: &str) -> Result<Vec<ExportInfo>, HookError
     Ok(syms)
 }
 
-fn enumerate_dynamic_symbols(module_name: &str, only_exports: bool) -> Result<Vec<ExportInfo>, HookError> {
+fn enumerate_dynamic_symbols(
+    module_name: &str,
+    only_exports: bool,
+) -> Result<Vec<ExportInfo>, HookError> {
     struct Ctx {
         module_name: String,
         only_exports: bool,
@@ -254,7 +263,9 @@ fn enumerate_dynamic_symbols(module_name: &str, only_exports: bool) -> Result<Ve
                 Err(_) => String::new(),
             }
         } else {
-            CStr::from_ptr(info.dlpi_name).to_string_lossy().into_owned()
+            CStr::from_ptr(info.dlpi_name)
+                .to_string_lossy()
+                .into_owned()
         };
 
         let name = if path.is_empty() {
@@ -315,7 +326,11 @@ fn enumerate_dynamic_symbols(module_name: &str, only_exports: bool) -> Result<Ve
         let base = info.dlpi_addr;
         let adjusted = symtab_val > base || strtab_val > base;
         let resolve = |val: u64| -> usize {
-            if adjusted { val as usize } else { (base + val) as usize }
+            if adjusted {
+                val as usize
+            } else {
+                (base + val) as usize
+            }
         };
 
         let symtab = resolve(symtab_val) as *const elf::Elf64Sym;
@@ -468,7 +483,11 @@ fn mmap_elf_file(path: &str) -> Result<MmapElfFile, HookError> {
 
         // Verify ELF magic.
         if &bytes[0..4] != b"\x7fELF" {
-            return Ok(MmapElfFile { data, size, symtab: None });
+            return Ok(MmapElfFile {
+                data,
+                size,
+                symtab: None,
+            });
         }
 
         // Parse ELF64 header.
@@ -478,14 +497,22 @@ fn mmap_elf_file(path: &str) -> Result<MmapElfFile, HookError> {
         let e_shstrndx = u16::from_le_bytes(bytes[62..64].try_into().unwrap()) as usize;
 
         if e_shoff == 0 || e_shnum == 0 || e_shentsize < 64 {
-            return Ok(MmapElfFile { data, size, symtab: None });
+            return Ok(MmapElfFile {
+                data,
+                size,
+                symtab: None,
+            });
         }
 
         // Validate section header string table index.
         {
             let sh_offset = e_shoff + e_shstrndx * e_shentsize;
             if sh_offset + e_shentsize > size {
-                return Ok(MmapElfFile { data, size, symtab: None });
+                return Ok(MmapElfFile {
+                    data,
+                    size,
+                    symtab: None,
+                });
             }
         }
 
@@ -501,30 +528,59 @@ fn mmap_elf_file(path: &str) -> Result<MmapElfFile, HookError> {
             if sh_offset + e_shentsize > size {
                 break;
             }
-            let sh_type = u32::from_le_bytes(bytes[sh_offset + 4..sh_offset + 8].try_into().unwrap());
+            let sh_type =
+                u32::from_le_bytes(bytes[sh_offset + 4..sh_offset + 8].try_into().unwrap());
             if sh_type == SHT_SYMTAB {
-                symtab_off = u64::from_le_bytes(bytes[sh_offset + 24..sh_offset + 32].try_into().unwrap()) as usize;
-                symtab_size = u64::from_le_bytes(bytes[sh_offset + 32..sh_offset + 40].try_into().unwrap()) as usize;
-                symtab_entsize = u64::from_le_bytes(bytes[sh_offset + 56..sh_offset + 64].try_into().unwrap()) as usize;
-                symtab_link = u32::from_le_bytes(bytes[sh_offset + 40..sh_offset + 44].try_into().unwrap()) as usize;
+                symtab_off =
+                    u64::from_le_bytes(bytes[sh_offset + 24..sh_offset + 32].try_into().unwrap())
+                        as usize;
+                symtab_size =
+                    u64::from_le_bytes(bytes[sh_offset + 32..sh_offset + 40].try_into().unwrap())
+                        as usize;
+                symtab_entsize =
+                    u64::from_le_bytes(bytes[sh_offset + 56..sh_offset + 64].try_into().unwrap())
+                        as usize;
+                symtab_link =
+                    u32::from_le_bytes(bytes[sh_offset + 40..sh_offset + 44].try_into().unwrap())
+                        as usize;
                 break;
             }
         }
 
         if symtab_off == 0 || symtab_entsize == 0 {
-            return Ok(MmapElfFile { data, size, symtab: None });
+            return Ok(MmapElfFile {
+                data,
+                size,
+                symtab: None,
+            });
         }
 
         // Get the linked string table.
         let strtab_sh_offset = e_shoff + symtab_link * e_shentsize;
         if strtab_sh_offset + e_shentsize > size {
-            return Ok(MmapElfFile { data, size, symtab: None });
+            return Ok(MmapElfFile {
+                data,
+                size,
+                symtab: None,
+            });
         }
-        let strtab_off = u64::from_le_bytes(bytes[strtab_sh_offset + 24..strtab_sh_offset + 32].try_into().unwrap()) as usize;
-        let strtab_size = u64::from_le_bytes(bytes[strtab_sh_offset + 32..strtab_sh_offset + 40].try_into().unwrap()) as usize;
+        let strtab_off = u64::from_le_bytes(
+            bytes[strtab_sh_offset + 24..strtab_sh_offset + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let strtab_size = u64::from_le_bytes(
+            bytes[strtab_sh_offset + 32..strtab_sh_offset + 40]
+                .try_into()
+                .unwrap(),
+        ) as usize;
 
         if strtab_off + strtab_size > size || symtab_off + symtab_size > size {
-            return Ok(MmapElfFile { data, size, symtab: None });
+            return Ok(MmapElfFile {
+                data,
+                size,
+                symtab: None,
+            });
         }
 
         // Determine is_dyn and file_base_vma.
@@ -543,9 +599,12 @@ fn mmap_elf_file(path: &str) -> Result<MmapElfFile, HookError> {
                 if ph_offset + e_phentsize > size {
                     break;
                 }
-                let p_type = u32::from_le_bytes(bytes[ph_offset..ph_offset + 4].try_into().unwrap());
+                let p_type =
+                    u32::from_le_bytes(bytes[ph_offset..ph_offset + 4].try_into().unwrap());
                 if p_type == 1 {
-                    let p_vaddr = u64::from_le_bytes(bytes[ph_offset + 16..ph_offset + 24].try_into().unwrap());
+                    let p_vaddr = u64::from_le_bytes(
+                        bytes[ph_offset + 16..ph_offset + 24].try_into().unwrap(),
+                    );
                     min_vaddr = Some(min_vaddr.map(|m: u64| m.min(p_vaddr)).unwrap_or(p_vaddr));
                 }
             }
@@ -569,7 +628,12 @@ fn mmap_elf_file(path: &str) -> Result<MmapElfFile, HookError> {
 }
 
 /// Walk the mmap'd .symtab using pre-parsed offsets to produce symbols.
-fn walk_symtab_from_mmap(data: *const u8, size: usize, info: &SymtabInfo, base_address: usize) -> Vec<ExportInfo> {
+fn walk_symtab_from_mmap(
+    data: *const u8,
+    size: usize,
+    info: &SymtabInfo,
+    base_address: usize,
+) -> Vec<ExportInfo> {
     let bytes = unsafe { core::slice::from_raw_parts(data, size) };
     let nsyms = info.symtab_size / info.symtab_entsize;
     let mut exports = Vec::new();
@@ -644,10 +708,17 @@ fn get_or_create_mmap(path: &str) -> Result<(*const u8, usize, SymtabInfo), Hook
 ///
 /// This provides local symbols that aren't in the dynamic symbol table.
 #[cfg(test)]
-fn read_elf_symtab_from_disk(path: &str, base_address: usize) -> Result<Vec<ExportInfo>, HookError> {
+fn read_elf_symtab_from_disk(
+    path: &str,
+    base_address: usize,
+) -> Result<Vec<ExportInfo>, HookError> {
     let (data, size, info) = get_or_create_mmap(path)?;
     let syms = walk_symtab_from_mmap(data, size, &info, base_address);
-    if syms.is_empty() { Err(HookError::WrongSignature) } else { Ok(syms) }
+    if syms.is_empty() {
+        Err(HookError::WrongSignature)
+    } else {
+        Ok(syms)
+    }
 }
 
 /// Resolve which module an address belongs to via `dladdr`.
@@ -673,7 +744,10 @@ pub fn resolve_address_module(address: usize) -> Option<String> {
 /// # Safety
 /// The caller must ensure `replacement` points to a valid function with the
 /// same signature as the original symbol.
-pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usize, usize)>, HookError> {
+pub unsafe fn rebind_symbol(
+    symbol: &str,
+    replacement: usize,
+) -> Result<Vec<(usize, usize)>, HookError> {
     // Resolve the original address of the symbol.
     let original_addr = find_global_export_by_name(symbol)?;
 
@@ -743,8 +817,14 @@ pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usi
         let base_u64 = info.dlpi_addr;
         let adjusted = symtab_val > base_u64 || strtab_val > base_u64;
         let resolve = |val: u64| -> *const u8 {
-            if val == 0 { return core::ptr::null(); }
-            if adjusted { val as *const u8 } else { (base_u64 + val) as *const u8 }
+            if val == 0 {
+                return core::ptr::null();
+            }
+            if adjusted {
+                val as *const u8
+            } else {
+                (base_u64 + val) as *const u8
+            }
         };
 
         let jmprel = resolve(jmprel_val);
@@ -842,7 +922,9 @@ pub unsafe fn rebind_pointers_by_value(
                 Err(_) => String::new(),
             }
         } else {
-            CStr::from_ptr(info.dlpi_name).to_string_lossy().into_owned()
+            CStr::from_ptr(info.dlpi_name)
+                .to_string_lossy()
+                .into_owned()
         };
 
         let name = if path.is_empty() {
@@ -927,8 +1009,14 @@ mod tests {
     fn enumerate_modules_finds_libc() {
         let modules = enumerate_modules();
         assert!(!modules.is_empty());
-        let has_libc = modules.iter().any(|m| m.name.contains("libc") || m.name.contains("ld-linux"));
-        assert!(has_libc, "modules: {:?}", modules.iter().map(|m| &m.name).collect::<Vec<_>>());
+        let has_libc = modules
+            .iter()
+            .any(|m| m.name.contains("libc") || m.name.contains("ld-linux"));
+        assert!(
+            has_libc,
+            "modules: {:?}",
+            modules.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -941,13 +1029,16 @@ mod tests {
     fn find_export_in_module_resolves_malloc() {
         let malloc_addr = find_global_export_by_name("malloc").expect("malloc should resolve");
         let module_name = resolve_address_module(malloc_addr).expect("dladdr should find module");
-        let addr = find_export_by_name(&module_name, "malloc").expect("malloc in its defining module");
+        let addr =
+            find_export_by_name(&module_name, "malloc").expect("malloc in its defining module");
         assert_ne!(addr, 0);
     }
 
     #[test]
     fn find_export_returns_error_for_missing() {
-        assert!(find_global_export_by_name("this_symbol_definitely_does_not_exist_xyz123").is_err());
+        assert!(
+            find_global_export_by_name("this_symbol_definitely_does_not_exist_xyz123").is_err()
+        );
     }
 
     #[test]
@@ -964,7 +1055,12 @@ mod tests {
     fn module_info_has_valid_ranges() {
         for m in enumerate_modules() {
             if m.size > 0 {
-                assert!(m.base_address > 0, "module {} has zero base with size {}", m.name, m.size);
+                assert!(
+                    m.base_address > 0,
+                    "module {} has zero base with size {}",
+                    m.name,
+                    m.size
+                );
             }
         }
     }
@@ -1017,13 +1113,21 @@ mod tests {
         let exe_name = exe_path.file_name().unwrap().to_string_lossy().to_string();
 
         let module = find_module_by_name(&exe_name);
-        assert!(module.is_some(), "Should find test binary module '{}'", exe_name);
+        assert!(
+            module.is_some(),
+            "Should find test binary module '{}'",
+            exe_name
+        );
         let module = module.unwrap();
 
         // read_elf_symtab_from_disk must return symbols from the on-disk .symtab.
         let syms = read_elf_symtab_from_disk(&module.path, module.base_address)
             .expect("read_elf_symtab_from_disk should succeed");
-        assert!(syms.len() > 10, "Should find local symbols; got {}", syms.len());
+        assert!(
+            syms.len() > 10,
+            "Should find local symbols; got {}",
+            syms.len()
+        );
 
         // All returned symbols must have non-empty names (string table was resolved).
         assert!(
@@ -1033,7 +1137,10 @@ mod tests {
 
         // enumerate_symbols should include these disk symbols.
         let all_syms = enumerate_symbols(&exe_name).expect("enumerate_symbols");
-        assert!(all_syms.len() >= syms.len(), "enumerate_symbols should include disk symbols");
+        assert!(
+            all_syms.len() >= syms.len(),
+            "enumerate_symbols should include disk symbols"
+        );
     }
 
     #[test]
@@ -1047,7 +1154,10 @@ mod tests {
         // /etc/hosts is reliably >= 64 bytes and not an ELF file.
         let result = mmap_elf_file("/etc/hosts");
         let elf = result.expect("mmap should succeed for regular file");
-        assert!(elf.symtab.is_none(), "non-ELF file should have symtab: None");
+        assert!(
+            elf.symtab.is_none(),
+            "non-ELF file should have symtab: None"
+        );
     }
 
     #[test]
@@ -1121,7 +1231,10 @@ mod tests {
                 let name = module_name.clone();
                 std::thread::spawn(move || {
                     let syms = enumerate_symbols(&name).expect("enumerate_symbols");
-                    assert!(syms.iter().any(|s| s.name == "malloc"), "should find malloc");
+                    assert!(
+                        syms.iter().any(|s| s.name == "malloc"),
+                        "should find malloc"
+                    );
                 })
             })
             .collect();
@@ -1145,6 +1258,9 @@ mod tests {
         }
         let elf = mmap_elf_file(out).expect("mmap stripped binary");
         std::fs::remove_file(out).ok();
-        assert!(elf.symtab.is_none(), "stripped binary should have no .symtab");
+        assert!(
+            elf.symtab.is_none(),
+            "stripped binary should have no .symtab"
+        );
     }
 }

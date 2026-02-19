@@ -63,14 +63,20 @@ fn resolve_nodejs_script_api() -> Option<NodejsScriptApi> {
         };
     }
 
-    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
-    let isolate_get_current_context: IsolateGetCurrentContextFn =
-        resolve!(symbols::v8::ISOLATE_GET_CURRENT_CONTEXT, IsolateGetCurrentContextFn);
-    let string_new_from_utf8: StringNewFromUtf8Fn = resolve!(symbols::v8::STRING_NEW_FROM_UTF8, StringNewFromUtf8Fn);
+    let isolate_get_current: IsolateGetCurrentFn =
+        resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
+    let isolate_get_current_context: IsolateGetCurrentContextFn = resolve!(
+        symbols::v8::ISOLATE_GET_CURRENT_CONTEXT,
+        IsolateGetCurrentContextFn
+    );
+    let string_new_from_utf8: StringNewFromUtf8Fn =
+        resolve!(symbols::v8::STRING_NEW_FROM_UTF8, StringNewFromUtf8Fn);
     let script_compile: ScriptCompileFn = resolve!(symbols::v8::SCRIPT_COMPILE, ScriptCompileFn);
     let script_run: ScriptRunFn = resolve!(symbols::v8::SCRIPT_RUN, ScriptRunFn);
-    let string_utf8_length: StringUtf8LengthFn = resolve!(symbols::v8::STRING_UTF8_LENGTH, StringUtf8LengthFn);
-    let string_write_utf8: StringWriteUtf8Fn = resolve!(symbols::v8::STRING_WRITE_UTF8, StringWriteUtf8Fn);
+    let string_utf8_length: StringUtf8LengthFn =
+        resolve!(symbols::v8::STRING_UTF8_LENGTH, StringUtf8LengthFn);
+    let string_write_utf8: StringWriteUtf8Fn =
+        resolve!(symbols::v8::STRING_WRITE_UTF8, StringWriteUtf8Fn);
 
     debug!("Node.js Script Execution API resolved successfully");
 

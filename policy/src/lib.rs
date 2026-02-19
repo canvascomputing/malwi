@@ -45,8 +45,15 @@ pub use compiled::{
     EnforcementMode, Operation, Runtime, SectionKey,
 };
 pub use compiler::{compile_policy, compile_policy_yaml};
-pub use engine::{EvalContext, HookSpecKind, PolicyAction, PolicyDecision, PolicyEngine, PolicyHookSpec};
+pub use engine::{
+    EvalContext, HookSpecKind, PolicyAction, PolicyDecision, PolicyEngine, PolicyHookSpec,
+};
 pub use error::{PatternError, PolicyError, ValidationError};
-pub use parser::{parse_policy, parse_section_name, ParsedSectionName, PolicyFile, Rule, SectionValue, AllowDenySection};
-pub use pattern::{compile_pattern, compile_pattern_case_insensitive, compile_url_pattern, CompiledPattern};
+pub use parser::{
+    parse_policy, parse_section_name, AllowDenySection, ParsedSectionName, PolicyFile, Rule,
+    SectionValue,
+};
+pub use pattern::{
+    compile_pattern, compile_pattern_case_insensitive, compile_url_pattern, CompiledPattern,
+};
 pub use validate::validate_policy;

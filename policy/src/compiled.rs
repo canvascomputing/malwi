@@ -84,9 +84,7 @@ impl CompiledSection {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.allow_rules.is_empty()
-            && self.deny_rules.is_empty()
-            && self.allowed_values.is_empty()
+        self.allow_rules.is_empty() && self.deny_rules.is_empty() && self.allowed_values.is_empty()
     }
 }
 
@@ -108,7 +106,11 @@ impl CompiledRule {
         }
     }
 
-    pub fn with_constraints(pattern: CompiledPattern, constraints: Vec<Constraint>, mode: EnforcementMode) -> Self {
+    pub fn with_constraints(
+        pattern: CompiledPattern,
+        constraints: Vec<Constraint>,
+        mode: EnforcementMode,
+    ) -> Self {
         Self {
             pattern,
             constraints,

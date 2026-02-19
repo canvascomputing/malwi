@@ -1,10 +1,10 @@
 use crate::compiled::{
-    Category, CompiledPolicy, CompiledRule, Constraint, ConstraintKind,
-    EnforcementMode, Operation, Runtime, SectionKey,
+    Category, CompiledPolicy, CompiledRule, Constraint, ConstraintKind, EnforcementMode, Operation,
+    Runtime, SectionKey,
 };
-use crate::pattern::CompiledPattern;
 use crate::compiler::compile_policy_yaml;
 use crate::error::Result;
+use crate::pattern::CompiledPattern;
 
 /// Policy evaluation engine.
 pub struct PolicyEngine {
@@ -87,11 +87,7 @@ impl PolicyEngine {
     }
 
     /// Evaluate a file operation (global `files` section).
-    pub fn evaluate_file(
-        &self,
-        path: &str,
-        operation: Operation,
-    ) -> PolicyDecision {
+    pub fn evaluate_file(&self, path: &str, operation: Operation) -> PolicyDecision {
         let key = SectionKey::global(Category::Files);
         self.evaluate_with_key(&key, path, &[], Some(operation))
     }
@@ -153,11 +149,7 @@ impl PolicyEngine {
     /// The `full_url` should be the complete URL string (e.g., "https://example.com/path").
     /// The `no_scheme_url` should be the URL without scheme (e.g., "example.com/path") for
     /// matching patterns that omit the scheme.
-    pub fn evaluate_http_url(
-        &self,
-        full_url: &str,
-        no_scheme_url: &str,
-    ) -> PolicyDecision {
+    pub fn evaluate_http_url(&self, full_url: &str, no_scheme_url: &str) -> PolicyDecision {
         let key = SectionKey::global(Category::Http);
         self.evaluate_http_url_against_section(&key, full_url, no_scheme_url)
     }
@@ -474,8 +466,18 @@ impl PolicyEngine {
                     } else {
                         HookSpecKind::Function
                     };
-                    Self::collect_specs_from_rules(&section.allow_rules, key.runtime, kind, &mut specs);
-                    Self::collect_specs_from_rules(&section.deny_rules, key.runtime, kind, &mut specs);
+                    Self::collect_specs_from_rules(
+                        &section.allow_rules,
+                        key.runtime,
+                        kind,
+                        &mut specs,
+                    );
+                    Self::collect_specs_from_rules(
+                        &section.deny_rules,
+                        key.runtime,
+                        kind,
+                        &mut specs,
+                    );
                 }
                 Category::Syscalls => {
                     specs.push(PolicyHookSpec {
@@ -538,7 +540,24 @@ fn pattern_specificity(pattern: &CompiledPattern) -> usize {
         CompiledPattern::Regex { original, .. } => {
             let body = original.strip_prefix("regex:").unwrap_or(original);
             body.chars()
-                .filter(|c| !matches!(c, '^' | '$' | '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '?' | '*'))
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        '^' | '$'
+                            | '.'
+                            | '+'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '|'
+                            | '\\'
+                            | '?'
+                            | '*'
+                    )
+                })
                 .count()
         }
     }
@@ -1293,9 +1312,7 @@ nodejs:
             PolicyAction::Allow
         );
         assert_eq!(
-            engine
-                .evaluate_function(Runtime::Node, "eval", &[])
-                .action,
+            engine.evaluate_function(Runtime::Node, "eval", &[]).action,
             PolicyAction::Deny
         );
     }
@@ -1547,7 +1564,10 @@ commands:
         assert_eq!(native_specs.len(), 1);
         assert_eq!(native_specs[0].pattern, "socket");
 
-        let exec_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::Command).collect();
+        let exec_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::Command)
+            .collect();
         assert_eq!(exec_specs.len(), 1);
         assert_eq!(exec_specs[0].pattern, "curl");
     }
@@ -1640,10 +1660,7 @@ network:
         );
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_http_url(
-            "https://example.com/safe",
-            "example.com/safe",
-        );
+        let d = engine.evaluate_http_url("https://example.com/safe", "example.com/safe");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1667,17 +1684,13 @@ network:
         assert_eq!(d.action, PolicyAction::Allow);
 
         // Not in allow list → implicit deny
-        let d = engine.evaluate_http_url(
-            "https://api.example.com/v2/data",
-            "api.example.com/v2/data",
-        );
+        let d =
+            engine.evaluate_http_url("https://api.example.com/v2/data", "api.example.com/v2/data");
         assert_eq!(d.action, PolicyAction::Deny);
 
         // Exact match allowed
-        let d = engine.evaluate_http_url(
-            "https://api.example.com/health",
-            "api.example.com/health",
-        );
+        let d =
+            engine.evaluate_http_url("https://api.example.com/health", "api.example.com/health");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1693,22 +1706,14 @@ network:
 "#,
         );
 
-        let d = engine.evaluate_http_url(
-            "https://example.com/admin/users",
-            "example.com/admin/users",
-        );
+        let d =
+            engine.evaluate_http_url("https://example.com/admin/users", "example.com/admin/users");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_http_url(
-            "https://example.com/.env",
-            "example.com/.env",
-        );
+        let d = engine.evaluate_http_url("https://example.com/.env", "example.com/.env");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_http_url(
-            "https://example.com/api/data",
-            "example.com/api/data",
-        );
+        let d = engine.evaluate_http_url("https://example.com/api/data", "example.com/api/data");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1724,17 +1729,11 @@ network:
         );
 
         // HTTP denied
-        let d = engine.evaluate_http_url(
-            "http://example.com/path",
-            "example.com/path",
-        );
+        let d = engine.evaluate_http_url("http://example.com/path", "example.com/path");
         assert_eq!(d.action, PolicyAction::Deny);
 
         // HTTPS allowed
-        let d = engine.evaluate_http_url(
-            "https://example.com/path",
-            "example.com/path",
-        );
+        let d = engine.evaluate_http_url("https://example.com/path", "example.com/path");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1750,16 +1749,10 @@ network:
         );
 
         // Pattern without scheme should match via no_scheme_url
-        let d = engine.evaluate_http_url(
-            "https://malware.evil.com/path",
-            "malware.evil.com/path",
-        );
+        let d = engine.evaluate_http_url("https://malware.evil.com/path", "malware.evil.com/path");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_http_url(
-            "http://malware.evil.com/path",
-            "malware.evil.com/path",
-        );
+        let d = engine.evaluate_http_url("http://malware.evil.com/path", "malware.evil.com/path");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -1767,10 +1760,7 @@ network:
     fn test_http_url_no_section_allows_all() {
         let engine = engine_from_yaml("version: 1\n");
 
-        let d = engine.evaluate_http_url(
-            "https://anything.com/path",
-            "anything.com/path",
-        );
+        let d = engine.evaluate_http_url("https://anything.com/path", "anything.com/path");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1818,10 +1808,7 @@ network:
         assert_eq!(d.action, PolicyAction::Deny);
 
         // Default port (80) — no :8080 in URL
-        let d = engine.evaluate_http_url(
-            "http://api.example.com/data",
-            "api.example.com/data",
-        );
+        let d = engine.evaluate_http_url("http://api.example.com/data", "api.example.com/data");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -1836,10 +1823,7 @@ network:
 "#,
         );
 
-        let d = engine.evaluate_http_url(
-            "http://example.com/insecure",
-            "example.com/insecure",
-        );
+        let d = engine.evaluate_http_url("http://example.com/insecure", "example.com/insecure");
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.mode, EnforcementMode::Warn);
     }
@@ -1965,7 +1949,10 @@ syscalls:
         );
 
         let specs = engine.extract_hook_specs();
-        let syscall_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::Syscall).collect();
+        let syscall_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::Syscall)
+            .collect();
         assert_eq!(syscall_specs.len(), 1);
         assert_eq!(syscall_specs[0].pattern, "*");
     }
@@ -1982,7 +1969,10 @@ syscalls:
         );
 
         let specs = engine.extract_hook_specs();
-        let syscall_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::Syscall).collect();
+        let syscall_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::Syscall)
+            .collect();
         assert!(syscall_specs.is_empty());
     }
 
@@ -1999,7 +1989,10 @@ envvars:
         );
 
         let specs = engine.extract_hook_specs();
-        let envvar_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::EnvVar).collect();
+        let envvar_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::EnvVar)
+            .collect();
         assert_eq!(envvar_specs.len(), 1);
         assert_eq!(envvar_specs[0].pattern, "*");
     }
@@ -2016,7 +2009,10 @@ envvars:
         );
 
         let specs = engine.extract_hook_specs();
-        let envvar_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::EnvVar).collect();
+        let envvar_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::EnvVar)
+            .collect();
         assert!(envvar_specs.is_empty());
     }
 
@@ -2033,7 +2029,10 @@ envvars:
         );
 
         let specs = engine.extract_hook_specs();
-        let envvar_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::EnvVar).collect();
+        let envvar_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::EnvVar)
+            .collect();
         // Block mode (default for deny:) — wildcard + 2 deny patterns
         assert_eq!(envvar_specs.len(), 3);
         assert_eq!(envvar_specs[0].pattern, "*");
@@ -2056,7 +2055,10 @@ envvars:
         );
 
         let specs = engine.extract_hook_specs();
-        let envvar_specs: Vec<_> = specs.iter().filter(|s| s.kind == HookSpecKind::EnvVar).collect();
+        let envvar_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.kind == HookSpecKind::EnvVar)
+            .collect();
         // Only wildcard — no individual deny patterns (warn mode doesn't block)
         assert_eq!(envvar_specs.len(), 1);
         assert_eq!(envvar_specs[0].pattern, "*");

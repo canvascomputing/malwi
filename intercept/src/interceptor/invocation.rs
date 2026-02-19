@@ -2,7 +2,7 @@
 use crate::types::{Arm64CpuContext, InvocationContext};
 
 #[cfg(target_arch = "x86_64")]
-use crate::types::{X86_64CpuContext, InvocationContext};
+use crate::types::{InvocationContext, X86_64CpuContext};
 
 use core::ffi::c_void;
 
