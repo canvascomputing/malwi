@@ -192,7 +192,7 @@ unsafe extern "C" fn audit_hook(
             .or_else(|| {
                 // Fallback to executable string at index 0.
                 arguments
-                    .get(0)
+                    .first()
                     .and_then(|a| a.display.as_deref())
                     .map(|s| vec![s.to_string()])
             })

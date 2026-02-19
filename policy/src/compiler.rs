@@ -108,15 +108,15 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
     }
 
     // Determine runtime
-    let runtime = parsed.runtime.as_deref().and_then(Runtime::from_str);
+    let runtime = parsed.runtime.as_deref().and_then(Runtime::parse);
 
     // Determine category.
     // Bare runtime names (python, nodejs) produce category "functions" from the parser,
-    // which maps to Category::Functions directly (not via Category::from_str).
+    // which maps to Category::Functions directly (not via Category::parse).
     let category = if runtime.is_some() && parsed.category == "functions" {
         Category::Functions
     } else {
-        Category::from_str(&parsed.category)
+        Category::parse(&parsed.category)
             .ok_or_else(|| PolicyError::Validation(crate::error::ValidationError::UnknownSection(name.to_string())))?
     };
 
@@ -217,7 +217,7 @@ fn compile_network_section(
     let mut results = vec![];
 
     if !url_allow.is_empty() || !url_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&url_deny, &ad);
+        let mode = strictest_mode_of_rules(&url_deny, ad);
         results.push((
             SectionKey::global(Category::Http),
             CompiledSection {
@@ -229,7 +229,7 @@ fn compile_network_section(
         ));
     }
     if !domain_allow.is_empty() || !domain_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&domain_deny, &ad);
+        let mode = strictest_mode_of_rules(&domain_deny, ad);
         results.push((
             SectionKey::global(Category::Domains),
             CompiledSection {
@@ -241,7 +241,7 @@ fn compile_network_section(
         ));
     }
     if !endpoint_allow.is_empty() || !endpoint_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&endpoint_deny, &ad);
+        let mode = strictest_mode_of_rules(&endpoint_deny, ad);
         results.push((
             SectionKey::global(Category::Endpoints),
             CompiledSection {
@@ -275,7 +275,7 @@ fn strictest_mode_of_rules(deny_rules: &[CompiledRule], ad: &AllowDenySection) -
     let mut strictest = None;
     for rule in deny_rules {
         let sev = mode_severity(rule.mode);
-        if strictest.map_or(true, |s| sev > s) {
+        if strictest.is_none_or(|s| sev > s) {
             strictest = Some(sev);
         }
     }
@@ -380,7 +380,7 @@ fn compile_constraints(constraints: &[String], category: Category) -> Result<Vec
     if category == Category::Files || category == Category::EnvVars {
         let operations: Vec<Operation> = constraints
             .iter()
-            .filter_map(|c| Operation::from_str(c))
+            .filter_map(|c| Operation::parse(c))
             .collect();
 
         if !operations.is_empty() {

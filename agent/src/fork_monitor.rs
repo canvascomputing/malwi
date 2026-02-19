@@ -171,7 +171,7 @@ impl ForkMonitor {
                         eprintln!("[malwi-agent] rebound fork");
                     }
                 }
-                if __FORK_IMPL.load(Ordering::SeqCst).is_null() == false {
+                if !__FORK_IMPL.load(Ordering::SeqCst).is_null() {
                     if let Ok(patched) = malwi_intercept::module::rebind_symbol("__fork", __fork_rebind_wrapper as *const () as usize) {
                         info!("Rebound __fork in {} locations", patched.len());
                         fork_rebind = Some(patched);

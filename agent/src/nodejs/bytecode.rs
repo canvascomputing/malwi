@@ -102,7 +102,7 @@ fn should_skip_for_addon(isolate: *mut std::ffi::c_void) -> bool {
         return false;
     }
 
-    if let Some(script_path) = stack::get_current_script_path(isolate) {
+    if let Some(script_path) = unsafe { stack::get_current_script_path(isolate) } {
         // Only skip if it's a real file path (contains path separator)
         // and is a CommonJS file (.js or .cjs, not .mjs)
         let is_file_path = script_path.contains('/') || script_path.contains('\\');
@@ -137,7 +137,7 @@ pub fn enable_v8_tracing() -> bool {
         }
     };
 
-    let set_flags: SetFlagsFromStringFn = unsafe { std::mem::transmute(set_flags_addr) };
+    let set_flags: SetFlagsFromStringFn = unsafe { std::mem::transmute::<usize, SetFlagsFromStringFn>(set_flags_addr) };
 
     // Enable --trace flag. This instruments the bytecode interpreter only.
     // Sparkplug/Maglev JIT tiers bypass trace calls, but we don't disable them:
@@ -232,7 +232,7 @@ pub fn install_trace_hooks() -> bool {
         );
         if result.is_ok() {
             unsafe {
-                ORIGINAL_TRACE_ENTER = Some(std::mem::transmute(original_ptr));
+                ORIGINAL_TRACE_ENTER = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(original_ptr));
             }
             info!("Replaced Runtime_TraceEnter at {:#x}", addr);
             hooks_installed += 1;
@@ -273,7 +273,7 @@ pub fn install_trace_hooks() -> bool {
         );
         if result.is_ok() {
             unsafe {
-                ORIGINAL_TRACE_EXIT = Some(std::mem::transmute(original_ptr));
+                ORIGINAL_TRACE_EXIT = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(original_ptr));
             }
             info!("Replaced Runtime_TraceExit at {:#x}", addr);
             hooks_installed += 1;
@@ -595,7 +595,7 @@ unsafe extern "C" fn replacement_printf_file(_file: *mut c_void, _format: *const
 /// Uses V8's StackTrace API via the addon to get the current function name.
 fn extract_function_name(isolate: *mut c_void) -> String {
     // Use the stack parser FFI to get the function name
-    if let Some(name) = stack::get_current_function_name(isolate) {
+    if let Some(name) = unsafe { stack::get_current_function_name(isolate) } {
         if !name.is_empty() {
             return name;
         }
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_initialization_state() {
         // Just verify the state variables are accessible
-        assert!(!NODEJS_TRACE_ENABLED.load(Ordering::SeqCst) || true);
-        assert!(!HOOKS_INSTALLED.load(Ordering::SeqCst) || true);
+        let _enabled = NODEJS_TRACE_ENABLED.load(Ordering::SeqCst);
+        let _installed = HOOKS_INSTALLED.load(Ordering::SeqCst);
     }
 }

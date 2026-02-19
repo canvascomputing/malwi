@@ -340,9 +340,9 @@ fn resolve_direct_load_api() -> Option<DirectLoadApi> {
     debug!("Resolving direct load API symbols...");
 
     macro_rules! resolve {
-        ($sym:expr) => {
+        ($sym:expr, $ty:ty) => {
             match native::find_export(None, $sym) {
-                Ok(addr) => unsafe { std::mem::transmute(addr) },
+                Ok(addr) => unsafe { std::mem::transmute::<usize, $ty>(addr) },
                 Err(e) => {
                     debug!("Failed to resolve {}: {}", $sym, e);
                     return None;
@@ -351,10 +351,10 @@ fn resolve_direct_load_api() -> Option<DirectLoadApi> {
         };
     }
 
-    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT);
-    let object_new: ObjectNewFn = resolve!(symbols::v8::OBJECT_NEW);
+    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
+    let object_new: ObjectNewFn = resolve!(symbols::v8::OBJECT_NEW, ObjectNewFn);
     let napi_register: NapiModuleRegisterBySymbolFn =
-        resolve!(symbols::napi::MODULE_REGISTER_BY_SYMBOL);
+        resolve!(symbols::napi::MODULE_REGISTER_BY_SYMBOL, NapiModuleRegisterBySymbolFn);
 
     debug!("Direct load API symbols resolved successfully");
 
@@ -440,7 +440,7 @@ unsafe fn load_addon_with_context(addon_path: &Path, context: V8Context) -> bool
         return false;
     }
 
-    let our_init: NapiAddonRegisterFunc = std::mem::transmute(init_ptr);
+    let our_init: NapiAddonRegisterFunc = std::mem::transmute::<*mut libc::c_void, NapiAddonRegisterFunc>(init_ptr);
 
     // Register our addon with N-API
     debug!("Calling napi_module_register_by_symbol for our addon...");
@@ -550,7 +550,7 @@ fn install_script_run_hook() -> bool {
     }
 
     // Store trampoline pointer so the hook can call original behavior.
-    let original_fn: ScriptRunMethodFn = unsafe { std::mem::transmute(original_ptr) };
+    let original_fn: ScriptRunMethodFn = unsafe { std::mem::transmute::<*const c_void, ScriptRunMethodFn>(original_ptr) };
     let _ = ORIGINAL_SCRIPT_RUN.set(original_fn);
 
     info!("v8::Script::Run hook installed");

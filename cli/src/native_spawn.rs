@@ -162,8 +162,8 @@ pub fn spawn_suspended(
             program_cstr.as_ptr(),
             ptr::null(),  // file_actions - inherit file descriptors
             &attr,
-            argv_ptrs.as_ptr() as *const *mut libc::c_char,
-            envp_ptrs.as_ptr() as *const *mut libc::c_char,
+            argv_ptrs.as_ptr(),
+            envp_ptrs.as_ptr(),
         )
     };
 

@@ -28,6 +28,7 @@ unsafe fn extract_string(ptr: *const c_char, len: u32) -> String {
 /// Uses i32 instead of bool for reliable C ABI compatibility.
 /// Only ENTER events (event_type == 0) can be blocked - Leave events always return 1.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEventData) -> i32 {
     if event_data.is_null() {
         return 1; // Allow if no data
@@ -123,6 +124,7 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
 /// * 1 = allow access
 /// * 0 = block access (return undefined to JS)
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_nodejs_envvar_access(key_ptr: *const u8, key_len: usize) -> i32 {
     if key_ptr.is_null() || key_len == 0 {
         return 1;

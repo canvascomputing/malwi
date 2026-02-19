@@ -215,7 +215,7 @@ impl HttpClient {
 
             match read_http_response(&mut stream) {
                 Ok((status, resp_body)) => {
-                    if status >= 200 && status < 300 {
+                    if (200..300).contains(&status) {
                         self.return_conn(stream);
                         return Ok(resp_body);
                     }
@@ -259,7 +259,7 @@ impl HttpClient {
 
             match read_http_response(&mut stream) {
                 Ok((status, resp_body)) => {
-                    if status >= 200 && status < 300 {
+                    if (200..300).contains(&status) {
                         self.return_conn(stream);
                         return Ok(resp_body);
                     }

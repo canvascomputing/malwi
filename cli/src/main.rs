@@ -701,7 +701,7 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
     let effective_review = config.review
         || active_policy
             .as_ref()
-            .map_or(false, |p| p.has_blocking_sections());
+            .is_some_and(|p| p.has_blocking_sections());
 
     // Bounded channel for events from HTTP server threads to main loop.
     // Bounded channel provides backpressure: when the main thread can't keep up
@@ -915,10 +915,8 @@ fn run_main_event_loop(
     {
         let mut status: libc::c_int = 0;
         let result = unsafe { libc::waitpid(config.root_pid, &mut status, 0) };
-        if result > 0 {
-            if libc::WIFEXITED(status) {
-                return Ok(Some(libc::WEXITSTATUS(status)));
-            }
+        if result > 0 && libc::WIFEXITED(status) {
+            return Ok(Some(libc::WEXITSTATUS(status)));
         }
     }
 

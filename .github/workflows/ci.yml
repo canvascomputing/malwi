@@ -39,11 +39,16 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev
+          sudo apt-get install -y libclang-dev build-essential
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -87,11 +92,20 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libclang-dev
+          sudo apt-get install -y libclang-dev build-essential
+
+      - name: Install traceable Bash (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bash
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -111,9 +125,11 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Run unit tests
-        run: cargo test --lib
+      - name: Build test fixtures
+        run: make fixtures
 
-      - name: Run integration tests (macOS)
-        if: runner.os == 'macOS'
-        run: cargo test --test integration
+      - name: Run unit tests
+        run: cargo test --release --lib
+
+      - name: Run integration tests
+        run: cargo test --release --test test_native --test test_nodejs --test test_python --test test_policy --test test_bash

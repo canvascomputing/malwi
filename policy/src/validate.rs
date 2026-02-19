@@ -35,7 +35,7 @@ fn validate_section(name: &str, value: &SectionValue) -> Result<(), ValidationEr
 
     // Determine if this is a valid section name
     if let Some(runtime) = &parsed.runtime {
-        if Runtime::from_str(runtime).is_none() {
+        if Runtime::parse(runtime).is_none() {
             return Err(ValidationError::UnknownSection(name.to_string()));
         }
         // Only bare runtime names (python:, nodejs:) are valid.
@@ -45,7 +45,7 @@ fn validate_section(name: &str, value: &SectionValue) -> Result<(), ValidationEr
         }
     } else {
         // Global section: must be a known category OR "network"
-        if parsed.category != "network" && Category::from_str(&parsed.category).is_none() {
+        if parsed.category != "network" && Category::parse(&parsed.category).is_none() {
             return Err(ValidationError::UnknownSection(name.to_string()));
         }
     }
@@ -118,7 +118,7 @@ fn validate_rule(rule: &Rule, category: &str) -> Result<(), ValidationError> {
             if category == "files" || category == "envvars" {
                 for constraint in constraints {
                     // Could be an operation or a pattern
-                    if Operation::from_str(constraint).is_none()
+                    if Operation::parse(constraint).is_none()
                         && !looks_like_pattern(constraint)
                     {
                         return Err(ValidationError::InvalidOperation(constraint.clone()));

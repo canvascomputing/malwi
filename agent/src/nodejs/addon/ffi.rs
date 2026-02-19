@@ -41,25 +41,25 @@ pub fn resolve_addon_ffi(addon_path: &std::path::Path) -> Option<AddonFfi> {
         }
 
         macro_rules! resolve_sym {
-            ($name:expr) => {{
+            ($name:expr, $ty:ty) => {{
                 let sym_name = CString::new($name).ok()?;
                 let sym = libc::dlsym(handle, sym_name.as_ptr());
                 if sym.is_null() {
                     warn!("Failed to resolve {}", $name);
                     return None;
                 }
-                std::mem::transmute(sym)
+                std::mem::transmute::<*mut libc::c_void, $ty>(sym)
             }};
         }
 
-        let enable_tracing: EnableTracingFn = resolve_sym!("malwi_addon_enable_tracing");
-        let add_filter: AddFilterFn = resolve_sym!("malwi_addon_add_filter");
+        let enable_tracing: EnableTracingFn = resolve_sym!("malwi_addon_enable_tracing", EnableTracingFn);
+        let add_filter: AddFilterFn = resolve_sym!("malwi_addon_add_filter", AddFilterFn);
 
         // Optional: get_module_version (may not exist in older addons)
         let get_module_version_sym = CString::new("malwi_addon_get_module_version").ok()?;
         let get_module_version_ptr = libc::dlsym(handle, get_module_version_sym.as_ptr());
         let get_module_version: Option<GetModuleVersionFn> = if !get_module_version_ptr.is_null() {
-            Some(std::mem::transmute(get_module_version_ptr))
+            Some(std::mem::transmute::<*mut libc::c_void, GetModuleVersionFn>(get_module_version_ptr))
         } else {
             debug!("malwi_addon_get_module_version not found (addon may be older version)");
             None
@@ -108,6 +108,7 @@ pub struct FilterData {
 /// # Returns
 /// The number of filters written to the output array.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_addon_get_filters(
     out_filters: *mut FilterData,
     max_count: u32,
@@ -159,6 +160,7 @@ pub extern "C" fn malwi_addon_get_filters(
 /// - `filters` must point to an array of `count` FilterData structs
 /// - Each pattern pointer in the array must have been allocated by `malwi_addon_get_filters`
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_addon_free_filters(filters: *mut FilterData, count: u32) {
     if filters.is_null() || count == 0 {
         return;

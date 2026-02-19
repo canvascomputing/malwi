@@ -57,11 +57,11 @@ impl Interceptor {
     pub fn attach(&self, _function_address: *mut c_void, _listener: CallListener) -> Result<(), HookError> {
         #[cfg(target_arch = "aarch64")]
         {
-            return attach_arm64::attach(self, _function_address, _listener);
+            attach_arm64::attach(self, _function_address, _listener)
         }
         #[cfg(target_arch = "x86_64")]
         {
-            return attach_x86_64::attach(self, _function_address, _listener);
+            attach_x86_64::attach(self, _function_address, _listener)
         }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
@@ -83,11 +83,11 @@ impl Interceptor {
     ) -> Result<usize, HookError> {
         #[cfg(target_arch = "aarch64")]
         {
-            return attach_arm64::attach_rebinding(self, _function_address, _listener);
+            attach_arm64::attach_rebinding(self, _function_address, _listener)
         }
         #[cfg(target_arch = "x86_64")]
         {
-            return attach_x86_64::attach_rebinding(self, _function_address, _listener);
+            attach_x86_64::attach_rebinding(self, _function_address, _listener)
         }
     }
 
@@ -115,11 +115,11 @@ impl Interceptor {
     ) -> Result<(), HookError> {
         #[cfg(target_arch = "aarch64")]
         {
-            return replace_arm64::replace(self, function_address, replacement, original);
+            replace_arm64::replace(self, function_address, replacement, original)
         }
         #[cfg(target_arch = "x86_64")]
         {
-            return replace_x86_64::replace(self, function_address, replacement, original);
+            replace_x86_64::replace(self, function_address, replacement, original)
         }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
@@ -1240,7 +1240,7 @@ mod tests {
             0xD4000001, // SVC #0
             0xB13FFC1F, // CMN X0, #0xFFF
         ];
-        let (max_safe, scratch) = can_relocate(insns.as_ptr(), 4);
+        let (max_safe, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         // SVC is NOT a boundary — all 4 instructions can be safely relocated.
         assert_eq!(max_safe, 4, "SVC should not stop relocation");
         assert_eq!(scratch, Reg::X16, "x16 should be available (only x8 used)");
@@ -1260,7 +1260,7 @@ mod tests {
             0xD503201F, // NOP
             0xD503201F, // NOP
         ];
-        let (_max, scratch) = can_relocate(insns.as_ptr(), 4);
+        let (_max, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(scratch, Reg::X17, "should fall back to x17 when x16 is used");
     }
 
@@ -1277,7 +1277,7 @@ mod tests {
             0xD503201F, // NOP
             0xD503201F, // NOP
         ];
-        let (max_safe, _) = can_relocate(insns.as_ptr(), 4);
+        let (max_safe, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(max_safe, 2, "BL should stop relocation (include it, stop further)");
     }
 

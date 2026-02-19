@@ -231,14 +231,14 @@ impl SpawnMonitor {
             monitor.setup_bash_hooks();
 
             interceptor.end_transaction();
-            return Some(monitor);
+            Some(monitor)
         }
 
         #[cfg(target_os = "windows")]
         {
             warn!("Spawn monitor not supported on Windows");
             let _ = handler;
-            return None;
+            None
         }
     }
 
@@ -604,6 +604,9 @@ impl SpawnMonitor {
     /// Install the find_variable hook for envvar monitoring.
     /// Called after the spawn monitor is created, when an EnvVar hook config is received.
     /// Only works if bash was detected (BASH_VERSION is set).
+    ///
+    /// # Safety
+    /// The caller must ensure the interceptor is in a valid state for attaching hooks.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub unsafe fn enable_envvar_hook(&mut self) {
         if self.bash_find_variable_listener.is_some() {
@@ -643,6 +646,9 @@ impl SpawnMonitor {
 
     /// Install the native getenv() hook for envvar monitoring.
     /// Hooks libc's getenv to detect C-level environment variable access.
+    ///
+    /// # Safety
+    /// The caller must ensure the interceptor is in a valid state for attaching hooks.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub unsafe fn enable_getenv_hook(&mut self) {
         if self.getenv_listener.is_some() {
@@ -1986,7 +1992,7 @@ struct SpawnContext {
 
 #[cfg(target_os = "macos")]
 thread_local! {
-    static SPAWN_CONTEXT: RefCell<Option<SpawnContext>> = RefCell::new(None);
+    static SPAWN_CONTEXT: RefCell<Option<SpawnContext>> = const { RefCell::new(None) };
 }
 
 /// Parse a null-terminated argv array into a Vec<String>.

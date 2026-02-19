@@ -12,6 +12,9 @@ extern "C" {
 /// 2. Invalidate the instruction cache to discard stale entries
 ///
 /// Calls both `sys_dcache_flush()` and `sys_icache_invalidate()`.
+///
+/// # Safety
+/// `addr` must point to at least `size` bytes of memory.
 #[inline]
 pub unsafe fn invalidate_icache(addr: *mut u8, size: usize) {
     #[cfg(target_os = "macos")]

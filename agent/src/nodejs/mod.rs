@@ -173,7 +173,7 @@ pub fn init_tracing() -> bool {
 /// Returns empty if called outside of V8 context.
 pub fn capture_stack() -> Vec<NodejsFrame> {
     // Use null isolate to let the stack parser get the current isolate
-    let frames = match stack::capture_stack_trace(std::ptr::null_mut(), 10) {
+    let frames = match unsafe { stack::capture_stack_trace(std::ptr::null_mut(), 10) } {
         Some(frames) => frames,
         None => return Vec::new(),
     };

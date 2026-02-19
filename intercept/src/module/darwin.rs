@@ -419,7 +419,7 @@ fn enumerate_symbols_internal(
             let sym_ptr = fileoff_to_ptr(header, slide, symtab.symoff as u64)
                 .ok_or(HookError::WrongSignature)? as *const nlist_64;
             let str_ptr = fileoff_to_ptr(header, slide, symtab.stroff as u64)
-                .ok_or(HookError::WrongSignature)? as *const u8;
+                .ok_or(HookError::WrongSignature)?;
 
             let mut out = Vec::new();
             for idx in 0..symtab.nsyms {
@@ -476,7 +476,7 @@ unsafe fn rebind_symbol_in_image(
     let Some(indirect_ptr) = fileoff_to_ptr(header, slide, dysymtab.indirectsymoff as u64) else { return Ok(()) };
 
     let symbols = symtab_ptr as *const nlist_64;
-    let strings = strtab_ptr as *const u8;
+    let strings = strtab_ptr;
     let indirect = indirect_ptr as *const u32;
 
     let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
@@ -585,6 +585,8 @@ unsafe fn rebind_symbol_in_image(
     Ok(())
 }
 
+/// # Safety
+/// `replacement` must be a valid function pointer with the same signature as `symbol`.
 pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usize, usize)>, HookError> {
     ensure_rebinding_callback_registered();
 
@@ -631,6 +633,9 @@ pub unsafe fn rebind_symbol(symbol: &str, replacement: usize) -> Result<Vec<(usi
 /// the runtime dispatches through tables stored in `__DATA` / `__DATA_CONST`.
 ///
 /// Returns the number of pointers patched.
+///
+/// # Safety
+/// `replacement` must be a valid function pointer. Callers must ensure the old value is a valid pointer being replaced.
 pub unsafe fn rebind_pointers_by_value(
     module_name: &str,
     old_value: usize,
@@ -839,11 +844,11 @@ mod tests {
 
             // Call the real function via RTLD_NEXT to avoid recursion.
             let mut original =
-                libc::dlsym(libc::RTLD_NEXT, b"posix_spawn\0".as_ptr() as *const c_char);
+                libc::dlsym(libc::RTLD_NEXT, c"posix_spawn".as_ptr());
             if original.is_null() {
                 // Try underscore form for Mach-O symbol naming.
                 original =
-                    libc::dlsym(libc::RTLD_NEXT, b"_posix_spawn\0".as_ptr() as *const c_char);
+                    libc::dlsym(libc::RTLD_NEXT, c"_posix_spawn".as_ptr());
             }
             assert!(!original.is_null(), "failed to resolve original posix_spawn");
 

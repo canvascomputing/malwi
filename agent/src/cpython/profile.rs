@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
-use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
@@ -41,7 +40,7 @@ unsafe fn raise_permission_error() {
     }
     err_set_string(
         api.exc_permission_error,
-        b"malwi-trace: blocked by user\0".as_ptr() as *const c_char,
+        c"malwi-trace: blocked by user".as_ptr(),
     );
 }
 
@@ -158,7 +157,7 @@ unsafe fn set_tstate_profile(
     // Python 3.10: use_tracing is int (4 bytes), non-zero = enabled
     // Python 3.11: use_tracing is uint8_t (1 byte), 0 or 255
     // Python 3.12+: use_tracing was REMOVED from cframe
-    if !version.map_or(true, |v| v.at_least(3, 12)) && func.is_some() {
+    if !version.is_none_or(|v| v.at_least(3, 12)) && func.is_some() {
         let cframe_offset = get_cframe_offset();
         let cframe_ptr = *(tstate.byte_add(cframe_offset) as *const *mut c_void);
 
@@ -316,7 +315,7 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     }
 
     // Get co_varnames tuple to find the 'key' parameter (index 1, after 'self')
-    let varnames = (api.get_attr_string)(code, b"co_varnames\0".as_ptr() as *const c_char);
+    let varnames = (api.get_attr_string)(code, c"co_varnames".as_ptr());
     if varnames.is_null() {
         return 0;
     }
@@ -332,7 +331,7 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     let locals = if let Some(frame_get_locals) = api.frame_get_locals {
         frame_get_locals(frame)
     } else {
-        (api.get_attr_string)(frame, b"f_locals\0".as_ptr() as *const c_char)
+        (api.get_attr_string)(frame, c"f_locals".as_ptr())
     };
     if locals.is_null() {
         if let Some(err_clear) = api.err_clear {
@@ -426,11 +425,11 @@ pub fn do_register_profile_hook() -> bool {
     let set_profile_all: Option<PyEval_SetProfileAllThreadsFn> =
         native::find_export(None, "PyEval_SetProfileAllThreads")
             .ok()
-            .map(|addr| unsafe { std::mem::transmute(addr) });
+            .map(|addr| unsafe { std::mem::transmute::<usize, PyEval_SetProfileAllThreadsFn>(addr) });
 
     let set_profile: Option<PyEval_SetProfileFn> = native::find_export(None, "PyEval_SetProfile")
         .ok()
-        .map(|addr| unsafe { std::mem::transmute(addr) });
+        .map(|addr| unsafe { std::mem::transmute::<usize, PyEval_SetProfileFn>(addr) });
 
     if set_profile_all.is_none() && set_profile.is_none() {
         error!("Python profile API not found (PyEval_SetProfile)");
@@ -461,7 +460,7 @@ pub fn do_register_profile_hook() -> bool {
     // For Python < 3.12, install thread creation hook to detect new threads
     // Python 3.12+ has _thread.start_new_thread audit events and PyEval_SetProfileAllThreads
     let version = super::version::get();
-    if !version.map_or(false, |v| v.at_least(3, 12)) {
+    if !version.is_some_and(|v| v.at_least(3, 12)) {
         debug!(
             "Python < 3.12 detected ({:?}), installing thread creation hook",
             version
@@ -488,7 +487,7 @@ pub fn register_profile_hook_with_gil() -> bool {
     // Check Python version - PyEval_SetProfileAllThreads requires Python 3.12+
     // If not available, we can't register from this thread - must use audit hook on main thread
     let version = super::version::get();
-    if !version.map_or(false, |v| v.at_least(3, 12)) {
+    if !version.is_some_and(|v| v.at_least(3, 12)) {
         debug!(
             "Python < 3.12 (detected: {:?}), deferring to audit hook for main thread registration",
             version
@@ -499,7 +498,7 @@ pub fn register_profile_hook_with_gil() -> bool {
     // Check if Python is fully initialized before acquiring GIL
     let py_is_initialized: Py_IsInitializedFn =
         match native::find_export(None, "Py_IsInitialized") {
-            Ok(addr) => unsafe { std::mem::transmute(addr) },
+            Ok(addr) => unsafe { std::mem::transmute::<usize, Py_IsInitializedFn>(addr) },
             Err(e) => {
                 error!("Failed to find Py_IsInitialized: {}", e);
                 return false;
@@ -513,7 +512,7 @@ pub fn register_profile_hook_with_gil() -> bool {
 
     // Resolve GIL functions
     let gil_ensure: PyGILState_EnsureFn = match native::find_export(None, "PyGILState_Ensure") {
-        Ok(addr) => unsafe { std::mem::transmute(addr) },
+        Ok(addr) => unsafe { std::mem::transmute::<usize, PyGILState_EnsureFn>(addr) },
         Err(e) => {
             error!("Failed to find PyGILState_Ensure: {}", e);
             return false;
@@ -521,7 +520,7 @@ pub fn register_profile_hook_with_gil() -> bool {
     };
 
     let gil_release: PyGILState_ReleaseFn = match native::find_export(None, "PyGILState_Release") {
-        Ok(addr) => unsafe { std::mem::transmute(addr) },
+        Ok(addr) => unsafe { std::mem::transmute::<usize, PyGILState_ReleaseFn>(addr) },
         Err(e) => {
             error!("Failed to find PyGILState_Release: {}", e);
             return false;

@@ -215,9 +215,8 @@ impl HookManager {
             capture_stack: config.capture_stack,
         }));
 
-        let listener = self.create_listener(callback_data).map_err(|e| {
+        let listener = self.create_listener(callback_data).inspect_err(|_e| {
             unsafe { drop(Box::from_raw(callback_data)); }
-            e
         })?;
 
         // Primary path: inline interceptor attach.
@@ -463,7 +462,10 @@ unsafe fn on_leave_inner(
 ///
 /// This is public so it can be called from spawn_monitor to capture
 /// the call stack leading to exec/spawn syscalls.
-pub fn capture_backtrace(context: *mut InvocationContext) -> Vec<usize> {
+///
+/// # Safety
+/// The caller must ensure `context` is a valid InvocationContext pointer.
+pub unsafe fn capture_backtrace(context: *mut InvocationContext) -> Vec<usize> {
     unsafe {
         let cpu = &*(*context).cpu_context;
         malwi_intercept::backtrace::capture_backtrace(cpu, 64)

@@ -49,9 +49,15 @@ mod darwin {
         set_maximum: boolean_t,
         new_protection: vm_prot_t,
     ) -> i32 {
-        // Direct SVC syscall for mach_vm_protect on ARM64.
-        // The libsystem_kernel wrapper may be blocked or behave differently
-        // under hardened runtime / "debugger mapping" enforcement.
+        // Try the library wrapper first — it works in CI and most environments.
+        let kr = mach2::vm::mach_vm_protect(target_task, address, size, set_maximum, new_protection);
+        if kr == 0 {
+            return kr;
+        }
+
+        // Fall back to direct SVC syscall for ARM64. Under hardened runtime /
+        // "debugger mapping" enforcement the libsystem wrapper may fail where
+        // the raw SVC succeeds.
         let x0: u64 = target_task as usize as u64;
         let x1: u64 = address;
         let x2: u64 = size;
@@ -561,14 +567,17 @@ mod linux {
 ///
 /// On macOS, uses a writable alias to preserve code-signing validity.
 /// On Linux, uses mprotect to temporarily make the page writable.
+///
+/// # Safety
+/// `addr` must point to `size` bytes of executable memory. `apply` must write within that range.
 pub unsafe fn patch_code(addr: *mut u8, size: usize, apply: impl FnOnce(*mut u8)) -> Result<(), HookError> {
     #[cfg(target_os = "macos")]
     {
-        return darwin::patch_code(addr, size, apply);
+        darwin::patch_code(addr, size, apply)
     }
     #[cfg(target_os = "linux")]
     {
-        return linux::patch_code(addr, size, apply);
+        linux::patch_code(addr, size, apply)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {

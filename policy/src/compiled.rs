@@ -153,7 +153,7 @@ pub enum EnforcementMode {
 
 impl EnforcementMode {
     /// Parse a mode string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "block" => Some(Self::Block),
             "review" => Some(Self::Review),
@@ -179,7 +179,7 @@ pub enum Runtime {
 
 impl Runtime {
     /// Parse a runtime string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "python" => Some(Self::Python),
             "nodejs" => Some(Self::Node),
@@ -217,7 +217,7 @@ impl Category {
     /// `"network"` is not a Category — it's a special section name that the
     /// compiler expands into Http/Domains/Endpoints/Protocols. Returns None
     /// for it (and any other unknown name).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "symbols" => Some(Self::Functions),
             "files" => Some(Self::Files),
@@ -247,7 +247,7 @@ pub enum Operation {
 
 impl Operation {
     /// Parse an operation string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "read" | "r" => Some(Self::Read),
             "write" | "w" => Some(Self::Write),

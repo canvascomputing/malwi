@@ -32,14 +32,14 @@ pub unsafe fn get_module_name(frame: *mut c_void) -> Option<String> {
     let api = PYTHON_API.get()?;
 
     // Get f_globals from frame
-    let f_globals = (api.get_attr_string)(frame, b"f_globals\0".as_ptr() as *const c_char);
+    let f_globals = (api.get_attr_string)(frame, c"f_globals".as_ptr());
     if f_globals.is_null() {
         return None;
     }
 
     // Get __name__ from globals dict (borrowed reference - no decref!)
     let name_obj =
-        (api.dict_get_item_string)(f_globals, b"__name__\0".as_ptr() as *const c_char);
+        (api.dict_get_item_string)(f_globals, c"__name__".as_ptr());
     let result = if !name_obj.is_null() {
         cstr_to_string((api.unicode_as_utf8)(name_obj))
     } else {
@@ -59,7 +59,7 @@ pub unsafe fn get_module_name(frame: *mut c_void) -> Option<String> {
 pub unsafe fn get_qualname(code: *mut c_void) -> Option<String> {
     let api = PYTHON_API.get()?;
 
-    let qualname_obj = (api.get_attr_string)(code, b"co_qualname\0".as_ptr() as *const c_char);
+    let qualname_obj = (api.get_attr_string)(code, c"co_qualname".as_ptr());
     if qualname_obj.is_null() {
         // Clear the AttributeError from failed lookup (Python < 3.11)
         if let Some(err_clear) = api.err_clear {
@@ -84,7 +84,7 @@ pub unsafe fn get_simple_name(code: *mut c_void) -> Option<String> {
     let name_obj = if let Some(code_get_name) = api.code_get_name {
         code_get_name(code)
     } else {
-        (api.get_attr_string)(code, b"co_name\0".as_ptr() as *const c_char)
+        (api.get_attr_string)(code, c"co_name".as_ptr())
     };
 
     if name_obj.is_null() {
@@ -128,7 +128,7 @@ unsafe fn get_object_display(
 pub unsafe fn get_code_filename(code: *mut c_void) -> Option<String> {
     let api = PYTHON_API.get()?;
 
-    let filename_obj = (api.get_attr_string)(code, b"co_filename\0".as_ptr() as *const c_char);
+    let filename_obj = (api.get_attr_string)(code, c"co_filename".as_ptr());
     if filename_obj.is_null() {
         return None;
     }
@@ -153,7 +153,7 @@ pub unsafe fn get_code_argcount(code: *mut c_void) -> usize {
         None => return 0,
     };
 
-    let argcount_obj = (api.get_attr_string)(code, b"co_argcount\0".as_ptr() as *const c_char);
+    let argcount_obj = (api.get_attr_string)(code, c"co_argcount".as_ptr());
     if argcount_obj.is_null() {
         return 0;
     }
@@ -191,7 +191,7 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     };
 
     // Get co_varnames tuple (new ref)
-    let varnames = (api.get_attr_string)(code, b"co_varnames\0".as_ptr() as *const c_char);
+    let varnames = (api.get_attr_string)(code, c"co_varnames".as_ptr());
     if varnames.is_null() {
         if let Some(err_clear) = api.err_clear {
             err_clear();
@@ -222,7 +222,7 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     }
 
     // Get f_locals from frame (new ref — triggers FastToLocals on 3.10)
-    let locals = (api.get_attr_string)(frame, b"f_locals\0".as_ptr() as *const c_char);
+    let locals = (api.get_attr_string)(frame, c"f_locals".as_ptr());
     if locals.is_null() {
         if let Some(err_clear) = api.err_clear {
             err_clear();
@@ -232,11 +232,11 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
 
     // Get the self/cls value from locals dict (borrowed ref)
     let key = if is_self {
-        b"self\0".as_ptr()
+        c"self".as_ptr()
     } else {
-        b"cls\0".as_ptr()
+        c"cls".as_ptr()
     };
-    let obj = (api.dict_get_item_string)(locals, key as *const c_char);
+    let obj = (api.dict_get_item_string)(locals, key);
     if obj.is_null() {
         (api.py_decref)(locals);
         return None;
@@ -245,7 +245,7 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     // For 'self': get __class__ first (new ref), then __qualname__ from class
     // For 'cls': get __qualname__ directly from the cls object
     let class_obj = if is_self {
-        let cls = (api.get_attr_string)(obj, b"__class__\0".as_ptr() as *const c_char);
+        let cls = (api.get_attr_string)(obj, c"__class__".as_ptr());
         if cls.is_null() {
             if let Some(err_clear) = api.err_clear {
                 err_clear();
@@ -261,7 +261,7 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     };
 
     let qualname_obj =
-        (api.get_attr_string)(class_obj, b"__qualname__\0".as_ptr() as *const c_char);
+        (api.get_attr_string)(class_obj, c"__qualname__".as_ptr());
     let result = if !qualname_obj.is_null() {
         let s = cstr_to_string((api.unicode_as_utf8)(qualname_obj));
         (api.py_decref)(qualname_obj);
@@ -473,7 +473,7 @@ pub unsafe fn extract_function_arguments(frame: *mut c_void) -> Vec<Argument> {
     }
 
     // Get co_varnames tuple (contains parameter names first, then locals)
-    let varnames = (api.get_attr_string)(code, b"co_varnames\0".as_ptr() as *const c_char);
+    let varnames = (api.get_attr_string)(code, c"co_varnames".as_ptr());
     if varnames.is_null() {
         return arguments;
     }
@@ -483,7 +483,7 @@ pub unsafe fn extract_function_arguments(frame: *mut c_void) -> Vec<Argument> {
     let locals = if let Some(frame_get_locals) = api.frame_get_locals {
         frame_get_locals(frame)
     } else {
-        (api.get_attr_string)(frame, b"f_locals\0".as_ptr() as *const c_char)
+        (api.get_attr_string)(frame, c"f_locals".as_ptr())
     };
     if locals.is_null() {
         if let Some(err_clear) = api.err_clear {

@@ -212,7 +212,10 @@ fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
 /// Returns `(max_insns, scratch_reg)` where max_insns is the safe relocation
 /// limit and scratch_reg is the register available for long-branch stubs.
 /// Stops relocation at BL/BLR boundaries.
-pub fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) {
+///
+/// # Safety
+/// `input` must point to at least `max_insns` valid ARM64 instructions.
+pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) {
     let mut limit = max_insns;
     let mut x16_used = false;
     let mut x17_used = false;
@@ -275,6 +278,8 @@ impl Arm64Relocator {
         self.pos
     }
 
+    /// # Safety
+    /// The writer must have sufficient capacity and the source instructions must be valid.
     pub unsafe fn relocate_n(
         &mut self,
         writer: &mut Arm64Writer,
@@ -299,11 +304,11 @@ impl Arm64Relocator {
         let mut src_pcs: Vec<u64> = Vec::with_capacity(count);
         let mut dst_pcs: Vec<u64> = Vec::with_capacity(count);
         let mut cur_dst_pc = writer.pc();
-        for i in 0..count {
+        for (i, &insn) in insns.iter().enumerate().take(count) {
             let src_pc = self.input_pc + ((self.pos + i) as u64) * 4;
             src_pcs.push(src_pc);
             dst_pcs.push(cur_dst_pc);
-            cur_dst_pc = cur_dst_pc.wrapping_add(estimated_size(insn_kind(insns[i])) as u64);
+            cur_dst_pc = cur_dst_pc.wrapping_add(estimated_size(insn_kind(insn)) as u64);
         }
 
         let map_dst = |target: u64| -> u64 {
@@ -330,22 +335,22 @@ impl Arm64Relocator {
                 InsnKind::Adr => {
                     let target = (src_pc as i64).wrapping_add(decode_imm21_adr(insn)) as u64;
                     let dst = rd(insn);
-                    writer.put_ldr_reg_address(core::mem::transmute(dst as u8), target);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(dst as u8), target);
                 }
                 InsnKind::Adrp => {
                     let imm = decode_imm21_adr(insn);
                     let target = ((src_pc & !0xfffu64) as i64).wrapping_add(imm << 12) as u64;
                     let dst = rd(insn);
-                    writer.put_ldr_reg_address(core::mem::transmute(dst as u8), target);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(dst as u8), target);
                 }
                 InsnKind::LdrLiteral64 => {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     writer.put_ldr_reg_reg_offset(
-                        core::mem::transmute(rt as u8),
-                        core::mem::transmute(scratch),
+                        core::mem::transmute::<u8, Reg>(rt as u8),
+                        core::mem::transmute::<u8, Reg>(scratch),
                         0,
                     );
                 }
@@ -354,7 +359,7 @@ impl Arm64Relocator {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Wt, [Xscratch, #0] — 32-bit unsigned offset load.
                     // Encoding: 0xB9400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xB940_0000 | ((scratch as u32) << 5) | rt);
@@ -365,7 +370,7 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Dt, [X16, #0] — FP 64-bit load from GPR base.
                     // Encoding: 0xFD400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xFD40_0000 | ((scratch as u32) << 5) | rt);
@@ -376,7 +381,7 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR St, [X16, #0] — FP 32-bit load from GPR base.
                     // Encoding: 0xBD400000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xBD40_0000 | ((scratch as u32) << 5) | rt);
@@ -387,7 +392,7 @@ impl Arm64Relocator {
                     let rt = rd(insn);
                     // FP registers don't conflict with GPR X16/X17, always use X16.
                     let scratch: u8 = 16;
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDR Qt, [X16, #0] — FP 128-bit load from GPR base.
                     // Encoding: 0x3DC00000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0x3DC0_0000 | ((scratch as u32) << 5) | rt);
@@ -397,7 +402,7 @@ impl Arm64Relocator {
                     let target_addr = (src_pc as i64).wrapping_add(decode_imm19(insn) << 2) as u64;
                     let rt = rd(insn);
                     let scratch: u8 = if rt == 16 { 17 } else { 16 };
-                    writer.put_ldr_reg_address(core::mem::transmute(scratch), target_addr);
+                    writer.put_ldr_reg_address(core::mem::transmute::<u8, Reg>(scratch), target_addr);
                     // LDRSW Xt, [Xscratch, #0] — signed 32-bit load.
                     // Encoding: 0xB9800000 | (imm12 << 10) | (rn << 5) | rt
                     writer.put_u32_raw(0xB980_0000 | ((scratch as u32) << 5) | rt);
@@ -413,7 +418,7 @@ impl Arm64Relocator {
                 }
                 InsnKind::BCond => {
                     let target = map_dst(branch_target_imm19(src_pc, insn));
-                    let cond = (insn & 0xf) as u32;
+                    let cond = insn & 0xf;
 
                     // If this is effectively unconditional, just do a long branch.
                     if cond == 0xe || cond == 0xf {
@@ -626,7 +631,7 @@ mod tests {
             0xD503201F, // NOP
             0xD503201F, // NOP
         ];
-        let (limit, scratch) = can_relocate(insns.as_ptr(), 4);
+        let (limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(limit, 2, "BLR should stop relocation (include it, stop after)");
         assert_eq!(scratch, Reg::X17, "x17 since x16 is used");
     }
@@ -640,7 +645,7 @@ mod tests {
             0xD65F03C0, // RET
             0xD503201F, // NOP
         ];
-        let (limit, scratch) = can_relocate(insns.as_ptr(), 4);
+        let (limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(limit, 4, "RET is not a relocation boundary");
         assert_eq!(scratch, Reg::X16, "x16 available (no x16/x17 usage)");
     }
@@ -655,7 +660,7 @@ mod tests {
         //
         // After relocation into a trampoline, the cbz must target the relocated third insn.
         let src_pc = 0x1000u64;
-        let cbz = 0xB400_0000u32 | (2 << 5) | 0; // imm19=2 => +8, rt=x0, sf=1 (64-bit)
+        let cbz = 0xB400_0000u32 | (2 << 5); // imm19=2 => +8, rt=x0, sf=1 (64-bit)
         let input = [cbz, 0xD503_201F, 0xD503_201F, 0xD503_201F];
 
         let mut buf = [0u8; 128];
@@ -672,7 +677,7 @@ mod tests {
 
         // Literal in the long branch stub should point inside the relocated prologue (>= 0x2000).
         let lit = u64::from_le_bytes(buf[12..20].try_into().unwrap());
-        assert!(lit >= 0x2000 && lit < 0x2000 + 128);
+        assert!((0x2000..0x2000 + 128).contains(&lit));
     }
 
     /// LDR W16, [PC, #+8] → scratch-load + 32-bit deref.
@@ -745,7 +750,7 @@ mod tests {
             0xD503201F, // NOP
             0xD503201F, // NOP
         ];
-        let (limit, _scratch) = can_relocate(insns.as_ptr(), 4);
+        let (limit, _scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(limit, 4, "BR is position-independent and should not stop relocation");
     }
 
@@ -797,7 +802,7 @@ mod tests {
         //         = 0xA9800000 | 0x003F0000 | 0x00004000 | 0x000003E0 | 0x13
         //         = 0xA9BF43F3
         let insns: [u32; 1] = [0xA9BF43F3];
-        let (_limit, scratch) = can_relocate(insns.as_ptr(), 1);
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
         assert_eq!(scratch, Reg::X17, "X16 in Rt2 should cause fallback to X17");
     }
 
@@ -807,7 +812,7 @@ mod tests {
         // STP X19, X17, [SP, #-16]!
         // Same as above but Rt2=17: 0xA9BF47F3
         let insns: [u32; 1] = [0xA9BF47F3];
-        let (_limit, scratch) = can_relocate(insns.as_ptr(), 1);
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
         assert_eq!(scratch, Reg::X16, "X17 in Rt2 should cause X16 to be chosen");
     }
 }

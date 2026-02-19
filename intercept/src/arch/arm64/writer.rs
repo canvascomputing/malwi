@@ -44,6 +44,8 @@ pub struct Arm64Writer {
 }
 
 impl Arm64Writer {
+    /// # Safety
+    /// `buffer` must point to at least `size` bytes of writable memory.
     pub unsafe fn new(buffer: *mut u8, size: usize, pc: u64) -> Self {
         Self {
             base: buffer as *mut u32,
@@ -77,24 +79,34 @@ impl Arm64Writer {
         self.pc = self.pc.wrapping_add(4);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_u32_raw(&mut self, insn: u32) {
         self.put_u32(insn);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ret(&mut self) {
         self.put_u32(0xD65F03C0);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_br_reg(&mut self, reg: Reg) {
         let n = reg as u32;
         self.put_u32(0xD61F0000 | (n << 5));
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_blr_reg(&mut self, reg: Reg) {
         let n = reg as u32;
         self.put_u32(0xD63F0000 | (n << 5));
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_push_reg_reg(&mut self, a: Reg, b: Reg) {
         // STP Xa, Xb, [SP, #-16]!
         let rt = a as u32;
@@ -104,6 +116,8 @@ impl Arm64Writer {
         self.put_u32(0xA980_0000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_pop_reg_reg(&mut self, a: Reg, b: Reg) {
         // LDP Xa, Xb, [SP], #16
         let rt = a as u32;
@@ -113,6 +127,8 @@ impl Arm64Writer {
         self.put_u32(0xA8C0_0000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_add_reg_reg_imm(&mut self, d: Reg, n: Reg, imm: u32) {
         // ADD Xd, Xn, #imm12 (shift=0)
         let rd = d as u32;
@@ -121,6 +137,8 @@ impl Arm64Writer {
         self.put_u32(0x9100_0000 | (imm12 << 10) | (rn << 5) | rd);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_sub_reg_reg_imm(&mut self, d: Reg, n: Reg, imm: u32) {
         // SUB Xd, Xn, #imm12 (shift=0)
         let rd = d as u32;
@@ -129,6 +147,8 @@ impl Arm64Writer {
         self.put_u32(0xD100_0000 | (imm12 << 10) | (rn << 5) | rd);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_mov_reg_reg(&mut self, dst: Reg, src: Reg) {
         // MOV Xd, Xs.
         //
@@ -145,6 +165,8 @@ impl Arm64Writer {
         self.put_u32(0xAA00_03E0 | (rm << 16) | rd);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_mov_reg_u64(&mut self, dst: Reg, value: u64) {
         // Materialize an absolute 64-bit constant using MOVZ/MOVK.
         // This avoids literal pools and PC-relative semantics in generated code.
@@ -163,12 +185,16 @@ impl Arm64Writer {
         }
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_b_imm(&mut self, target: u64) {
         let imm = (target as i64 - self.pc as i64) >> 2;
         let imm26 = (imm as u32) & 0x03FF_FFFF;
         self.put_u32(0x1400_0000 | imm26);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_bl_imm(&mut self, target: u64) {
         let imm = (target as i64 - self.pc as i64) >> 2;
         let imm26 = (imm as u32) & 0x03FF_FFFF;
@@ -180,6 +206,9 @@ impl Arm64Writer {
     /// This is shorter than the 16-byte LDR+BR+literal sequence and useful
     /// for patching short functions where overwriting 16 bytes would corrupt
     /// adjacent code.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_adrp_add_br(&mut self, reg: Reg, target: u64) {
         let rt = reg as u32;
 
@@ -200,6 +229,8 @@ impl Arm64Writer {
         self.put_br_reg(reg);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_br_address(&mut self, reg: Reg, addr: u64) {
         // Sequence:
         //   LDR Xt, [PC, #8]
@@ -220,6 +251,8 @@ impl Arm64Writer {
         self.pc = self.pc.wrapping_add(8);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_reg_address(&mut self, reg: Reg, addr: u64) {
         // Sequence:
         //   LDR Xt, [PC, #8]
@@ -241,6 +274,8 @@ impl Arm64Writer {
         self.pc = self.pc.wrapping_add(8);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_reg_reg_offset(&mut self, rt: Reg, rn: Reg, offset: i64) {
         // LDR Xt, [Xn, #imm] (unsigned immediate, scaled by 8 for 64-bit)
         // Encoding supports only non-negative, 8-byte aligned offsets here.
@@ -253,6 +288,8 @@ impl Arm64Writer {
         self.put_u32(0xF940_0000 | (imm12 << 10) | (rn << 5) | rt);
     }
 
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_str_reg_reg_offset(&mut self, rt: Reg, rn: Reg, offset: i64) {
         // STR Xt, [Xn, #imm] (unsigned immediate, scaled by 8 for 64-bit)
         if offset < 0 || (offset & 0x7) != 0 {
@@ -348,7 +385,7 @@ mod tests {
         }
         let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         // ADD X16, SP, #0
-        assert_eq!(insn, 0x9100_0000 | (0 << 10) | (31 << 5) | 16);
+        assert_eq!(insn, 0x9100_0000 | (31 << 5) | 16);
     }
 
     #[test]
@@ -363,7 +400,7 @@ mod tests {
         let i2 = u32::from_le_bytes(buf[8..12].try_into().unwrap());
         let i3 = u32::from_le_bytes(buf[12..16].try_into().unwrap());
         // movz x16, #0xcdef
-        assert_eq!(i0, 0xD280_0000 | (0 << 21) | (0xCDEF << 5) | 16);
+        assert_eq!(i0, 0xD280_0000 | (0xCDEF << 5) | 16);
         // movk x16, #0x89ab, lsl #16
         assert_eq!(i1, 0xF280_0000 | (1 << 21) | (0x89AB << 5) | 16);
         // movk x16, #0x4567, lsl #32
@@ -416,7 +453,7 @@ mod tests {
         let ldr = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let str_ = u32::from_le_bytes(buf[4..8].try_into().unwrap());
         // imm12 = 0x18 / 8 = 3
-        assert_eq!(ldr, 0xF940_0000 | (3 << 10) | (1 << 5) | 0);
+        assert_eq!(ldr, 0xF940_0000 | (3 << 10) | (1 << 5));
         assert_eq!(str_, 0xF900_0000 | (3 << 10) | (3 << 5) | 2);
     }
 

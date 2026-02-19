@@ -238,6 +238,8 @@ impl CodeAllocator {
         }
     }
 
+    /// # Safety
+    /// `slice` must have been allocated by this allocator.
     pub unsafe fn make_executable(&self, slice: &CodeSlice) -> Result<(), HookError> {
         #[cfg(target_os = "macos")]
         {
@@ -305,11 +307,7 @@ mod tests {
         let near = alloc_near_returns_within_range as *const u8;
         let max_distance = 1024 * 1024 * 1024; // 1GiB (avoid flakiness vs ASLR/fragmentation)
         let slice = alloc.alloc_near(near, max_distance).expect("alloc_near");
-        let dist = if (slice.data as usize) >= (near as usize) {
-            (slice.data as usize) - (near as usize)
-        } else {
-            (near as usize) - (slice.data as usize)
-        };
+        let dist = (slice.data as usize).abs_diff(near as usize);
         assert!(dist <= max_distance);
     }
 }

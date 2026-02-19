@@ -44,6 +44,6 @@ mod tests {
         let tid = id();
         // Thread IDs are generally non-zero, though this isn't strictly guaranteed
         // on all platforms. We mainly test that the function doesn't crash.
-        assert!(tid > 0 || tid == 0); // Always passes, but exercises the code
+        let _ = tid; // Exercises the code; thread IDs can be any u64 value
     }
 }

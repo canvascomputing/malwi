@@ -220,27 +220,27 @@ pub fn resolve_stack_parser_ffi(addon_path: &std::path::Path) -> bool {
         }
 
         macro_rules! resolve_sym {
-            ($name:expr) => {{
+            ($name:expr, $ty:ty) => {{
                 let sym_name = CString::new($name).unwrap();
                 let sym = libc::dlsym(handle, sym_name.as_ptr());
                 if sym.is_null() {
                     warn!("Failed to resolve stack parser symbol: {}", $name);
                     return false;
                 }
-                std::mem::transmute(sym)
+                std::mem::transmute::<*mut libc::c_void, $ty>(sym)
             }};
         }
 
         let ffi = StackParserFfi {
-            parse_frame_parameters: resolve_sym!("malwi_parse_frame_parameters"),
-            parse_frame_parameters_with_isolate: resolve_sym!("malwi_parse_frame_parameters_with_isolate"),
-            free_frame_result: resolve_sym!("malwi_free_frame_result"),
-            walk_to_js_frame: resolve_sym!("malwi_walk_to_js_frame"),
-            get_js_frame_from_isolate: resolve_sym!("malwi_get_js_frame_from_isolate"),
-            get_platform_info: resolve_sym!("malwi_get_platform_info"),
-            get_type_name: resolve_sym!("malwi_get_type_name"),
-            get_current_function_name: resolve_sym!("malwi_get_current_function_name"),
-            capture_stack_trace: resolve_sym!("malwi_capture_stack_trace"),
+            parse_frame_parameters: resolve_sym!("malwi_parse_frame_parameters", ParseFrameParametersFn),
+            parse_frame_parameters_with_isolate: resolve_sym!("malwi_parse_frame_parameters_with_isolate", ParseFrameParametersWithIsolateFn),
+            free_frame_result: resolve_sym!("malwi_free_frame_result", FreeFrameResultFn),
+            walk_to_js_frame: resolve_sym!("malwi_walk_to_js_frame", WalkToJsFrameFn),
+            get_js_frame_from_isolate: resolve_sym!("malwi_get_js_frame_from_isolate", GetJsFrameFromIsolateFn),
+            get_platform_info: resolve_sym!("malwi_get_platform_info", GetPlatformInfoFn),
+            get_type_name: resolve_sym!("malwi_get_type_name", GetTypeNameFn),
+            get_current_function_name: resolve_sym!("malwi_get_current_function_name", GetCurrentFunctionNameFn),
+            capture_stack_trace: resolve_sym!("malwi_capture_stack_trace", CaptureStackTraceFn),
         };
 
         let _ = STACK_PARSER_FFI.set(ffi);
@@ -474,7 +474,7 @@ impl<'a> IntoIterator for &'a FrameParameters {
 ///
 /// # Arguments
 /// * `frame_pointer` - The frame pointer (rbp on x64, x29 on arm64).
-///                     Must point to a valid V8 JavaScript frame.
+///   Must point to a valid V8 JavaScript frame.
 ///
 /// # Returns
 /// * `Some(FrameParameters)` - Successfully parsed parameters.
@@ -554,13 +554,13 @@ pub fn walk_to_js_frame(entry_fp: usize) -> Option<usize> {
 ///
 /// # Safety
 /// The caller must ensure `isolate` is a valid v8::Isolate pointer.
-pub fn get_js_frame_from_isolate(isolate: *mut c_void) -> Option<usize> {
+pub unsafe fn get_js_frame_from_isolate(isolate: *mut c_void) -> Option<usize> {
     if isolate.is_null() {
         return None;
     }
 
     let ffi = STACK_PARSER_FFI.get()?;
-    let fp = unsafe { (ffi.get_js_frame_from_isolate)(isolate) };
+    let fp = (ffi.get_js_frame_from_isolate)(isolate);
 
     if fp == 0 {
         None
@@ -623,7 +623,7 @@ pub fn get_type_name(value_type: ValueType) -> String {
 ///
 /// # Safety
 /// The caller must ensure `isolate` is a valid v8::Isolate pointer.
-pub fn parse_parameters_from_isolate(isolate: *mut c_void) -> Option<FrameParameters> {
+pub unsafe fn parse_parameters_from_isolate(isolate: *mut c_void) -> Option<FrameParameters> {
     // Get JS frame pointer from isolate's ThreadLocalTop
     let js_fp = get_js_frame_from_isolate(isolate)?;
 
@@ -689,8 +689,11 @@ pub fn format_parameters(params: Option<&FrameParameters>) -> String {
 /// # Returns
 /// * `Some(String)` - The script path (may be empty for eval/inline code).
 /// * `None` - FFI not loaded or error capturing stack.
-pub fn get_current_script_path(isolate: *mut c_void) -> Option<String> {
-    let frames = capture_stack_trace(isolate, 1)?;
+///
+/// # Safety
+/// The caller must ensure `isolate` is a valid v8::Isolate pointer.
+pub unsafe fn get_current_script_path(isolate: *mut c_void) -> Option<String> {
+    let frames = unsafe { capture_stack_trace(isolate, 1) }?;
     if frames.is_empty() {
         return None;
     }
@@ -711,7 +714,7 @@ pub fn get_current_script_path(isolate: *mut c_void) -> Option<String> {
 ///
 /// # Safety
 /// The caller should ensure the isolate pointer is valid if provided.
-pub fn get_current_function_name(isolate: *mut c_void) -> Option<String> {
+pub unsafe fn get_current_function_name(isolate: *mut c_void) -> Option<String> {
     let ffi = STACK_PARSER_FFI.get()?;
 
     unsafe {
@@ -745,7 +748,10 @@ pub struct V8StackFrame {
 /// # Returns
 /// * `Some(Vec<V8StackFrame>)` - The stack frames.
 /// * `None` - Failed to capture or FFI not loaded.
-pub fn capture_stack_trace(isolate: *mut c_void, max_frames: i32) -> Option<Vec<V8StackFrame>> {
+///
+/// # Safety
+/// The caller must ensure `isolate` is a valid v8::Isolate pointer, or null.
+pub unsafe fn capture_stack_trace(isolate: *mut c_void, max_frames: i32) -> Option<Vec<V8StackFrame>> {
     let ffi = STACK_PARSER_FFI.get()?;
 
     unsafe {
@@ -825,7 +831,7 @@ fn parse_single_frame(json: &str) -> Option<V8StackFrame> {
         if let Some(pos) = json.find(&key) {
             let value_start = pos + key.len();
             let value_end = json[value_start..]
-                .find(|c| c == ',' || c == '}')
+                .find([',', '}'])
                 .map(|i| value_start + i)
                 .unwrap_or(json.len());
             let value = json[value_start..value_end].trim();
@@ -951,12 +957,12 @@ mod tests {
             value_type: ValueType::HeapNumber,
             smi_value: None,
             type_name: "HeapNumber".to_string(),
-            heap_number_value: Some(3.14159),
+            heap_number_value: Some(1.5),
             string_value: None,
             array_length: None,
             function_name: None,
         };
-        assert_eq!(param4.to_string(), "3.14159");
+        assert_eq!(param4.to_string(), "1.5");
 
         // Test Object
         let param5 = ParameterInfo {

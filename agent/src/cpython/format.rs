@@ -330,8 +330,10 @@ fn non_empty_network_info(ni: NetworkInfo) -> Option<NetworkInfo> {
 /// Handles http://, https://, ws://, wss:// schemes.
 fn network_info_from_url(raw: &str) -> NetworkInfo {
     let url = raw.trim_matches('\'').trim_matches('"');
-    let mut ni = NetworkInfo::default();
-    ni.url = Some(url.to_string());
+    let mut ni = NetworkInfo {
+        url: Some(url.to_string()),
+        ..Default::default()
+    };
 
     let Some((scheme, rest)) = url.split_once("://") else {
         return ni;
@@ -1607,7 +1609,7 @@ fn format_dns_resolver_resolve_net(args: &mut [Argument]) -> NetworkInfo {
     } else {
         0
     };
-    if let Some(ref display) = args.get(qname_idx).and_then(|a| a.display.as_ref()) {
+    if let Some(display) = args.get(qname_idx).and_then(|a| a.display.as_ref()) {
         let host = display.trim_matches('\'').trim_matches('"');
         if !host.is_empty() {
             ni.host = Some(host.to_string());

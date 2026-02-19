@@ -151,10 +151,8 @@ fn match_runtime_entry(runtime: Runtime, entry: &std::fs::DirEntry) -> Option<Pa
         }
         Runtime::Bash => {
             // Match files like "bash-5.3", "bash-5.2", "bash-5.1" (direct executables)
-            if name.starts_with("bash") {
-                if path.is_file() {
-                    return Some(path);
-                }
+            if name.starts_with("bash") && path.is_file() {
+                return Some(path);
             }
         }
     }
@@ -954,7 +952,7 @@ fn terminate_child_with_timeout(child: &mut std::process::Child) -> std::process
         unsafe {
             let _ = libc::kill(-pgid, libc::SIGKILL);
         }
-        return child.wait().expect("failed to wait after timeout kill");
+        child.wait().expect("failed to wait after timeout kill")
     }
 
     #[cfg(not(unix))]

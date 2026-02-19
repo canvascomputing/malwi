@@ -469,7 +469,6 @@ impl Agent {
         if let Some(cmd) = raw_command {
             let (matches, _) = exec_filter::check_filter(cmd);
             let unwrap_matches = unwrapped
-                .as_deref()
                 .map(|u| exec_filter::check_filter(u).0)
                 .unwrap_or(false);
             if !matches && !unwrap_matches {
@@ -780,6 +779,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
 /// # Safety
 /// The caller must ensure `out_buffer` points to valid memory of at least `buffer_size` bytes.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_prepare_node_options(
     url_ptr: *const std::ffi::c_char,
     out_buffer: *mut std::ffi::c_char,
@@ -850,10 +850,10 @@ fn prepare_node_options_internal() -> Option<String> {
         true
     };
 
-    if should_write {
-        if std::fs::write(&wrapper_path, &wrapper_js).is_err() {
-            return None;
-        }
+    if should_write
+        && std::fs::write(&wrapper_path, &wrapper_js).is_err()
+    {
+        return None;
     }
 
     // Build NODE_OPTIONS value

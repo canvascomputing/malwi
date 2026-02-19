@@ -128,7 +128,7 @@ pub(crate) fn detect_policy(program: &[String]) -> Option<&'static str> {
     for rule in RULES {
         let has_program = basenames
             .iter()
-            .any(|b| rule.programs.iter().any(|p| *b == *p));
+            .any(|b| rule.programs.contains(b));
         if !has_program {
             continue;
         }
@@ -145,7 +145,7 @@ pub(crate) fn detect_policy(program: &[String]) -> Option<&'static str> {
         let has_args = rule.command_patterns.is_empty()
             || basenames
                 .iter()
-                .any(|b| rule.command_patterns.iter().any(|s| *b == *s));
+                .any(|b| rule.command_patterns.contains(b));
         if !has_args {
             continue;
         }

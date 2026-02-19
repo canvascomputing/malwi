@@ -14,7 +14,7 @@ pub fn capture_backtrace(cpu_context: &Arm64CpuContext, max_depth: usize) -> Vec
     }
 
     for _ in 0..max_depth.saturating_sub(1) {
-        if fp == 0 || fp % 16 != 0 {
+        if fp == 0 || !fp.is_multiple_of(16) {
             break;
         }
 
@@ -61,7 +61,7 @@ mod tests {
             v: [0u128; 32],
         };
         let bt = capture_backtrace(&ctx, 16);
-        assert!(bt.len() >= 1);
+        assert!(!bt.is_empty());
     }
 
     #[test]

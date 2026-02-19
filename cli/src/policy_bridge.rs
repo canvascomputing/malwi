@@ -1526,7 +1526,6 @@ network:
             host: Some("example.com".to_string()),
             port: Some(80),
             protocol: Some(Protocol::Http),
-            ..Default::default()
         };
         let event = make_trace_event_with_net(
             HookType::Python,
@@ -1556,7 +1555,6 @@ network:
             host: Some("x.evil.com".to_string()),
             port: Some(443),
             protocol: Some(Protocol::Https),
-            ..Default::default()
         };
         let event = make_trace_event_with_net(
             HookType::Python,

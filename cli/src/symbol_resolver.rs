@@ -34,6 +34,12 @@ pub struct SymbolResolver {
     sorted_ranges: Vec<ModuleRange>,
 }
 
+impl Default for SymbolResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolResolver {
     pub fn new() -> Self {
         Self {

@@ -65,7 +65,7 @@ pub fn get() -> Option<Version> {
     *PYTHON_VERSION.get_or_init(|| {
         // Find Py_GetVersion symbol
         let py_get_version: PyGetVersionFn = match native::find_export(None, "Py_GetVersion") {
-            Ok(addr) => unsafe { std::mem::transmute(addr) },
+            Ok(addr) => unsafe { std::mem::transmute::<usize, PyGetVersionFn>(addr) },
             Err(_) => {
                 debug!("Py_GetVersion not found - Python not loaded");
                 return None;

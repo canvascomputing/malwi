@@ -139,6 +139,7 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
 }
 
 /// Read and parse JSON body from request.
+#[allow(clippy::result_large_err)]
 fn read_json_body<T: for<'de> Deserialize<'de>>(
     mut request: tiny_http::Request,
 ) -> std::result::Result<(T, tiny_http::Request), (String, tiny_http::Request)> {

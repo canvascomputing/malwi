@@ -20,6 +20,8 @@ unsafe fn cpu<'a>(ctx: *mut InvocationContext) -> &'a mut X86_64CpuContext {
 
 // ── AArch64 ──────────────────────────────────────────────────────────
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn get_nth_argument(ctx: *mut InvocationContext, n: u32) -> *mut c_void {
     let cpu = cpu(ctx);
@@ -30,6 +32,8 @@ pub unsafe fn get_nth_argument(ctx: *mut InvocationContext, n: u32) -> *mut c_vo
     }
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn replace_nth_argument(ctx: *mut InvocationContext, n: u32, value: *mut c_void) {
     let cpu = cpu(ctx);
@@ -38,12 +42,16 @@ pub unsafe fn replace_nth_argument(ctx: *mut InvocationContext, n: u32, value: *
     }
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn get_return_value(ctx: *mut InvocationContext) -> *mut c_void {
     let cpu = cpu(ctx);
     cpu.x[0] as usize as *mut c_void
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn replace_return_value(ctx: *mut InvocationContext, value: *mut c_void) {
     let cpu = cpu(ctx);
@@ -56,6 +64,8 @@ pub unsafe fn replace_return_value(ctx: *mut InvocationContext, value: *mut c_vo
 // Arg0=RDI, Arg1=RSI, Arg2=RDX, Arg3=RCX, Arg4=R8, Arg5=R9
 // Return value=RAX
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn get_nth_argument(ctx: *mut InvocationContext, n: u32) -> *mut c_void {
     let cpu = cpu(ctx);
@@ -71,6 +81,8 @@ pub unsafe fn get_nth_argument(ctx: *mut InvocationContext, n: u32) -> *mut c_vo
     val as usize as *mut c_void
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn replace_nth_argument(ctx: *mut InvocationContext, n: u32, value: *mut c_void) {
     let cpu = cpu(ctx);
@@ -86,12 +98,16 @@ pub unsafe fn replace_nth_argument(ctx: *mut InvocationContext, n: u32, value: *
     }
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn get_return_value(ctx: *mut InvocationContext) -> *mut c_void {
     let cpu = cpu(ctx);
     cpu.rax as usize as *mut c_void
 }
 
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn replace_return_value(ctx: *mut InvocationContext, value: *mut c_void) {
     let cpu = cpu(ctx);

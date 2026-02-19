@@ -148,7 +148,7 @@ unsafe fn build_wrapper_in(
 
     // Save x0-x7.
     for i in 0..8 {
-        w.put_str_reg_reg_offset(core::mem::transmute(i as u8), Reg::SP, (i * 8) as i64);
+        w.put_str_reg_reg_offset(core::mem::transmute::<u8, Reg>(i as u8), Reg::SP, (i * 8) as i64);
     }
     // Save LR.
     w.put_str_reg_reg_offset(Reg::X30, Reg::SP, 64);
@@ -189,7 +189,7 @@ unsafe fn build_wrapper_in(
 
     // Restore (possibly modified) args x0-x7 from saved area.
     for i in 0..8 {
-        w.put_ldr_reg_reg_offset(core::mem::transmute(i as u8), Reg::SP, (i * 8) as i64);
+        w.put_ldr_reg_reg_offset(core::mem::transmute::<u8, Reg>(i as u8), Reg::SP, (i * 8) as i64);
     }
 
     // Call trampoline (original prologue + resume).
@@ -296,10 +296,10 @@ pub(crate) fn attach(interceptor: &Interceptor, function_address: *mut c_void, l
     // Validate that the required number of instructions can be safely relocated.
     // can_relocate stops after BL/BLR boundaries (which modify LR). SVC is NOT
     // a boundary — it is position-independent (the relocator copies it verbatim).
-    let (max_safe, _scratch) = can_relocate(
+    let (max_safe, _scratch) = unsafe { can_relocate(
         function_address as *const u32,
         n_insns,
-    );
+    ) };
     if max_safe < n_insns {
         // Reduce patch size to fit within the safe relocation boundary.
         let dist = (wrapper_addr_estimate as i64 - func_addr as i64).unsigned_abs() as usize;

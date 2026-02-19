@@ -52,9 +52,9 @@ fn resolve_nodejs_script_api() -> Option<NodejsScriptApi> {
     debug!("Attempting to resolve Node.js Script Execution API...");
 
     macro_rules! resolve {
-        ($sym:expr) => {
+        ($sym:expr, $ty:ty) => {
             match native::find_export(None, $sym) {
-                Ok(addr) => unsafe { std::mem::transmute(addr) },
+                Ok(addr) => unsafe { std::mem::transmute::<usize, $ty>(addr) },
                 Err(e) => {
                     debug!("Failed to resolve {}: {}", $sym, e);
                     return None;
@@ -63,14 +63,14 @@ fn resolve_nodejs_script_api() -> Option<NodejsScriptApi> {
         };
     }
 
-    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT);
+    let isolate_get_current: IsolateGetCurrentFn = resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
     let isolate_get_current_context: IsolateGetCurrentContextFn =
-        resolve!(symbols::v8::ISOLATE_GET_CURRENT_CONTEXT);
-    let string_new_from_utf8: StringNewFromUtf8Fn = resolve!(symbols::v8::STRING_NEW_FROM_UTF8);
-    let script_compile: ScriptCompileFn = resolve!(symbols::v8::SCRIPT_COMPILE);
-    let script_run: ScriptRunFn = resolve!(symbols::v8::SCRIPT_RUN);
-    let string_utf8_length: StringUtf8LengthFn = resolve!(symbols::v8::STRING_UTF8_LENGTH);
-    let string_write_utf8: StringWriteUtf8Fn = resolve!(symbols::v8::STRING_WRITE_UTF8);
+        resolve!(symbols::v8::ISOLATE_GET_CURRENT_CONTEXT, IsolateGetCurrentContextFn);
+    let string_new_from_utf8: StringNewFromUtf8Fn = resolve!(symbols::v8::STRING_NEW_FROM_UTF8, StringNewFromUtf8Fn);
+    let script_compile: ScriptCompileFn = resolve!(symbols::v8::SCRIPT_COMPILE, ScriptCompileFn);
+    let script_run: ScriptRunFn = resolve!(symbols::v8::SCRIPT_RUN, ScriptRunFn);
+    let string_utf8_length: StringUtf8LengthFn = resolve!(symbols::v8::STRING_UTF8_LENGTH, StringUtf8LengthFn);
+    let string_write_utf8: StringWriteUtf8Fn = resolve!(symbols::v8::STRING_WRITE_UTF8, StringWriteUtf8Fn);
 
     debug!("Node.js Script Execution API resolved successfully");
 
