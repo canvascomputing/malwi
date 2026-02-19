@@ -69,6 +69,16 @@ make addon-install
 make clean
 ```
 
+## Releasing
+
+```bash
+# Bump patch version (0.0.24 → 0.0.25), sync all files, and tag
+bash scripts/bump-version.sh
+
+# Set explicit version
+bash scripts/bump-version.sh 0.1.0
+```
+
 ## Testing
 
 ```bash

@@ -10,7 +10,7 @@
 
 Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. `malwi` intercepts Python, Node.js and Bash code at runtime, blocking unauthorized network calls and sensitive file access before damage is done. Includes curated policies built from supply-chain security research.
 
-**Compatibility**: Python 3.10&ndash;3.14 · Node.js 18&ndash;25 · Bash 4.4&ndash;5.3 · macOS ([⚠️ SIP](#macos-system-integrity-protection-sip)) &amp; Linux · arm64 &amp; x86_64
+**Compatibility**: `Python 3.10-3.14` · `Node.js 21-25` · `Bash 4.4-5.3` · `macOS` ([⚠️ SIP](#macos-system-integrity-protection-sip)) and `Linux` · `arm64` and `x86_64`
 
 </div>
 
