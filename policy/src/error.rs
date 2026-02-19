@@ -3,7 +3,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum PolicyError {
     #[error("failed to parse YAML: {0}")]
-    YamlParse(#[from] serde_yaml::Error),
+    YamlParse(#[from] crate::yaml::YamlError),
 
     #[error("validation error: {0}")]
     Validation(#[from] ValidationError),

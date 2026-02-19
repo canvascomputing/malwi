@@ -35,6 +35,7 @@ mod error;
 mod parser;
 mod pattern;
 mod validate;
+mod yaml;
 
 #[cfg(test)]
 mod tests;

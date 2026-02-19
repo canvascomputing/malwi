@@ -7,8 +7,6 @@ authors.workspace = true
 description = "Policy engine for malwi function tracing"
 
 [dependencies]
-serde = { workspace = true }
-serde_yaml = "0.9"
 regex = "1.10"
 thiserror = "1.0"
 

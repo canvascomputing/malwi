@@ -1,9 +1,7 @@
-use serde::de::{self, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
-use std::fmt;
 
 use crate::error::{PolicyError, Result, ValidationError};
+use crate::yaml::{self, YamlValue};
 
 /// Raw parsed policy file from YAML.
 #[derive(Debug, Clone)]
@@ -14,7 +12,7 @@ pub struct PolicyFile {
 
 /// Value of a policy section - can be different formats.
 ///
-/// Deserialization logic:
+/// Conversion logic from YamlValue:
 /// - Mapping → `AllowDeny` (errors propagate directly for clear messages)
 /// - Sequence of all strings → `List`
 /// - Sequence with maps → `RuleList`
@@ -30,35 +28,6 @@ pub enum SectionValue {
     RuleList(Vec<Rule>),
 }
 
-impl<'de> Deserialize<'de> for SectionValue {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_yaml::Value::deserialize(deserializer)?;
-
-        if value.is_mapping() {
-            // Map → AllowDenySection; errors (like unknown keys) propagate directly
-            serde_yaml::from_value::<AllowDenySection>(value)
-                .map(SectionValue::AllowDeny)
-                .map_err(de::Error::custom)
-        } else if value.is_sequence() {
-            // Try as Vec<String> first (pure string lists)
-            if let Ok(list) = serde_yaml::from_value::<Vec<String>>(value.clone()) {
-                Ok(SectionValue::List(list))
-            } else {
-                serde_yaml::from_value::<Vec<Rule>>(value)
-                    .map(SectionValue::RuleList)
-                    .map_err(de::Error::custom)
-            }
-        } else {
-            Err(de::Error::custom(
-                "expected a map or sequence for policy section",
-            ))
-        }
-    }
-}
-
 /// A section with allow and deny rules, plus mode-specific deny keys.
 #[derive(Debug, Clone, Default)]
 pub struct AllowDenySection {
@@ -70,52 +39,6 @@ pub struct AllowDenySection {
     pub noop: Vec<Rule>,
     /// Protocol allowlist — only meaningful in `network` sections.
     pub protocols: Vec<String>,
-}
-
-impl<'de> Deserialize<'de> for AllowDenySection {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct AllowDenySectionVisitor;
-
-        impl<'de> Visitor<'de> for AllowDenySectionVisitor {
-            type Value = AllowDenySection;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a policy section with allow/deny/warn/log/review/noop keys")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut section = AllowDenySection::default();
-
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "allow" => section.allow = map.next_value()?,
-                        "deny" => section.deny = map.next_value()?,
-                        "warn" => section.warn = map.next_value()?,
-                        "log" => section.log = map.next_value()?,
-                        "review" => section.review = map.next_value()?,
-                        "noop" => section.noop = map.next_value()?,
-                        "protocols" => section.protocols = map.next_value()?,
-                        _ => {
-                            return Err(de::Error::custom(format!(
-                                "unknown key '{}' in policy section; valid keys are: allow, deny, warn, log, review, noop, protocols",
-                                key
-                            )));
-                        }
-                    }
-                }
-
-                Ok(section)
-            }
-        }
-
-        deserializer.deserialize_map(AllowDenySectionVisitor)
-    }
 }
 
 /// A single rule - either a simple pattern or pattern with constraints.
@@ -130,105 +53,207 @@ pub enum Rule {
     },
 }
 
-impl<'de> Deserialize<'de> for Rule {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct RuleVisitor;
-
-        impl<'de> Visitor<'de> for RuleVisitor {
-            type Value = Rule;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string or a map with pattern and constraints")
-            }
-
-            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(Rule::Simple(value.to_string()))
-            }
-
-            fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                // Expect exactly one key-value pair: pattern -> constraints
-                if let Some((pattern, constraints)) = map.next_entry::<String, Vec<String>>()? {
-                    // Ensure no more entries
-                    if map.next_entry::<String, Vec<String>>()?.is_some() {
-                        return Err(de::Error::custom(
-                            "rule with constraints should have exactly one pattern",
-                        ));
-                    }
-                    Ok(Rule::WithConstraints {
-                        pattern,
-                        constraints,
-                    })
-                } else {
-                    Err(de::Error::custom("empty rule map"))
-                }
-            }
-        }
-
-        deserializer.deserialize_any(RuleVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for PolicyFile {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct PolicyFileVisitor;
-
-        impl<'de> Visitor<'de> for PolicyFileVisitor {
-            type Value = PolicyFile;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a policy file with version and sections")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> std::result::Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut version: Option<u32> = None;
-                let mut sections = HashMap::new();
-
-                while let Some(key) = map.next_key::<String>()? {
-                    if key == "version" {
-                        version = Some(map.next_value()?);
-                    } else {
-                        // All other keys are sections
-                        let value: SectionValue = map.next_value()?;
-                        sections.insert(key, value);
-                    }
-                }
-
-                let version =
-                    version.ok_or_else(|| de::Error::custom("missing required 'version' field"))?;
-
-                Ok(PolicyFile { version, sections })
-            }
-        }
-
-        deserializer.deserialize_map(PolicyFileVisitor)
-    }
-}
-
 /// Parse a YAML string into a PolicyFile.
-pub fn parse_policy(yaml: &str) -> Result<PolicyFile> {
-    let policy: PolicyFile = serde_yaml::from_str(yaml)?;
+pub fn parse_policy(yaml_str: &str) -> Result<PolicyFile> {
+    let root = yaml::parse(yaml_str)?;
 
-    // Basic version validation
-    if policy.version == 0 {
+    let pairs = match root {
+        YamlValue::Mapping(pairs) => pairs,
+        _ => {
+            return Err(PolicyError::YamlParse(yaml::YamlError {
+                line: 1,
+                message: "expected a mapping at top level".to_string(),
+            }))
+        }
+    };
+
+    let mut version: Option<u32> = None;
+    let mut sections = HashMap::new();
+
+    for (key, value) in pairs {
+        if key == "version" {
+            version = Some(value_to_u32(&value)?);
+        } else {
+            let section = value_to_section_value(&value, &key)?;
+            sections.insert(key, section);
+        }
+    }
+
+    let version = version.ok_or(PolicyError::YamlParse(yaml::YamlError {
+        line: 0,
+        message: "missing required 'version' field".to_string(),
+    }))?;
+
+    if version == 0 {
         return Err(PolicyError::Validation(ValidationError::MissingVersion));
     }
 
-    Ok(policy)
+    Ok(PolicyFile { version, sections })
+}
+
+/// Convert a YamlValue to u32.
+fn value_to_u32(value: &YamlValue) -> Result<u32> {
+    match value {
+        YamlValue::Integer(n) => Ok(*n as u32),
+        YamlValue::String(s) => s.parse::<u32>().map_err(|_| {
+            PolicyError::YamlParse(yaml::YamlError {
+                line: 0,
+                message: format!("expected integer, got: {}", s),
+            })
+        }),
+        _ => Err(PolicyError::YamlParse(yaml::YamlError {
+            line: 0,
+            message: "expected integer".to_string(),
+        })),
+    }
+}
+
+/// Convert a YamlValue to SectionValue.
+fn value_to_section_value(value: &YamlValue, section_name: &str) -> Result<SectionValue> {
+    match value {
+        YamlValue::Mapping(_) => {
+            let section = value_to_allow_deny_section(value, section_name)?;
+            Ok(SectionValue::AllowDeny(section))
+        }
+        YamlValue::Sequence(items) => {
+            // Check if all items are plain strings → List
+            let all_strings = items
+                .iter()
+                .all(|item| matches!(item, YamlValue::String(_)));
+            if all_strings {
+                let list: Vec<String> = items
+                    .iter()
+                    .map(|item| match item {
+                        YamlValue::String(s) => s.clone(),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                Ok(SectionValue::List(list))
+            } else {
+                // Contains maps → RuleList
+                let rules: Vec<Rule> = items
+                    .iter()
+                    .map(|item| value_to_rule(item, section_name))
+                    .collect::<Result<_>>()?;
+                Ok(SectionValue::RuleList(rules))
+            }
+        }
+        _ => Err(PolicyError::YamlParse(yaml::YamlError {
+            line: 0,
+            message: format!(
+                "expected a map or sequence for policy section '{}'",
+                section_name
+            ),
+        })),
+    }
+}
+
+/// Convert a YamlValue mapping to AllowDenySection.
+fn value_to_allow_deny_section(value: &YamlValue, section_name: &str) -> Result<AllowDenySection> {
+    let pairs = match value {
+        YamlValue::Mapping(pairs) => pairs,
+        _ => {
+            return Err(PolicyError::YamlParse(yaml::YamlError {
+                line: 0,
+                message: format!(
+                    "expected a mapping for section '{}', got: {:?}",
+                    section_name, value
+                ),
+            }))
+        }
+    };
+
+    let mut section = AllowDenySection::default();
+
+    for (key, val) in pairs {
+        match key.as_str() {
+            "allow" => section.allow = value_to_rules(val, section_name)?,
+            "deny" => section.deny = value_to_rules(val, section_name)?,
+            "warn" => section.warn = value_to_rules(val, section_name)?,
+            "log" => section.log = value_to_rules(val, section_name)?,
+            "review" => section.review = value_to_rules(val, section_name)?,
+            "noop" => section.noop = value_to_rules(val, section_name)?,
+            "protocols" => section.protocols = value_to_string_list(val, section_name)?,
+            _ => {
+                return Err(PolicyError::YamlParse(yaml::YamlError {
+                    line: 0,
+                    message: format!(
+                        "unknown key '{}' in policy section; valid keys are: allow, deny, warn, log, review, noop, protocols",
+                        key
+                    ),
+                }))
+            }
+        }
+    }
+
+    Ok(section)
+}
+
+/// Convert a YamlValue sequence to a Vec<Rule>.
+fn value_to_rules(value: &YamlValue, section_name: &str) -> Result<Vec<Rule>> {
+    match value {
+        YamlValue::Sequence(items) => items
+            .iter()
+            .map(|item| value_to_rule(item, section_name))
+            .collect(),
+        _ => Err(PolicyError::YamlParse(yaml::YamlError {
+            line: 0,
+            message: format!("expected a sequence of rules in section '{}'", section_name),
+        })),
+    }
+}
+
+/// Convert a YamlValue to a single Rule.
+fn value_to_rule(value: &YamlValue, _section_name: &str) -> Result<Rule> {
+    match value {
+        YamlValue::String(s) => Ok(Rule::Simple(s.clone())),
+        YamlValue::Mapping(pairs) => {
+            if pairs.len() != 1 {
+                return Err(PolicyError::YamlParse(yaml::YamlError {
+                    line: 0,
+                    message: "rule with constraints should have exactly one pattern".to_string(),
+                }));
+            }
+            let (pattern, val) = &pairs[0];
+            let constraints = value_to_string_list(val, pattern)?;
+            Ok(Rule::WithConstraints {
+                pattern: pattern.clone(),
+                constraints,
+            })
+        }
+        _ => Err(PolicyError::YamlParse(yaml::YamlError {
+            line: 0,
+            message: format!("expected string or map for rule, got: {:?}", value),
+        })),
+    }
+}
+
+/// Convert a YamlValue to Vec<String>.
+fn value_to_string_list(value: &YamlValue, context: &str) -> Result<Vec<String>> {
+    match value {
+        YamlValue::Sequence(items) => {
+            let mut result = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    YamlValue::String(s) => result.push(s.clone()),
+                    _ => {
+                        return Err(PolicyError::YamlParse(yaml::YamlError {
+                            line: 0,
+                            message: format!(
+                                "expected string in list for '{}', got: {:?}",
+                                context, item
+                            ),
+                        }))
+                    }
+                }
+            }
+            Ok(result)
+        }
+        _ => Err(PolicyError::YamlParse(yaml::YamlError {
+            line: 0,
+            message: format!("expected a sequence for '{}', got: {:?}", context, value),
+        })),
+    }
 }
 
 /// Parsed section name.
