@@ -23,6 +23,8 @@ fn make_event(_i: u64) -> TraceEvent {
         native_stack: vec![0x7fff00001000],
         runtime_stack: None,
         network_info: None,
+        source_file: None,
+        source_line: None,
     }
 }
 

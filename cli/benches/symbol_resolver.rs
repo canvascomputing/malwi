@@ -85,8 +85,9 @@ fn bench_resolve_frames(c: &mut Criterion) {
 
     c.bench_function("resolve_10_frames", |b| {
         b.iter(|| {
-            let mut f = frames.clone();
-            resolver.resolve_frames(black_box(&mut f));
+            for f in black_box(&frames) {
+                resolver.resolve_frame(f);
+            }
         })
     });
 }

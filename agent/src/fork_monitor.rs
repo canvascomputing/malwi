@@ -164,7 +164,7 @@ impl ForkMonitor {
         {
             // If attach failed, rebind fork().
             if !fork_attached {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol("fork", fork_rebind_wrapper as usize) {
+                if let Ok(patched) = malwi_intercept::module::rebind_symbol("fork", fork_rebind_wrapper as *const () as usize) {
                     info!("Rebound fork in {} locations", patched.len());
                     fork_rebind = Some(patched);
                     if agent_debug_enabled() {
@@ -172,7 +172,7 @@ impl ForkMonitor {
                     }
                 }
                 if __FORK_IMPL.load(Ordering::SeqCst).is_null() == false {
-                    if let Ok(patched) = malwi_intercept::module::rebind_symbol("__fork", __fork_rebind_wrapper as usize) {
+                    if let Ok(patched) = malwi_intercept::module::rebind_symbol("__fork", __fork_rebind_wrapper as *const () as usize) {
                         info!("Rebound __fork in {} locations", patched.len());
                         fork_rebind = Some(patched);
                         if agent_debug_enabled() {
@@ -184,7 +184,7 @@ impl ForkMonitor {
 
             // If replace failed, rebind vfork() to call fork().
             if vfork_revert_addr.is_none() {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol("vfork", vfork_rebind_wrapper as usize) {
+                if let Ok(patched) = malwi_intercept::module::rebind_symbol("vfork", vfork_rebind_wrapper as *const () as usize) {
                     info!("Rebound vfork in {} locations", patched.len());
                     vfork_rebind = Some(patched);
                 }

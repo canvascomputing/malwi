@@ -271,7 +271,7 @@ impl SpawnMonitor {
 
         // Only rebind if inline attach failed — rebind scans all modules and is slow.
         if !posix_spawn_attached {
-            match malwi_intercept::module::rebind_symbol("posix_spawn", posix_spawn_rebind_wrapper as usize)
+            match malwi_intercept::module::rebind_symbol("posix_spawn", posix_spawn_rebind_wrapper as *const () as usize)
             {
                 Ok(patched) => {
                     info!("Rebound posix_spawn in {} locations", patched.len());
@@ -310,7 +310,7 @@ impl SpawnMonitor {
             }
         }
         if !posix_spawnp_attached {
-            match malwi_intercept::module::rebind_symbol("posix_spawnp", posix_spawnp_rebind_wrapper as usize) {
+            match malwi_intercept::module::rebind_symbol("posix_spawnp", posix_spawnp_rebind_wrapper as *const () as usize) {
                 Ok(patched) => {
                     info!("Rebound posix_spawnp in {} locations", patched.len());
                     if agent_debug_enabled() {
@@ -370,7 +370,7 @@ impl SpawnMonitor {
             #[cfg(target_os = "macos")]
             if !execve_attached {
                 // Only rebind if inline attach failed — rebind scans all modules and is slow.
-                match malwi_intercept::module::rebind_symbol("execve", execve_rebind_wrapper as usize) {
+                match malwi_intercept::module::rebind_symbol("execve", execve_rebind_wrapper as *const () as usize) {
                     Ok(patched) => {
                         info!("Rebound execve in {} locations", patched.len());
                         if agent_debug_enabled() {
@@ -384,7 +384,7 @@ impl SpawnMonitor {
                 // Some runtimes call __execve directly; hook it too when present.
                 if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("__execve") {
                     ORIGINAL___EXECVE.store(addr, Ordering::SeqCst);
-                    match malwi_intercept::module::rebind_symbol("__execve", __execve_rebind_wrapper as usize) {
+                    match malwi_intercept::module::rebind_symbol("__execve", __execve_rebind_wrapper as *const () as usize) {
                         Ok(patched) => {
                             info!("Rebound __execve in {} locations", patched.len());
                             if agent_debug_enabled() {
@@ -902,7 +902,7 @@ pub(crate) unsafe fn install_dlsym_override() {
         return;
     }
 
-    if let Ok(patched) = malwi_intercept::module::rebind_symbol("dlsym", dlsym_rebind_wrapper as usize)
+    if let Ok(patched) = malwi_intercept::module::rebind_symbol("dlsym", dlsym_rebind_wrapper as *const () as usize)
     {
         if let Some((_, original)) = patched.first() {
             ORIGINAL_DLSYM.store(*original, Ordering::SeqCst);

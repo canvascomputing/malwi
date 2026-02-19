@@ -810,7 +810,7 @@ mod tests {
         // In release builds the executable name (current_exe) may not match the
         // dyld "image name" we use for lookups. Use dladdr on the known symbol
         // address to pick the correct module robustly.
-        let module_name = resolve_address_module(malwi_intercept_test_symbol as usize)
+        let module_name = resolve_address_module(malwi_intercept_test_symbol as *const () as usize)
             .expect("dladdr should find module for test symbol");
 
         let symbols = enumerate_symbols(&module_name).expect("enumerate symbols");
@@ -874,7 +874,7 @@ mod tests {
         }
 
         let patched =
-            unsafe { rebind_symbol("posix_spawn", wrapper as usize) }.expect("should patch slots");
+            unsafe { rebind_symbol("posix_spawn", wrapper as *const () as usize) }.expect("should patch slots");
         assert!(!patched.is_empty());
 
         let mut pid: libc::pid_t = 0;
