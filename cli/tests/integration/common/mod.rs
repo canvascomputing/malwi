@@ -365,6 +365,22 @@ pub fn fixture(name: &str) -> PathBuf {
     fixtures_dir().join(name)
 }
 
+/// Check if macOS SIP is enabled by testing the SF_RESTRICTED flag on /bin/sh.
+#[cfg(target_os = "macos")]
+pub fn is_sip_enabled() -> bool {
+    use std::ffi::CString;
+    let path = CString::new("/bin/sh").unwrap();
+    unsafe {
+        let mut stat_buf: libc::stat = std::mem::zeroed();
+        if libc::stat(path.as_ptr(), &mut stat_buf) == 0 {
+            const SF_RESTRICTED: u32 = 0x00080000;
+            (stat_buf.st_flags & SF_RESTRICTED) != 0
+        } else {
+            true // assume SIP enabled if stat fails
+        }
+    }
+}
+
 /// Build test fixtures if needed (runs `make` at most once per test binary)
 pub fn build_fixtures() {
     static BUILD_ONCE: Once = Once::new();
