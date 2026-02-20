@@ -698,6 +698,20 @@ pub extern "C" fn malwi_agent_init() -> i32 {
         }
     };
 
+    // Save agent library path for selective re-injection in exec hooks,
+    // then strip DYLD vars from the process environment BEFORE main() runs.
+    // The agent is already loaded; removing these prevents the host program
+    // (e.g. bash) from copying them into its internal env tables and
+    // propagating them to every child — which would crash arm64e children.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(dyld_path) = std::env::var("DYLD_INSERT_LIBRARIES") {
+            spawn_monitor::set_agent_dyld_path(dyld_path);
+        }
+        std::env::remove_var("DYLD_INSERT_LIBRARIES");
+        std::env::remove_var("DYLD_FORCE_FLAT_NAMESPACE");
+    }
+
     // Initialize logging
     let _ = env_logger::try_init();
 

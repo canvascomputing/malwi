@@ -101,6 +101,151 @@ static ORIGINAL_EXECVE: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "macos")]
 static ORIGINAL___EXECVE: AtomicUsize = AtomicUsize::new(0);
 
+/// Saved DYLD_INSERT_LIBRARIES value for selective re-injection into compatible children.
+/// Set during agent init, before DYLD vars are stripped from the process environment.
+#[cfg(target_os = "macos")]
+static AGENT_DYLD_PATH: OnceLock<String> = OnceLock::new();
+
+/// Save the agent library path from DYLD_INSERT_LIBRARIES for later re-injection.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_agent_dyld_path(path: String) {
+    let _ = AGENT_DYLD_PATH.set(path);
+}
+
+/// Check whether a binary at the given path is arm64e-only (incompatible with our arm64 agent).
+///
+/// Reads the Mach-O header to determine architecture:
+/// - Thin MH_MAGIC_64: checks cpusubtype for arm64e (subtype 2).
+/// - Fat (universal) binary: returns true only if ALL ARM64 slices are arm64e.
+/// - Scripts, errors, unknown formats: returns false (assume compatible).
+#[cfg(target_os = "macos")]
+fn is_arm64e_binary(path: *const c_char) -> bool {
+    use std::io::Read;
+
+    const MH_MAGIC_64: u32 = 0xFEED_FACF;
+    const FAT_MAGIC: u32 = 0xCAFE_BABE;
+    const FAT_MAGIC_64: u32 = 0xCAFE_BABF;
+    const CPU_TYPE_ARM64: i32 = 0x0100_000C; // CPU_TYPE_ARM | CPU_ARCH_ABI64
+    const CPU_SUBTYPE_ARM64E: i32 = 2;
+
+    if path.is_null() {
+        return false;
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    let mut file = match std::fs::File::open(path_str) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    // Read enough for: 8-byte header + up to 25 fat_arch_64 entries (32 bytes each) = 808 bytes
+    let mut buf = [0u8; 808];
+    let n = match file.read(&mut buf) {
+        Ok(n) if n >= 8 => n,
+        _ => return false,
+    };
+
+    // Check for thin 64-bit Mach-O (little-endian on our platform)
+    let magic_le = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    if magic_le == MH_MAGIC_64 {
+        if n < 12 {
+            return false;
+        }
+        let cputype = i32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let cpusubtype = i32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        return cputype == CPU_TYPE_ARM64 && (cpusubtype & 0xFF) == CPU_SUBTYPE_ARM64E;
+    }
+
+    // Check for fat (universal) binary — header is always big-endian
+    let magic_be = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    let arch_size = match magic_be {
+        FAT_MAGIC => 20,    // fat_arch: cputype(4) + cpusubtype(4) + offset(4) + size(4) + align(4)
+        FAT_MAGIC_64 => 32, // fat_arch_64: same fields but offset/size are u64 + reserved
+        _ => return false,   // Not a Mach-O (script, etc.)
+    };
+
+    let nfat = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+    let max_archs = nfat.min(25);
+
+    let mut has_arm64 = false;
+    let mut all_arm64e = true;
+
+    for i in 0..max_archs {
+        let base = 8 + i * arch_size;
+        if base + 8 > n {
+            break;
+        }
+        let cputype = i32::from_be_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
+        let cpusubtype =
+            i32::from_be_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]);
+
+        if cputype == CPU_TYPE_ARM64 {
+            has_arm64 = true;
+            if (cpusubtype & 0xFF) != CPU_SUBTYPE_ARM64E {
+                all_arm64e = false;
+            }
+        }
+    }
+
+    // arm64e-only = has ARM64 slices but none are plain arm64
+    has_arm64 && all_arm64e
+}
+
+/// Owns the modified envp array and the DYLD CStrings that it references.
+/// Must be kept alive until the original posix_spawn/execve call completes.
+#[cfg(target_os = "macos")]
+struct InjectedEnvp {
+    _owned: Vec<CString>,
+    ptrs: Vec<*const c_char>,
+}
+
+/// Build a modified envp that includes the saved DYLD injection vars.
+/// Returns None if no agent DYLD path was saved (nothing to inject).
+#[cfg(target_os = "macos")]
+unsafe fn build_injected_envp(envp: *const *const c_char) -> Option<InjectedEnvp> {
+    let agent_path = AGENT_DYLD_PATH.get()?;
+
+    let dyld_insert = CString::new(format!("DYLD_INSERT_LIBRARIES={}", agent_path)).ok()?;
+    let dyld_flat = CString::new("DYLD_FORCE_FLAT_NAMESPACE=1").ok()?;
+
+    let mut ptrs: Vec<*const c_char> = Vec::new();
+
+    // Copy original entries, skipping any existing DYLD vars
+    if !envp.is_null() {
+        let mut i = 0;
+        loop {
+            let entry = *envp.add(i);
+            if entry.is_null() {
+                break;
+            }
+            let entry_bytes = CStr::from_ptr(entry).to_bytes();
+            if !entry_bytes.starts_with(b"DYLD_INSERT_LIBRARIES=")
+                && !entry_bytes.starts_with(b"DYLD_FORCE_FLAT_NAMESPACE=")
+            {
+                ptrs.push(entry);
+            }
+            i += 1;
+            if i > 10000 {
+                break;
+            }
+        }
+    }
+
+    // Append our DYLD vars
+    ptrs.push(dyld_insert.as_ptr());
+    ptrs.push(dyld_flat.as_ptr());
+    ptrs.push(ptr::null());
+
+    Some(InjectedEnvp {
+        _owned: vec![dyld_insert, dyld_flat],
+        ptrs,
+    })
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 thread_local! {
     /// Set by shell_execve hook so the subsequent execve hook skips.
@@ -883,6 +1028,25 @@ unsafe extern "C" fn on_posix_spawn_enter(
         return;
     }
 
+    // Selectively re-inject DYLD vars for compatible (non-arm64e) children.
+    // The agent stripped DYLD from the process environment at init to prevent
+    // automatic propagation to arm64e children (which would crash).
+    #[cfg(target_os = "macos")]
+    {
+        if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
+            let envp_ptr = malwi_intercept::invocation::get_nth_argument(context, 5)
+                as *const *const c_char;
+            if let Some(injected) = build_injected_envp(envp_ptr) {
+                malwi_intercept::invocation::replace_nth_argument(
+                    context,
+                    5,
+                    injected.ptrs.as_ptr() as *mut c_void,
+                );
+                INJECTED_ENVP.with(|c| c.set(Some(injected)));
+            }
+        }
+    }
+
     let native_stack = should_capture_stack(&path, &argv, context);
 
     // Store in thread-local for on_leave
@@ -901,6 +1065,10 @@ unsafe extern "C" fn on_posix_spawn_leave(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
 ) {
+    // Drop the injected envp — original function has completed.
+    #[cfg(target_os = "macos")]
+    INJECTED_ENVP.with(|c| c.set(None));
+
     let result = malwi_intercept::invocation::get_return_value(context) as i32;
 
     if result != 0 {
@@ -1208,6 +1376,19 @@ pub(crate) unsafe extern "C" fn posix_spawn_rebind_wrapper(
         return libc::EACCES;
     }
 
+    // Selectively re-inject DYLD vars for compatible children.
+    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
+        match build_injected_envp(envp) {
+            Some(injected) => {
+                let ptr = injected.ptrs.as_ptr();
+                (Some(injected), ptr)
+            }
+            None => (None, envp),
+        }
+    } else {
+        (None, envp)
+    };
+
     let rc = original(pid, path, file_actions, attrp, argv, envp);
     if rc == 0 {
         if let Some(agent) = crate::Agent::get() {
@@ -1255,6 +1436,19 @@ pub(crate) unsafe extern "C" fn posix_spawnp_rebind_wrapper(
     if !check_exec_review(&path_s, &argv_v, None, None) {
         return libc::EACCES;
     }
+
+    // Selectively re-inject DYLD vars for compatible children.
+    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
+        match build_injected_envp(envp) {
+            Some(injected) => {
+                let ptr = injected.ptrs.as_ptr();
+                (Some(injected), ptr)
+            }
+            None => (None, envp),
+        }
+    } else {
+        (None, envp)
+    };
 
     let rc = original(pid, path, file_actions, attrp, argv, envp);
     if rc == 0 {
@@ -1313,6 +1507,19 @@ pub(crate) unsafe extern "C" fn execve_rebind_wrapper(
         }
     }
 
+    // Selectively re-inject DYLD vars for compatible children.
+    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
+        match build_injected_envp(envp) {
+            Some(injected) => {
+                let ptr = injected.ptrs.as_ptr();
+                (Some(injected), ptr)
+            }
+            None => (None, envp),
+        }
+    } else {
+        (None, envp)
+    };
+
     let mut original = ORIGINAL_EXECVE.load(Ordering::SeqCst);
     if original == 0 {
         original = resolve_next("execve");
@@ -1360,6 +1567,19 @@ pub(crate) unsafe extern "C" fn __execve_rebind_wrapper(
             });
         }
     }
+
+    // Selectively re-inject DYLD vars for compatible children.
+    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
+        match build_injected_envp(envp) {
+            Some(injected) => {
+                let ptr = injected.ptrs.as_ptr();
+                (Some(injected), ptr)
+            }
+            None => (None, envp),
+        }
+    } else {
+        (None, envp)
+    };
 
     let mut original = ORIGINAL___EXECVE.load(Ordering::SeqCst);
     if original == 0 {
@@ -1471,6 +1691,23 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
         return;
     }
 
+    // Selectively re-inject DYLD vars for compatible (non-arm64e) children.
+    #[cfg(target_os = "macos")]
+    {
+        if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
+            let envp_ptr = malwi_intercept::invocation::get_nth_argument(context, 2)
+                as *const *const c_char;
+            if let Some(injected) = build_injected_envp(envp_ptr) {
+                malwi_intercept::invocation::replace_nth_argument(
+                    context,
+                    2,
+                    injected.ptrs.as_ptr() as *mut c_void,
+                );
+                INJECTED_ENVP.with(|c| c.set(Some(injected)));
+            }
+        }
+    }
+
     let native_stack = should_capture_stack(&path, &argv, context);
 
     // Call the global agent's handler methods directly
@@ -1490,6 +1727,10 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 unsafe extern "C" fn on_execve_leave(_context: *mut InvocationContext, _user_data: *mut c_void) {
+    // Drop the injected envp (only reached if execve failed).
+    #[cfg(target_os = "macos")]
+    INJECTED_ENVP.with(|c| c.set(None));
+
     // If we get here, execve failed (otherwise process image would be replaced)
     debug!("execve() failed (returned to caller)");
 }
@@ -2069,6 +2310,13 @@ thread_local! {
     static SPAWN_CONTEXT: RefCell<Option<SpawnContext>> = const { RefCell::new(None) };
 }
 
+// Holds the injected envp alive during inline hook execution (on_enter → original → on_leave).
+// The CStrings and pointer array must survive until the original function completes.
+#[cfg(target_os = "macos")]
+thread_local! {
+    static INJECTED_ENVP: Cell<Option<InjectedEnvp>> = const { Cell::new(None) };
+}
+
 /// Parse a null-terminated argv array into a Vec<String>.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 unsafe fn parse_argv(argv: *const *const c_char) -> Option<Vec<String>> {
@@ -2170,5 +2418,135 @@ mod tests {
 
         let monitor = unsafe { SpawnMonitor::new(handler.as_ref()) };
         assert!(monitor.is_some(), "Should create spawn monitor");
+    }
+
+    #[cfg(target_os = "macos")]
+    mod arm64e_tests {
+        use super::*;
+        use std::io::Write;
+
+        /// Create a temp file with unique name and return a CString of its path.
+        fn write_temp_binary(bytes: &[u8], label: &str) -> (std::path::PathBuf, CString) {
+            static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let dir = std::env::temp_dir();
+            let name = format!("malwi_test_{}_{}_{}", std::process::id(), label, n);
+            let path = dir.join(name);
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(bytes).unwrap();
+            let cpath = CString::new(path.to_str().unwrap()).unwrap();
+            (path, cpath)
+        }
+
+        /// Build a thin MH_MAGIC_64 header with given cputype and cpusubtype.
+        fn thin_macho(cputype: i32, cpusubtype: i32) -> Vec<u8> {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&0xFEED_FACFu32.to_le_bytes()); // magic
+            buf.extend_from_slice(&cputype.to_le_bytes());
+            buf.extend_from_slice(&cpusubtype.to_le_bytes());
+            buf.extend_from_slice(&[0u8; 20]); // rest of header
+            buf
+        }
+
+        /// Build a FAT_MAGIC universal binary header with given slices.
+        fn fat_macho(slices: &[(i32, i32)]) -> Vec<u8> {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&0xCAFE_BABEu32.to_be_bytes()); // FAT_MAGIC
+            buf.extend_from_slice(&(slices.len() as u32).to_be_bytes()); // nfat_arch
+            for (cputype, cpusubtype) in slices {
+                buf.extend_from_slice(&cputype.to_be_bytes());
+                buf.extend_from_slice(&cpusubtype.to_be_bytes());
+                buf.extend_from_slice(&[0u8; 12]); // offset, size, align
+            }
+            buf
+        }
+
+        const CPU_TYPE_ARM64: i32 = 0x0100_000C;
+        const CPU_TYPE_X86_64: i32 = 0x0100_0007;
+        const CPU_SUBTYPE_ARM64_ALL: i32 = 0;
+        const CPU_SUBTYPE_ARM64E: i32 = 2;
+
+        #[test]
+        fn test_thin_arm64_not_arm64e() {
+            let bytes = thin_macho(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_thin_arm64e() {
+            let bytes = thin_macho(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            assert!(is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_thin_x86_64() {
+            let bytes = thin_macho(CPU_TYPE_X86_64, 3);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fat_with_arm64_slice() {
+            let bytes = fat_macho(&[
+                (CPU_TYPE_X86_64, 3),
+                (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
+            ]);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fat_arm64e_only() {
+            let bytes = fat_macho(&[
+                (CPU_TYPE_X86_64, 3),
+                (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E),
+            ]);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            assert!(is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fat_mixed_arm64_and_arm64e() {
+            let bytes = fat_macho(&[
+                (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E),
+                (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
+            ]);
+            let (path, cpath) = write_temp_binary(&bytes, "macho");
+            // Has a non-arm64e ARM64 slice → compatible
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_script_shebang() {
+            let (path, cpath) = write_temp_binary(b"#!/bin/bash\necho hello\n", "script");
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_nonexistent_file() {
+            let cpath = CString::new("/tmp/malwi_nonexistent_test_file_xyz").unwrap();
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+        }
+
+        #[test]
+        fn test_null_path() {
+            assert!(!is_arm64e_binary(std::ptr::null()));
+        }
+
+        #[test]
+        fn test_empty_file() {
+            let (path, cpath) = write_temp_binary(b"", "empty");
+            assert!(!is_arm64e_binary(cpath.as_ptr()));
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
