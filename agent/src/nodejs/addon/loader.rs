@@ -151,17 +151,21 @@ fn generate_wrapper_script(addon_dir: &Path) -> String {
             addon.enableTracing();
         }}
 
-        // Install require hook (before any other requires)
-        if (addon.installRequireHook) {{
-            addon.installRequireHook(Module);
-        }}
+        // Install require hook only when JS function tracing is requested.
+        // The CLI sets MALWI_JS_ADDON=1 when --js flag is used.
+        // Without this guard, the require hook breaks npm's module loading.
+        if (process.env.MALWI_JS_ADDON === '1') {{
+            if (addon.installRequireHook) {{
+                addon.installRequireHook(Module);
+            }}
 
-        // Get filters from agent via FFI and apply them
-        if (addon.getFilters) {{
-            const filters = addon.getFilters();
-            for (const f of filters) {{
-                if (addon.addFilter) {{
-                    addon.addFilter(f.pattern, f.captureStack);
+            // Get filters from agent via FFI and apply them
+            if (addon.getFilters) {{
+                const filters = addon.getFilters();
+                for (const f of filters) {{
+                    if (addon.addFilter) {{
+                        addon.addFilter(f.pattern, f.captureStack);
+                    }}
                 }}
             }}
         }}

@@ -83,10 +83,10 @@ thread_local! {
     static GETENV_SEEN: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 static ORIGINAL_POSIX_SPAWN: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 static ORIGINAL_POSIX_SPAWNP: AtomicUsize = AtomicUsize::new(0);
 
 // When we hook `dlsym()` (fishhook-style), we store the original pointer here so
@@ -146,9 +146,9 @@ pub struct SpawnMonitor {
     interceptor: &'static malwi_intercept::Interceptor,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     execve_listener: Option<CallListener>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     posix_spawn_listener: Option<CallListener>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     posix_spawnp_listener: Option<CallListener>,
     // Fishhook-style rebinding fallback for hardened mappings where inline patching fails.
     #[cfg(target_os = "macos")]
@@ -198,9 +198,9 @@ impl SpawnMonitor {
                 interceptor,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 execve_listener: None,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 posix_spawn_listener: None,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 posix_spawnp_listener: None,
                 #[cfg(target_os = "macos")]
                 posix_spawn_rebind: None,
@@ -347,7 +347,52 @@ impl SpawnMonitor {
 
     #[cfg(target_os = "linux")]
     unsafe fn setup_linux_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
+        self.setup_posix_spawn_hooks(handler);
         self.setup_execve_hook(handler);
+    }
+
+    /// Hook posix_spawn/posix_spawnp via inline attach.
+    /// On modern Linux (glibc 2.34+), posix_spawn uses clone3+execveat which
+    /// bypasses execve, so we must hook it directly.
+    #[cfg(target_os = "linux")]
+    unsafe fn setup_posix_spawn_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
+        if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("posix_spawn") {
+            ORIGINAL_POSIX_SPAWN.store(addr, Ordering::SeqCst);
+            let listener = CallListener {
+                on_enter: Some(on_posix_spawn_enter),
+                on_leave: Some(on_posix_spawn_leave),
+                user_data: handler as *const _ as *mut c_void,
+            };
+            if self
+                .interceptor
+                .attach(addr as *mut c_void, listener)
+                .is_ok()
+            {
+                self.posix_spawn_listener = Some(listener);
+                info!("Attached spawn monitor to posix_spawn() at {:#x}", addr);
+            } else {
+                warn!("Failed to attach to posix_spawn");
+            }
+        }
+
+        if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("posix_spawnp") {
+            ORIGINAL_POSIX_SPAWNP.store(addr, Ordering::SeqCst);
+            let listener = CallListener {
+                on_enter: Some(on_posix_spawn_enter),
+                on_leave: Some(on_posix_spawn_leave),
+                user_data: handler as *const _ as *mut c_void,
+            };
+            if self
+                .interceptor
+                .attach(addr as *mut c_void, listener)
+                .is_ok()
+            {
+                self.posix_spawnp_listener = Some(listener);
+                info!("Attached spawn monitor to posix_spawnp() at {:#x}", addr);
+            } else {
+                warn!("Failed to attach to posix_spawnp");
+            }
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -730,7 +775,9 @@ impl SpawnMonitor {
         }
         #[cfg(target_os = "linux")]
         {
-            self.execve_listener.is_some()
+            self.posix_spawn_listener.is_some()
+                || self.posix_spawnp_listener.is_some()
+                || self.execve_listener.is_some()
         }
         #[cfg(target_os = "windows")]
         {
@@ -746,11 +793,11 @@ impl Drop for SpawnMonitor {
             if let Some(l) = &self.execve_listener {
                 self.interceptor.detach(l);
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             if let Some(l) = &self.posix_spawn_listener {
                 self.interceptor.detach(l);
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             if let Some(l) = &self.posix_spawnp_listener {
                 self.interceptor.detach(l);
             }
@@ -794,7 +841,7 @@ impl Drop for SpawnMonitor {
 // macOS: posix_spawn hooks
 // ============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 unsafe extern "C" fn on_posix_spawn_enter(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
@@ -849,7 +896,7 @@ unsafe extern "C" fn on_posix_spawn_enter(
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 unsafe extern "C" fn on_posix_spawn_leave(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
@@ -2006,10 +2053,10 @@ unsafe extern "C" fn on_find_variable_leave(
 // Helper functions
 // ============================================================================
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::cell::RefCell;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 struct SpawnContext {
     path: Option<String>,
     argv: Option<Vec<String>>,
@@ -2017,7 +2064,7 @@ struct SpawnContext {
     native_stack: Vec<usize>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 thread_local! {
     static SPAWN_CONTEXT: RefCell<Option<SpawnContext>> = const { RefCell::new(None) };
 }

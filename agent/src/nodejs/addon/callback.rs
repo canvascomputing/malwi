@@ -135,6 +135,11 @@ pub extern "C" fn malwi_nodejs_envvar_access(key_ptr: *const u8, key_len: usize)
         return 1;
     }
 
+    // If envvar monitoring is not enabled, allow all without tracing
+    if !crate::spawn_monitor::is_envvar_monitoring_enabled() {
+        return 1;
+    }
+
     let key = unsafe {
         let slice = std::slice::from_raw_parts(key_ptr, key_len);
         match std::str::from_utf8(slice) {

@@ -713,8 +713,11 @@ pub extern "C" fn malwi_agent_init() -> i32 {
         cpython::register_audit_hook();
     }
 
-    // Detect Node.js runtime and enable tracing
-    if nodejs::is_loaded() {
+    // Detect Node.js runtime and enable tracing.
+    // Only initialize when JS tracing was requested (MALWI_JS_ADDON=1, set by CLI
+    // for --js flag). Unconditional init breaks programs like npm by hooking V8
+    // internals and setting NODE_OPTIONS.
+    if nodejs::is_loaded() && std::env::var_os("MALWI_JS_ADDON").is_some() {
         info!("Node.js detected, initializing tracing");
         if nodejs::init_tracing() {
             info!("Node.js JavaScript tracing enabled");
@@ -933,17 +936,21 @@ fn generate_wrapper_script(addon_dir: &std::path::Path) -> String {
             addon.enableTracing();
         }}
 
-        // Install require hook (before any other requires)
-        if (addon.installRequireHook) {{
-            addon.installRequireHook(Module);
-        }}
+        // Install require hook only when JS function tracing is requested.
+        // The CLI sets MALWI_JS_ADDON=1 when --js flag is used.
+        // Without this guard, the require hook breaks npm's module loading.
+        if (process.env.MALWI_JS_ADDON === '1') {{
+            if (addon.installRequireHook) {{
+                addon.installRequireHook(Module);
+            }}
 
-        // Get filters from agent via FFI and apply them
-        if (addon.getFilters) {{
-            const filters = addon.getFilters();
-            for (const f of filters) {{
-                if (addon.addFilter) {{
-                    addon.addFilter(f.pattern, f.captureStack);
+            // Get filters from agent via FFI and apply them
+            if (addon.getFilters) {{
+                const filters = addon.getFilters();
+                for (const f of filters) {{
+                    if (addon.addFilter) {{
+                        addon.addFilter(f.pattern, f.captureStack);
+                    }}
                 }}
             }}
         }}

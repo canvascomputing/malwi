@@ -795,6 +795,15 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
     let server_url = server.url().to_string();
     debug!("Agent server listening on {}", server_url);
 
+    // Signal to the Node.js wrapper whether it should install the require hook
+    // (only needed for --js tracing, breaks npm if installed unconditionally)
+    if requested_hooks
+        .iter()
+        .any(|h| h.hook_type == HookType::Nodejs)
+    {
+        std::env::set_var("MALWI_JS_ADDON", "1");
+    }
+
     // Spawn the target process with the agent injected
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let root_pid = spawn::spawn_with_injection(&program[0], &program[1..], &server_url)?;

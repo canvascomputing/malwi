@@ -255,12 +255,15 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
         std::process::exit(1);
     }
 
-    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning
-    // This extracts addons and generates the wrapper script, then sets
-    // NODE_OPTIONS so it's inherited by the child process
-    if let Some(node_options) = prepare_node_options(&agent_lib, url) {
-        std::env::set_var("NODE_OPTIONS", &node_options);
-        debug!("Set NODE_OPTIONS={}", node_options);
+    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
+    // Only set when JS addon tracing is needed (--js flag). The wrapper script
+    // breaks some programs (e.g., npm) by patching Module.prototype.require
+    // and replacing process.env with a Proxy.
+    if std::env::var_os("MALWI_JS_ADDON").is_some() {
+        if let Some(node_options) = prepare_node_options(&agent_lib, url) {
+            std::env::set_var("NODE_OPTIONS", &node_options);
+            debug!("Set NODE_OPTIONS={}", node_options);
+        }
     }
 
     // Spawn the process with agent library preloaded via DYLD_INSERT_LIBRARIES
@@ -301,12 +304,15 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
             (program.to_string(), args.to_vec())
         };
 
-    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning
-    // This extracts addons and generates the wrapper script, then sets
-    // NODE_OPTIONS so it's inherited by the child process
-    if let Some(node_options) = prepare_node_options(&agent_lib, url) {
-        std::env::set_var("NODE_OPTIONS", &node_options);
-        debug!("Set NODE_OPTIONS={}", node_options);
+    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
+    // Only set when JS addon tracing is needed (--js flag). The wrapper script
+    // breaks some programs (e.g., npm) by patching Module.prototype.require
+    // and replacing process.env with a Proxy.
+    if std::env::var_os("MALWI_JS_ADDON").is_some() {
+        if let Some(node_options) = prepare_node_options(&agent_lib, url) {
+            std::env::set_var("NODE_OPTIONS", &node_options);
+            debug!("Set NODE_OPTIONS={}", node_options);
+        }
     }
 
     // Spawn the process with agent library preloaded via LD_PRELOAD
