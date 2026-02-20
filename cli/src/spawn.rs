@@ -226,6 +226,43 @@ fn prepare_node_options(agent_lib: &str, url: &str) -> Option<String> {
     Some(node_options)
 }
 
+/// Returns true if the resolved program path points to a Node.js executable.
+fn is_node_executable(program: &str) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| name == "node" || name.starts_with("node-") || name.starts_with("node."))
+        .unwrap_or(false)
+}
+
+/// Extract the malwi `--require=<wrapper>` token from a NODE_OPTIONS string.
+fn extract_malwi_require_option(node_options: &str) -> Option<String> {
+    node_options
+        .split_whitespace()
+        .find(|tok| tok.starts_with("--require=") && tok.contains("malwi-wrapper-"))
+        .map(ToString::to_string)
+}
+
+/// Returns true if args already contain the same `--require` option.
+fn has_require_option(args: &[String], require_opt: &str) -> bool {
+    if args.iter().any(|a| a == require_opt) {
+        return true;
+    }
+
+    // Also handle split form: ["--require", "/path/to/file.js"]
+    if let Some(path) = require_opt.strip_prefix("--require=") {
+        let mut i = 0usize;
+        while i + 1 < args.len() {
+            if args[i] == "--require" && args[i + 1] == path {
+                return true;
+            }
+            i += 1;
+        }
+    }
+
+    false
+}
+
 /// Spawn a process with agent injection (macOS only).
 ///
 /// This spawns the process suspended with DYLD_INSERT_LIBRARIES set,
@@ -241,7 +278,7 @@ pub fn spawn_with_injection(
     debug!("Agent library: {}", agent_lib);
 
     // Resolve #!/usr/bin/env shebangs to bypass SIP restrictions
-    let (actual_program, actual_args): (String, Vec<String>) =
+    let (actual_program, mut actual_args): (String, Vec<String>) =
         if let Some((interpreter, script)) = resolve_env_shebang(program) {
             // Prepend the script path to the original args
             let mut new_args = vec![script];
@@ -260,13 +297,25 @@ pub fn spawn_with_injection(
         std::process::exit(1);
     }
 
-    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
-    // Only set when JS tracing is needed (--js flag). The wrapper script
-    // breaks programs like npm by patching Module.prototype.require.
+    // Prepare JS preload BEFORE spawning, but only when JS tracing is requested.
+    // The wrapper can perturb non-Node tools (e.g., npm), so avoid setting it
+    // for non-JS tracing runs.
     if needs_js {
         if let Some(node_options) = prepare_node_options(&agent_lib, url) {
             std::env::set_var("NODE_OPTIONS", &node_options);
             debug!("Set NODE_OPTIONS={}", node_options);
+
+            // For direct Node.js invocations, inject --require at argv level too.
+            // This is the deterministic path even when NODE_OPTIONS is unavailable
+            // in secure contexts.
+            if is_node_executable(&actual_program) {
+                if let Some(require_opt) = extract_malwi_require_option(&node_options) {
+                    if !has_require_option(&actual_args, &require_opt) {
+                        actual_args.insert(0, require_opt.clone());
+                        debug!("Prepended argv option for node: {}", require_opt);
+                    }
+                }
+            }
         }
     }
 
@@ -304,7 +353,7 @@ pub fn spawn_with_injection(
 
     // Resolve #!/usr/bin/env shebangs (for consistency with macOS, though
     // Linux doesn't have SIP restrictions - still useful for other reasons)
-    let (actual_program, actual_args): (String, Vec<String>) =
+    let (actual_program, mut actual_args): (String, Vec<String>) =
         if let Some((interpreter, script)) = resolve_env_shebang(program) {
             let mut new_args = vec![script];
             new_args.extend(args.iter().cloned());
@@ -313,13 +362,21 @@ pub fn spawn_with_injection(
             (program.to_string(), args.to_vec())
         };
 
-    // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
-    // Only set when JS tracing is needed (--js flag). The wrapper script
-    // breaks programs like npm by patching Module.prototype.require.
+    // Prepare JS preload BEFORE spawning, but only when JS tracing is requested.
     if needs_js {
         if let Some(node_options) = prepare_node_options(&agent_lib, url) {
             std::env::set_var("NODE_OPTIONS", &node_options);
             debug!("Set NODE_OPTIONS={}", node_options);
+
+            // For direct Node.js invocations, inject --require at argv level too.
+            if is_node_executable(&actual_program) {
+                if let Some(require_opt) = extract_malwi_require_option(&node_options) {
+                    if !has_require_option(&actual_args, &require_opt) {
+                        actual_args.insert(0, require_opt.clone());
+                        debug!("Prepended argv option for node: {}", require_opt);
+                    }
+                }
+            }
         }
     }
 
@@ -351,5 +408,44 @@ mod tests {
         let result = find_agent_library();
         // Just verify it doesn't panic
         let _ = result;
+    }
+
+    #[test]
+    fn test_is_node_executable() {
+        assert!(is_node_executable("/usr/local/bin/node"));
+        assert!(is_node_executable("/tmp/node-v22.13.1"));
+        assert!(is_node_executable("node"));
+        assert!(!is_node_executable("/usr/bin/python3"));
+    }
+
+    #[test]
+    fn test_extract_malwi_require_option() {
+        let opts = "--trace-gc --require=/tmp/malwi-wrapper-abcd1234.js";
+        let req = extract_malwi_require_option(opts);
+        assert_eq!(
+            req.as_deref(),
+            Some("--require=/tmp/malwi-wrapper-abcd1234.js")
+        );
+    }
+
+    #[test]
+    fn test_has_require_option_matches_joined_and_split_forms() {
+        let require_opt = "--require=/tmp/malwi-wrapper-abcd1234.js";
+
+        let joined = vec![
+            "--inspect".to_string(),
+            "--require=/tmp/malwi-wrapper-abcd1234.js".to_string(),
+        ];
+        assert!(has_require_option(&joined, require_opt));
+
+        let split = vec![
+            "--inspect".to_string(),
+            "--require".to_string(),
+            "/tmp/malwi-wrapper-abcd1234.js".to_string(),
+        ];
+        assert!(has_require_option(&split, require_opt));
+
+        let missing = vec!["--inspect".to_string()];
+        assert!(!has_require_option(&missing, require_opt));
     }
 }

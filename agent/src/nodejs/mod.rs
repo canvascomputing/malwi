@@ -19,7 +19,11 @@
 //!    - Works for synchronous `--eval` code that runs before module loading
 //!    - Uses V8's internal --trace flag with hooks on Runtime_TraceEnter/TraceExit
 //!
-//! 2. **addon** (N-API function wrapping):
+//! 2. **codegen** (ModifyCodeGenerationFromStrings hook):
+//!    - Catches `eval()` / `Function()` / string-based code generation
+//!    - Runs synchronously before compilation, so review mode can block
+//!
+//! 3. **addon** (N-API function wrapping):
 //!    - Catches native module functions (fs.*, crypto.*, etc.)
 //!    - Extracts and loads the v8_introspect addon
 //!    - Installs a require hook to intercept module loading
@@ -37,6 +41,7 @@
 //!   - `loader.rs`: Loading strategies (direct and NODE_OPTIONS)
 //!
 //! - `bytecode.rs`: Runtime_TraceEnter/Exit hooks for bytecode functions
+//! - `codegen.rs`: Synchronous gate for eval/codegen-from-strings
 //! - `filters.rs`: Filter management and coordination
 //! - `ffi.rs`: FFI type definitions
 //! - `script.rs`: JavaScript execution
@@ -58,6 +63,7 @@ static NODEJS_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
 
 pub mod addon;
 pub mod bytecode;
+pub mod codegen;
 pub mod ffi;
 pub mod filters;
 pub mod script;
@@ -111,7 +117,11 @@ pub fn is_loaded() -> bool {
 ///    - Uses V8's internal --trace flag with hooks on Runtime_TraceEnter/TraceExit
 ///    - Can be disabled via `MALWI_NO_BYTECODE=1` for apps with sensitive init
 ///
-/// 2. **addon** (N-API function wrapping):
+/// 2. **codegen** (ModifyCodeGenerationFromStrings hook):
+///    - Catches eval/function-constructor code generation
+///    - Synchronous path that can block in review mode
+///
+/// 3. **addon** (N-API function wrapping):
 ///    - Catches native module functions (fs.*, crypto.*, etc.)
 ///    - Extracts and loads the v8_introspect addon
 ///    - Installs a require hook to intercept module loading
@@ -142,7 +152,11 @@ pub fn init_tracing() -> bool {
         return false;
     }
 
-    // Step 1: Initialize bytecode-level tracing (unless explicitly disabled)
+    // Step 1: Install synchronous eval/codegen gate hook.
+    // This enables blocking decisions for eval()/Function() in review mode.
+    let codegen_ok = codegen::initialize();
+
+    // Step 2: Initialize bytecode-level tracing (unless explicitly disabled)
     // This catches user JS functions in --eval, ESM, dynamic imports, etc.
     let bytecode_ok = if skip_bytecode {
         log::info!("Bytecode tracing disabled via MALWI_NO_BYTECODE");
@@ -151,12 +165,12 @@ pub fn init_tracing() -> bool {
         bytecode::initialize()
     };
 
-    // Step 2: Initialize wrapper-based addon tracing
+    // Step 3: Initialize wrapper-based addon tracing
     // This catches native module functions (fs.*, etc.)
     let addon_ok = initialize();
 
     // Success if at least one approach initialized
-    bytecode_ok || addon_ok
+    codegen_ok || bytecode_ok || addon_ok
 }
 
 /// Capture the current JavaScript call stack.

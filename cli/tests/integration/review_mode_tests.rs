@@ -393,41 +393,39 @@ fn test_review_mode_deny_blocks_v8_execution() {
     setup();
 
     skip_if_no_node_primary!(node => {
-        // Note: V8 hooks work at the trace level (after function call starts),
-        // so blocking is not currently supported. This test verifies that review
-        // mode at least shows the prompt and logs events, even if blocking doesn't
-        // prevent execution.
         let output = run_tracer_with_stdin(
             &[
                 "x", "-r",
-                "--js", "targetFunc",
+                "--js", "eval",
                 "--",
                 node.to_str().unwrap(),
-                "--eval", "function targetFunc() { return 42; } const r = targetFunc(); console.log('Result:', r);",
+                "--eval", "let executed = false; try { eval(\"executed = true\"); } catch (e) { console.log('EVAL_BLOCKED', e.name); } console.log('EXECUTED', executed);",
             ],
-            "n\n",  // Deny (but V8 blocking not fully supported)
+            "n\n",  // Deny eval/codegen
         );
 
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // V8 tracing should at least show the function was traced
-        let has_js_trace = stdout.contains("targetFunc") || stdout.contains("<anonymous>");
-
-        // Either we see denied (if blocking works) or we see the trace event
-        // V8 blocking is limited due to how V8 runtime tracing works
         assert!(
-            has_js_trace || stdout.contains("denied:"),
-            "Expected V8 trace event or denied message. stdout: {}, stderr: {}",
+            output.status.success(),
+            "V8 review deny test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
 
-        // Test passes if we don't hang or crash - V8 review mode is informational
+        // Denied eval() should not execute the assignment.
         assert!(
-            output.status.success(),
-            "V8 review deny test should complete without crash. stderr: {}",
-            stderr
+            stdout.contains("EXECUTED false"),
+            "Expected eval payload to be blocked. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // Confirm we actually hit the deny path.
+        assert!(
+            stdout.contains("EVAL_BLOCKED") || stdout.contains("denied:"),
+            "Expected blocked eval signal. stdout: {}, stderr: {}",
+            stdout, stderr
         );
     });
 }

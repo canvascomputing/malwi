@@ -5,7 +5,7 @@
 malwi is a function tracing tool for dynamic analysis of executables. It supports:
 - **Native functions** via malwi-intercept Interceptor
 - **Python functions** via sys.setprofile hooks
-- **Node.js functions** via N-API addon wrapping
+- **Node.js functions** via hybrid tracing (V8 bytecode + codegen gate + N-API addon wrapping)
 - **Executed commands** via fork/exec/spawn monitoring
 
 The tool injects an agent library into target processes to intercept function calls and report them back to a CLI over HTTP.
@@ -141,6 +141,7 @@ agent/src/
 └── nodejs/             # Node.js tracing (addon, bytecode hooks, filters)
     ├── mod.rs          # Public API facade
     ├── bytecode.rs     # V8 bytecode tracing (Runtime_TraceEnter/Exit)
+    ├── codegen.rs      # Synchronous eval/function-constructor gate
     ├── filters.rs      # Filter management, initialization
     ├── ffi.rs          # FFI types
     ├── script.rs       # JS execution
@@ -198,9 +199,16 @@ C/Rust FFI structs must use `#[repr(C)]` and match field order exactly.
 
 ### Deferred Initialization
 Node.js addon may not be ready at agent load time. Use deferred init pattern:
-1. Set up NODE_OPTIONS with --require
-2. Store addon path in static
-3. Complete initialization when Node.js is ready
+1. Build wrapper and set preload options in parent process before spawn
+2. Inject wrapper via Node argv (`--require=...`) for direct Node launches
+3. Also set `NODE_OPTIONS` for compatibility and child-process propagation
+4. Complete addon-specific FFI init when Node.js runtime is ready
+
+### Node Injection Timing (Important)
+- **Deterministic path:** parent prepares wrapper + injects `--require` before spawning Node
+- `NODE_OPTIONS` is still set, but should be treated as compatibility/propagation, not sole timing guarantee
+- In-process fallback that sets `NODE_OPTIONS` is too late for the current process (only affects descendants)
+- SIP/restricted binaries on macOS can strip preload env vars; resolve shebangs and avoid restricted launchers
 
 ## Node Addon (node-addon/)
 
@@ -219,7 +227,8 @@ Usually means FFI was called before addon was initialized. Check deferred init l
 When building argument arrays, use `reserve()` before `push_back()` to prevent c_str() pointer invalidation.
 
 ### Addon not loading
-Node.js addon is injected via Script::Run hook when Node.js starts executing JavaScript.
+Primary path is wrapper preload (`--require`) prepared before spawn.
+`Script::Run` direct loading exists only as a legacy fallback (`MALWI_DIRECT_LOAD=1`).
 
 ## Environment Variables
 
