@@ -151,17 +151,15 @@ fn generate_wrapper_script(addon_dir: &Path) -> String {
             addon.enableTracing();
         }}
 
-        // Install require hook only when JS function tracing is requested.
-        // The CLI sets MALWI_JS_ADDON=1 when --js flag is used.
+        // Install require hook only when JS filters are configured.
+        // Filters are set by the CLI via --js flag and passed through Rust agent state.
         // Without this guard, the require hook breaks npm's module loading.
-        if (process.env.MALWI_JS_ADDON === '1') {{
-            if (addon.installRequireHook) {{
-                addon.installRequireHook(Module);
-            }}
-
-            // Get filters from agent via FFI and apply them
-            if (addon.getFilters) {{
-                const filters = addon.getFilters();
+        if (addon.getFilters) {{
+            const filters = addon.getFilters();
+            if (filters.length > 0) {{
+                if (addon.installRequireHook) {{
+                    addon.installRequireHook(Module);
+                }}
                 for (const f of filters) {{
                     if (addon.addFilter) {{
                         addon.addFilter(f.pattern, f.captureStack);

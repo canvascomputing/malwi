@@ -231,7 +231,12 @@ fn prepare_node_options(agent_lib: &str, url: &str) -> Option<String> {
 /// This spawns the process suspended with DYLD_INSERT_LIBRARIES set,
 /// then resumes the process. The agent is loaded automatically.
 #[cfg(target_os = "macos")]
-pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result<libc::pid_t> {
+pub fn spawn_with_injection(
+    program: &str,
+    args: &[String],
+    url: &str,
+    needs_js: bool,
+) -> Result<libc::pid_t> {
     let agent_lib = find_agent_library()?;
     debug!("Agent library: {}", agent_lib);
 
@@ -256,10 +261,9 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
     }
 
     // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
-    // Only set when JS addon tracing is needed (--js flag). The wrapper script
-    // breaks some programs (e.g., npm) by patching Module.prototype.require
-    // and replacing process.env with a Proxy.
-    if std::env::var_os("MALWI_JS_ADDON").is_some() {
+    // Only set when JS tracing is needed (--js flag). The wrapper script
+    // breaks programs like npm by patching Module.prototype.require.
+    if needs_js {
         if let Some(node_options) = prepare_node_options(&agent_lib, url) {
             std::env::set_var("NODE_OPTIONS", &node_options);
             debug!("Set NODE_OPTIONS={}", node_options);
@@ -289,7 +293,12 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
 /// This spawns the process suspended with LD_PRELOAD set,
 /// then resumes the process. The agent is loaded automatically.
 #[cfg(target_os = "linux")]
-pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result<libc::pid_t> {
+pub fn spawn_with_injection(
+    program: &str,
+    args: &[String],
+    url: &str,
+    needs_js: bool,
+) -> Result<libc::pid_t> {
     let agent_lib = find_agent_library()?;
     debug!("Agent library: {}", agent_lib);
 
@@ -305,10 +314,9 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
         };
 
     // Prepare NODE_OPTIONS for JavaScript tracing BEFORE spawning.
-    // Only set when JS addon tracing is needed (--js flag). The wrapper script
-    // breaks some programs (e.g., npm) by patching Module.prototype.require
-    // and replacing process.env with a Proxy.
-    if std::env::var_os("MALWI_JS_ADDON").is_some() {
+    // Only set when JS tracing is needed (--js flag). The wrapper script
+    // breaks programs like npm by patching Module.prototype.require.
+    if needs_js {
         if let Some(node_options) = prepare_node_options(&agent_lib, url) {
             std::env::set_var("NODE_OPTIONS", &node_options);
             debug!("Set NODE_OPTIONS={}", node_options);
