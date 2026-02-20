@@ -25,7 +25,7 @@ use malwi_intercept::InvocationContext;
 
 #[cfg(target_os = "macos")]
 fn agent_debug_enabled() -> bool {
-    std::env::var_os("MALWI_AGENT_DEBUG").is_some()
+    crate::agent_debug_enabled()
 }
 
 /// Address of bash's `find_shell_builtin` function, set during setup_bash_hooks.
@@ -163,9 +163,9 @@ fn is_arm64e_binary(path: *const c_char) -> bool {
     // Check for fat (universal) binary — header is always big-endian
     let magic_be = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
     let arch_size = match magic_be {
-        FAT_MAGIC => 20,    // fat_arch: cputype(4) + cpusubtype(4) + offset(4) + size(4) + align(4)
+        FAT_MAGIC => 20, // fat_arch: cputype(4) + cpusubtype(4) + offset(4) + size(4) + align(4)
         FAT_MAGIC_64 => 32, // fat_arch_64: same fields but offset/size are u64 + reserved
-        _ => return false,   // Not a Mach-O (script, etc.)
+        _ => return false, // Not a Mach-O (script, etc.)
     };
 
     let nfat = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
@@ -1034,8 +1034,8 @@ unsafe extern "C" fn on_posix_spawn_enter(
     #[cfg(target_os = "macos")]
     {
         if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
-            let envp_ptr = malwi_intercept::invocation::get_nth_argument(context, 5)
-                as *const *const c_char;
+            let envp_ptr =
+                malwi_intercept::invocation::get_nth_argument(context, 5) as *const *const c_char;
             if let Some(injected) = build_injected_envp(envp_ptr) {
                 malwi_intercept::invocation::replace_nth_argument(
                     context,
@@ -1695,8 +1695,8 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
     #[cfg(target_os = "macos")]
     {
         if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
-            let envp_ptr = malwi_intercept::invocation::get_nth_argument(context, 2)
-                as *const *const c_char;
+            let envp_ptr =
+                malwi_intercept::invocation::get_nth_argument(context, 2) as *const *const c_char;
             if let Some(injected) = build_injected_envp(envp_ptr) {
                 malwi_intercept::invocation::replace_nth_argument(
                     context,
@@ -2503,10 +2503,7 @@ mod tests {
 
         #[test]
         fn test_fat_arm64e_only() {
-            let bytes = fat_macho(&[
-                (CPU_TYPE_X86_64, 3),
-                (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E),
-            ]);
+            let bytes = fat_macho(&[(CPU_TYPE_X86_64, 3), (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E)]);
             let (path, cpath) = write_temp_binary(&bytes, "macho");
             assert!(is_arm64e_binary(cpath.as_ptr()));
             let _ = std::fs::remove_file(path);

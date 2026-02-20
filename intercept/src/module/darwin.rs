@@ -580,7 +580,7 @@ unsafe fn rebind_symbol_in_image(
                     )
                 };
                 if kr != KERN_SUCCESS {
-                    if std::env::var_os("MALWI_HOOK_DEBUG").is_some() {
+                    if crate::hook_debug_enabled() {
                         let errno = *libc::__error();
                         eprintln!(
                             "[malwi-intercept] rebind_symbol: protect RW failed errno={} kr={} page=0x{:x}",

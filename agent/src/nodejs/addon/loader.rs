@@ -12,10 +12,8 @@
 //!
 //! This avoids timing issues with version detection during early init.
 
-use std::ffi::c_void;
 use std::ffi::CString;
 use std::path::Path;
-use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, warn};
@@ -35,10 +33,6 @@ static ADDON_TRACING_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// This is used by bytecode tracing to avoid duplicate events for module functions
 /// that are already being traced by the addon's require hook.
 pub fn is_addon_tracing_active() -> bool {
-    // Check env var set by JS wrapper (preferred) or internal state
-    if std::env::var("MALWI_ADDON_READY").is_ok() {
-        return true;
-    }
     ADDON_TRACING_ACTIVE.load(Ordering::SeqCst)
 }
 
@@ -67,9 +61,6 @@ pub fn forward_filters_to_addon(ffi: &AddonFfi, filters: &[crate::tracing::Filte
 }
 
 /// Activate addon tracing with FFI resolution and filter forwarding.
-///
-/// This is the shared implementation used by direct loading.
-/// For NODE_OPTIONS mode, activation happens in the JS wrapper.
 ///
 /// Returns true on success.
 pub fn activate_addon_tracing(addon_path: &Path) -> bool {
@@ -168,9 +159,6 @@ fn generate_wrapper_script(addon_dir: &Path) -> String {
             }}
         }}
 
-        // Signal that addon is ready (for bytecode deduplication)
-        process.env.MALWI_ADDON_READY = '1';
-
         // Envvar monitoring: wrap process.env with a Proxy that calls checkEnvVar
         if (addon.checkEnvVar) {{
             const _envChecked = new Map();
@@ -250,9 +238,6 @@ pub fn node_options_initialize() -> bool {
         }
     };
 
-    // Set MALWI_ADDON_DIR for child processes and the wrapper
-    std::env::set_var("MALWI_ADDON_DIR", addon_dir.to_string_lossy().as_ref());
-
     // Step 2: Generate and write the JS wrapper
     let wrapper_js = generate_wrapper_script(&addon_dir);
 
@@ -303,299 +288,5 @@ pub fn node_options_initialize() -> bool {
     std::env::set_var("NODE_OPTIONS", &node_options);
 
     info!("V8 tracing configured via NODE_OPTIONS (wrapper-centric mode)");
-    true
-}
-
-// =============================================================================
-// DIRECT LOADING (DEPRECATED - kept for MALWI_DIRECT_LOAD=1)
-// =============================================================================
-use std::sync::OnceLock;
-
-use crate::native;
-use crate::nodejs::ffi::{
-    IsolateGetCurrentFn, NapiAddonRegisterFunc, NapiModuleRegisterBySymbolFn, ObjectNewFn,
-    ScriptRunMethodFn, V8Context, V8Value,
-};
-use crate::nodejs::symbols;
-
-/// Addon directory for deferred direct loading (contains all version subdirs).
-static DEFERRED_DIRECT_ADDON_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
-
-/// Original Script::Run function pointer.
-static ORIGINAL_SCRIPT_RUN: OnceLock<ScriptRunMethodFn> = OnceLock::new();
-
-/// Whether the Script::Run hook has been installed.
-static SCRIPT_RUN_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
-
-/// Direct loading API - cached function pointers.
-struct DirectLoadApi {
-    isolate_get_current: IsolateGetCurrentFn,
-    object_new: ObjectNewFn,
-    napi_register: NapiModuleRegisterBySymbolFn,
-}
-
-/// Cached direct load API.
-static DIRECT_LOAD_API: OnceLock<DirectLoadApi> = OnceLock::new();
-
-/// Resolve direct load API functions.
-fn resolve_direct_load_api() -> Option<DirectLoadApi> {
-    debug!("Resolving direct load API symbols...");
-
-    macro_rules! resolve {
-        ($sym:expr, $ty:ty) => {
-            match native::find_export(None, $sym) {
-                Ok(addr) => unsafe { std::mem::transmute::<usize, $ty>(addr) },
-                Err(e) => {
-                    debug!("Failed to resolve {}: {}", $sym, e);
-                    return None;
-                }
-            }
-        };
-    }
-
-    let isolate_get_current: IsolateGetCurrentFn =
-        resolve!(symbols::v8::ISOLATE_GET_CURRENT, IsolateGetCurrentFn);
-    let object_new: ObjectNewFn = resolve!(symbols::v8::OBJECT_NEW, ObjectNewFn);
-    let napi_register: NapiModuleRegisterBySymbolFn = resolve!(
-        symbols::napi::MODULE_REGISTER_BY_SYMBOL,
-        NapiModuleRegisterBySymbolFn
-    );
-
-    debug!("Direct load API symbols resolved successfully");
-
-    Some(DirectLoadApi {
-        isolate_get_current,
-        object_new,
-        napi_register,
-    })
-}
-
-/// Get or initialize the direct load API.
-fn get_direct_load_api() -> Option<&'static DirectLoadApi> {
-    if let Some(api) = DIRECT_LOAD_API.get() {
-        return Some(api);
-    }
-
-    if let Some(api) = resolve_direct_load_api() {
-        let _ = DIRECT_LOAD_API.set(api);
-        DIRECT_LOAD_API.get()
-    } else {
-        None
-    }
-}
-
-/// Load our addon using an already-valid V8 context.
-#[cfg(unix)]
-unsafe fn load_addon_with_context(addon_path: &Path, context: V8Context) -> bool {
-    use std::ffi::CStr;
-
-    // Already initialized?
-    if ADDON_FFI.get().is_some() {
-        return true;
-    }
-
-    debug!("Loading addon from {:?} using existing context", addon_path);
-
-    let api = match get_direct_load_api() {
-        Some(a) => a,
-        None => {
-            warn!("Failed to resolve direct load API");
-            return false;
-        }
-    };
-
-    // Get isolate from current context
-    let isolate = (api.isolate_get_current)();
-    if isolate.is_null() {
-        warn!("Failed to get current isolate");
-        return false;
-    }
-
-    // Create fresh exports and module objects for our addon
-    let our_exports = (api.object_new)(isolate);
-    let our_module = (api.object_new)(isolate);
-
-    if our_exports.is_null() || our_module.is_null() {
-        warn!("Failed to create V8 objects for our addon");
-        return false;
-    }
-
-    // Load our addon via dlopen
-    let path_cstr = match CString::new(addon_path.to_string_lossy().as_bytes()) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Invalid addon path: {}", e);
-            return false;
-        }
-    };
-
-    let handle = libc::dlopen(path_cstr.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
-    if handle.is_null() {
-        let err = CStr::from_ptr(libc::dlerror());
-        warn!("Failed to dlopen addon: {:?}", err);
-        return false;
-    }
-
-    // Get our addon's init function
-    let init_sym = CString::new("napi_register_module_v1").unwrap();
-    let init_ptr = libc::dlsym(handle, init_sym.as_ptr());
-    if init_ptr.is_null() {
-        warn!("Our addon missing napi_register_module_v1 symbol");
-        libc::dlclose(handle);
-        return false;
-    }
-
-    let our_init: NapiAddonRegisterFunc =
-        std::mem::transmute::<*mut libc::c_void, NapiAddonRegisterFunc>(init_ptr);
-
-    // Register our addon with N-API
-    debug!("Calling napi_module_register_by_symbol for our addon...");
-    (api.napi_register)(our_exports, our_module as V8Value, context, our_init, 9);
-
-    debug!("Our addon loaded successfully");
-
-    // Activate tracing
-    if !activate_addon_tracing(addon_path) {
-        warn!("Failed to activate addon tracing");
-        return false;
-    }
-
-    info!("V8 tracing initialized via Script::Run hook");
-    true
-}
-
-#[cfg(not(unix))]
-unsafe fn load_addon_with_context(_addon_path: &Path, _context: V8Context) -> bool {
-    warn!("Direct addon loading not implemented for this platform");
-    false
-}
-
-/// Hooked v8::Script::Run - loads our addon on first script execution.
-unsafe extern "C" fn hooked_script_run(script: *mut c_void, context: V8Context) -> V8Value {
-    // Try to inject our addon on first call (if not already done)
-    if ADDON_FFI.get().is_none() {
-        if let Some(addon_dir) = DEFERRED_DIRECT_ADDON_DIR.get() {
-            debug!("Script::Run hook triggered - detecting version and loading addon");
-
-            // Now that Node.js is running, we can detect the version
-            if let Some(major) = super::embed::detect_node_version() {
-                // Map version to bucket
-                let bucket = match major {
-                    21 => "node21",
-                    22 => "node22",
-                    23 => "node23",
-                    24 => "node24",
-                    25.. => "node25",
-                    _ => {
-                        warn!("Unsupported Node.js version {} for direct loading", major);
-                        // Call original and return
-                        return if let Some(original) = ORIGINAL_SCRIPT_RUN.get() {
-                            original(script, context)
-                        } else {
-                            ptr::null_mut()
-                        };
-                    }
-                };
-
-                let addon_path = addon_dir.join(bucket).join("v8_introspect.node");
-                if addon_path.exists() {
-                    info!("Loading addon for Node.js {} from {:?}", major, addon_path);
-                    load_addon_with_context(&addon_path, context);
-                } else {
-                    warn!("Addon not found at {:?}", addon_path);
-                }
-            } else {
-                warn!("Failed to detect Node.js version in Script::Run hook");
-            }
-        }
-    }
-
-    // Always call original
-    if let Some(original) = ORIGINAL_SCRIPT_RUN.get() {
-        original(script, context)
-    } else {
-        ptr::null_mut()
-    }
-}
-
-/// Install the v8::Script::Run hook for direct addon loading.
-fn install_script_run_hook() -> bool {
-    if SCRIPT_RUN_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
-        return true; // Already installed
-    }
-
-    debug!("Installing v8::Script::Run hook...");
-
-    // Find Script::Run address
-    let script_run_addr = match native::find_export(None, symbols::v8::SCRIPT_RUN_WITH_CONTEXT) {
-        Ok(addr) => addr,
-        Err(e) => {
-            warn!("Failed to find Script::Run symbol: {}", e);
-            SCRIPT_RUN_HOOK_INSTALLED.store(false, Ordering::SeqCst);
-            return false;
-        }
-    };
-
-    debug!("Found Script::Run at {:#x}", script_run_addr);
-
-    let interceptor = malwi_intercept::Interceptor::obtain();
-    interceptor.begin_transaction();
-    let mut original_ptr: *const c_void = ptr::null();
-    let result = interceptor.replace(
-        script_run_addr as *mut c_void,
-        hooked_script_run as *const c_void,
-        ptr::null_mut(),
-        &mut original_ptr,
-    );
-    interceptor.end_transaction();
-
-    if let Err(e) = result {
-        warn!("Failed to hook Script::Run: {:?}", e);
-        SCRIPT_RUN_HOOK_INSTALLED.store(false, Ordering::SeqCst);
-        return false;
-    }
-
-    // Store trampoline pointer so the hook can call original behavior.
-    let original_fn: ScriptRunMethodFn =
-        unsafe { std::mem::transmute::<*const c_void, ScriptRunMethodFn>(original_ptr) };
-    let _ = ORIGINAL_SCRIPT_RUN.set(original_fn);
-
-    info!("v8::Script::Run hook installed");
-    true
-}
-
-/// Initialize V8 tracing via direct addon loading (no NODE_OPTIONS).
-///
-/// This approach installs a v8::Script::Run hook and loads the addon
-/// when Node.js first executes a script. This avoids NODE_OPTIONS timing issues.
-///
-/// Used when MALWI_DIRECT_LOAD=1 is set.
-pub fn direct_initialize() -> bool {
-    info!("Initializing V8 JavaScript tracing via direct loading (no NODE_OPTIONS)...");
-
-    // Extract ALL addons upfront - we'll detect the version later in the hook
-    // This is necessary because version detection fails at library load time
-    // (Node.js metadata isn't initialized yet)
-    let addon_dir = match super::embed::extract_all_addons() {
-        Some(dir) => dir,
-        None => {
-            warn!("Failed to extract addons for direct loading");
-            return false;
-        }
-    };
-
-    // Store addon directory for deferred version detection and loading
-    if DEFERRED_DIRECT_ADDON_DIR.set(addon_dir).is_err() {
-        warn!("Direct load addon directory already set");
-        return false;
-    }
-
-    // Install the v8::Script::Run hook
-    if !install_script_run_hook() {
-        warn!("Failed to install Script::Run hook for direct loading");
-        return false;
-    }
-
-    info!("V8 tracing will initialize on first script execution (Script::Run hook)");
     true
 }

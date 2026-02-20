@@ -94,23 +94,13 @@ pub fn is_addon_tracing_active() -> bool {
 
 /// Initialize Node.js JavaScript tracing via addon.
 ///
-/// Uses NODE_OPTIONS --require preloading by default.
-/// Set MALWI_DIRECT_LOAD=1 to use direct Script::Run hook injection instead.
+/// Uses NODE_OPTIONS --require preloading.
 pub fn initialize() -> bool {
     if NODEJS_TRACING_INITIALIZED.swap(true, Ordering::SeqCst) {
         return true; // Already initialized
     }
 
-    // Check if direct loading is requested
-    let use_direct = std::env::var("MALWI_DIRECT_LOAD")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
-    let result = if use_direct {
-        addon::direct_initialize()
-    } else {
-        addon::node_options_initialize()
-    };
+    let result = addon::node_options_initialize();
 
     if !result {
         NODEJS_TRACING_INITIALIZED.store(false, Ordering::SeqCst);

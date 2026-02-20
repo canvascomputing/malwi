@@ -1,5 +1,7 @@
 //! malwi-intercept: Native function interception for malwi-trace.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 pub mod arch;
 pub mod backtrace;
 pub mod code;
@@ -13,11 +15,23 @@ pub use interceptor::listener::CallListener;
 pub use interceptor::Interceptor;
 pub use types::InvocationContext;
 
+/// Whether hook debug output is enabled (from MALWI_HOOK_DEBUG env var at init).
+static HOOK_DEBUG: AtomicBool = AtomicBool::new(false);
+
+/// Check if hook debug output is enabled.
+pub fn hook_debug_enabled() -> bool {
+    HOOK_DEBUG.load(Ordering::Relaxed)
+}
+
 /// Initialize the intercept subsystem.
 ///
-/// Uses Rust-managed state, so this is a no-op today but kept for
-/// API compatibility with the agent integration.
-pub fn init() {}
+/// Reads the `MALWI_HOOK_DEBUG` env var once and caches the result.
+pub fn init() {
+    HOOK_DEBUG.store(
+        std::env::var_os("MALWI_HOOK_DEBUG").is_some(),
+        Ordering::Relaxed,
+    );
+}
 
 /// Process-global lock for tests that modify executable code (interceptor + patcher).
 ///

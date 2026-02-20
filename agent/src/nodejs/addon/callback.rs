@@ -4,9 +4,13 @@
 //! The addon calls this function with a direct struct pointer for efficient event processing.
 
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::envvar_filter;
 use crate::nodejs::ffi::NodejsTraceEventData;
+
+/// Set on first callback invocation to mark addon tracing as active.
+static CALLBACK_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// Helper to extract a string from a C pointer with length.
 /// Returns an empty string if the pointer is null or length is unreasonable.
@@ -32,6 +36,12 @@ unsafe fn extract_string(ptr: *const c_char, len: u32) -> String {
 pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEventData) -> i32 {
     if event_data.is_null() {
         return 1; // Allow if no data
+    }
+
+    // Mark addon tracing as active on first callback (signals bytecode dedup)
+    if !CALLBACK_SEEN.load(Ordering::Relaxed) {
+        CALLBACK_SEEN.store(true, Ordering::Relaxed);
+        super::set_addon_tracing_active(true);
     }
 
     let (event, is_enter) = unsafe {

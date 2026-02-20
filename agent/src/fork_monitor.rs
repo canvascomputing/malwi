@@ -13,7 +13,7 @@ use malwi_intercept::InvocationContext;
 
 #[cfg(target_os = "macos")]
 fn agent_debug_enabled() -> bool {
-    std::env::var_os("MALWI_AGENT_DEBUG").is_some()
+    crate::agent_debug_enabled()
 }
 
 // In forked children, threads don't survive. We need a reliable hook to

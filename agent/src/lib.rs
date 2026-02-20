@@ -29,6 +29,14 @@ use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+/// Whether agent debug output is enabled (from MALWI_AGENT_DEBUG env var at init).
+static AGENT_DEBUG: AtomicBool = AtomicBool::new(false);
+
+/// Check if agent debug output is enabled.
+pub fn agent_debug_enabled() -> bool {
+    AGENT_DEBUG.load(Ordering::Relaxed)
+}
+
 // Flag to signal the agent's background thread to shut down.
 // Set by atexit handler when the process is exiting.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -698,6 +706,12 @@ pub extern "C" fn malwi_agent_init() -> i32 {
         }
     };
 
+    // Read debug flag once at init time (avoids env var lock on every call)
+    AGENT_DEBUG.store(
+        std::env::var_os("MALWI_AGENT_DEBUG").is_some(),
+        Ordering::Relaxed,
+    );
+
     // Save agent library path for selective re-injection in exec hooks,
     // then strip DYLD vars from the process environment BEFORE main() runs.
     // The agent is already loaded; removing these prevents the host program
@@ -965,9 +979,6 @@ fn generate_wrapper_script(addon_dir: &std::path::Path) -> String {
                 }}
             }}
         }}
-
-        // Signal that addon is ready (for bytecode deduplication)
-        process.env.MALWI_ADDON_READY = '1';
 
         // Envvar monitoring: wrap process.env with a Proxy that calls checkEnvVar
         if (addon.checkEnvVar) {{

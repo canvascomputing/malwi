@@ -115,7 +115,7 @@ pub fn is_loaded() -> bool {
 ///    - Catches user JavaScript bytecode functions
 ///    - Works for synchronous `--eval` code that runs before module loading
 ///    - Uses V8's internal --trace flag with hooks on Runtime_TraceEnter/TraceExit
-///    - Can be disabled via `MALWI_NO_BYTECODE=1` for apps with sensitive init
+///    - Catches user JS functions in --eval, ESM, dynamic imports, etc.
 ///
 /// 2. **codegen** (ModifyCodeGenerationFromStrings hook):
 ///    - Catches eval/function-constructor code generation
@@ -136,34 +136,13 @@ pub fn is_loaded() -> bool {
 /// - true if at least one tracing mechanism initialized successfully
 /// - false if V8 tracing could not be enabled
 pub fn init_tracing() -> bool {
-    // Check if bytecode tracing should be skipped.
-    // Set `MALWI_NO_BYTECODE=1` to disable.
-    let skip_bytecode = std::env::var("MALWI_NO_BYTECODE")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
-    // Check if all JS tracing should be skipped (for debugging)
-    let skip_all_js = std::env::var("MALWI_NO_JS")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
-
-    if skip_all_js {
-        log::info!("All JS tracing disabled via MALWI_NO_JS");
-        return false;
-    }
-
     // Step 1: Install synchronous eval/codegen gate hook.
     // This enables blocking decisions for eval()/Function() in review mode.
     let codegen_ok = codegen::initialize();
 
-    // Step 2: Initialize bytecode-level tracing (unless explicitly disabled)
+    // Step 2: Initialize bytecode-level tracing.
     // This catches user JS functions in --eval, ESM, dynamic imports, etc.
-    let bytecode_ok = if skip_bytecode {
-        log::info!("Bytecode tracing disabled via MALWI_NO_BYTECODE");
-        false
-    } else {
-        bytecode::initialize()
-    };
+    let bytecode_ok = bytecode::initialize();
 
     // Step 3: Initialize wrapper-based addon tracing
     // This catches native module functions (fs.*, etc.)

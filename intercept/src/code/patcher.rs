@@ -38,7 +38,7 @@ mod darwin {
 
     #[inline]
     fn debug_enabled() -> bool {
-        std::env::var_os("MALWI_HOOK_DEBUG").is_some()
+        crate::hook_debug_enabled()
     }
 
     #[cfg(target_arch = "aarch64")]
