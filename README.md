@@ -80,24 +80,22 @@ symbols:
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ malwi CLI                                            │
+│ malwi CLI (server)                                   │
 │                                                      │
 │ ┌──────────┐  ┌──────────────┐  ┌──────────────────┐ │
 │ │ Spawner  │  │ Policy Engine│  │ Output / Review  │ │
 │ └────┬─────┘  └──────▲───────┘  └────────▲─────────┘ │
 │      │               │                   │           │
 │      │ inject        │ evaluate          │ display   │
-│      ▼               │                   │           │
-│ ┌────────────────────┴───────────────────┴────────┐  │
-│ │               HTTP (localhost)                  │  │
-│ └────────────────────▲────────────────────────────┘  │
-└──────────────────────┼───────────────────────────────┘
-                       │ report
-┌──────────────────────┼───────────────────────────────┐
-│ Target Process       │                               │
-│                      │                               │
-│ ┌────────────────────▼─────────────────────────────┐ │
-│ │ malwi Agent                                      │ │
+│      │               │                   │           │
+└──────┼───────────────┼───────────────────┼───────────┘
+       │               │ HTTP              │
+       ▼               │ (trace events)    │
+┌──────────────────────┼───────────────────┼───────────┐
+│ Target Process       │                   │           │
+│                      │                   │           │
+│ ┌────────────────────┴───────────────────┴─────────┐ │
+│ │ malwi Agent (client)                             │ │
 │ │                                                  │ │
 │ │ ┌─────────┐ ┌────────┐ ┌───────┐ ┌────────────┐  │ │
 │ │ │ Node.js │ │ Python │ │ Bash  │ │  Binary    │  │ │
@@ -123,9 +121,8 @@ symbols:
 | ⚠️ Limitations | Explanation | Future Mitigation |
 |:--|:--|:--|
 | **Direct Syscall Detection** | Inline `SVC`/`SYSCALL` instructions bypass libc hooks. The `syscall()` libc wrapper is denied in bash-install policy; full inline detection via the `syscalls:` section is available for hardened deployments | `in planning` |
-| **[SIP-Protected Child Processes](#macos-system-integrity-protection-sip)** | On macOS, SIP-protected binaries (e.g. `/usr/bin/curl`) strip `DYLD_INSERT_LIBRARIES`, so the agent is not injected into them. File arguments are still checked at exec time via the parent process | `in planning` |
-| **Symlink & Hardlink Indirection** | `ln -s ~/.ssh /tmp/x; cat /tmp/x/id_rsa` — the aliased path doesn't match deny patterns. Mitigated: `symlink`/`link` libc calls are denied and `ln` is warned in bash-install policy, preventing alias creation in the traced process | `in progress`: AI based detection |
-| **File Protocol Usage** | `curl file:///etc/passwd` accesses local files through curl's HTTP stack, not the bash process's `open()`. Partially mitigated: if curl is not SIP-protected, its internal `open()` is hooked | `in progress`: AI based detection |
+| **[SIP-Protected Child Processes](#macos-system-integrity-protection-sip)** | On macOS, malicious code can shell out to SIP-protected binaries (e.g. `/usr/bin/curl`) which strip `DYLD_INSERT_LIBRARIES` — the child runs untraced, so network calls, file reads, and other operations inside it are invisible to `malwi` | `in planning` |
+| **Indirect File Access** | Symlinks (`ln -s ~/.ssh /tmp/x`) or the file protocol (`curl file://`) can reach protected files without triggering `open()` deny patterns | `in progress`: AI based detection |
 
 ## Auto-policies
 
