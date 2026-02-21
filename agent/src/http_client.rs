@@ -180,6 +180,7 @@ impl HttpClient {
 
     /// Send an HTTP POST request and return the response body.
     fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<String> {
+        let _guard = crate::hooks::HookSuppressGuard::new();
         // Try with existing connection first, then retry with new connection
         for attempt in 0..2 {
             let mut stream = match self.get_conn(timeout) {
@@ -226,6 +227,7 @@ impl HttpClient {
 
     /// Send an HTTP GET request and return the response body.
     fn get(&self, path: &str, timeout: Duration) -> Result<String> {
+        let _guard = crate::hooks::HookSuppressGuard::new();
         for attempt in 0..2 {
             let mut stream = match self.get_conn(timeout) {
                 Ok(s) => s,

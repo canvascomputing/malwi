@@ -37,6 +37,25 @@ pub fn is_in_hook() -> bool {
     IN_HOOK.with(|h| h.get())
 }
 
+/// RAII guard that suppresses hook callbacks for its lifetime.
+/// Saves the current IN_HOOK state and sets it to true; restores on drop.
+/// Nesting-safe: inner guards restore the previous (already-true) state.
+pub struct HookSuppressGuard(bool);
+
+impl HookSuppressGuard {
+    pub fn new() -> Self {
+        let was = is_in_hook();
+        set_in_hook(true);
+        Self(was)
+    }
+}
+
+impl Drop for HookSuppressGuard {
+    fn drop(&mut self) {
+        set_in_hook(self.0);
+    }
+}
+
 use crate::native;
 use crate::native::format_native_arguments;
 
@@ -472,5 +491,60 @@ pub unsafe fn capture_backtrace(context: *mut InvocationContext) -> Vec<usize> {
     unsafe {
         let cpu = &*(*context).cpu_context;
         malwi_intercept::backtrace::capture_backtrace(cpu, 64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hook_suppress_guard_basic() {
+        // Start with hooks not suppressed
+        set_in_hook(false);
+        assert!(!is_in_hook());
+
+        {
+            let _guard = HookSuppressGuard::new();
+            assert!(is_in_hook());
+        }
+        // Restored to false after drop
+        assert!(!is_in_hook());
+    }
+
+    #[test]
+    fn test_hook_suppress_guard_nested() {
+        // Start already inside a hook
+        set_in_hook(true);
+        assert!(is_in_hook());
+
+        {
+            let _guard = HookSuppressGuard::new();
+            assert!(is_in_hook());
+        }
+        // Restored to true (was already true)
+        assert!(is_in_hook());
+
+        // Clean up
+        set_in_hook(false);
+    }
+
+    #[test]
+    fn test_hook_suppress_guard_double_nested() {
+        set_in_hook(false);
+
+        {
+            let _outer = HookSuppressGuard::new();
+            assert!(is_in_hook());
+
+            {
+                let _inner = HookSuppressGuard::new();
+                assert!(is_in_hook());
+            }
+            // Inner dropped — still true (outer saved true)
+            assert!(is_in_hook());
+        }
+        // Outer dropped — restored to false
+        assert!(!is_in_hook());
     }
 }

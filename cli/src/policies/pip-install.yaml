@@ -81,8 +81,19 @@ envvars:
     - DYLD_INSERT_LIBRARIES
     - LD_PRELOAD
 
-# Block credential-interception native functions.
+# Block credential-interception, filesystem bypass, and raw networking functions.
 symbols:
   deny:
+    # Credential interception
     - getpass
     - crypt
+    # Symlink/hardlink creation (bypass file path patterns)
+    - symlink
+    - link
+    # Direct syscall wrapper
+    - syscall
+    # Raw networking
+    - connect
+    - socket
+    - sendto
+    - bind

@@ -1047,6 +1047,16 @@ mod tests {
     }
 
     #[test]
+    fn test_bash_install_blocks_network_symbols() {
+        let engine = bash_install_engine();
+
+        for sym in &["connect", "socket", "sendto", "bind"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
     fn test_bash_install_protocols_restricted() {
         let engine = bash_install_engine();
 
@@ -1163,6 +1173,26 @@ mod tests {
     }
 
     #[test]
+    fn test_npm_install_blocks_network_symbols() {
+        let engine = npm_install_engine();
+
+        for sym in &["connect", "socket", "sendto", "bind"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
+    fn test_npm_install_blocks_filesystem_bypass_symbols() {
+        let engine = npm_install_engine();
+
+        for sym in &["symlink", "link", "syscall"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
     fn test_npm_install_blocks_cloud_metadata() {
         let engine = npm_install_engine();
 
@@ -1243,6 +1273,26 @@ mod tests {
     }
 
     #[test]
+    fn test_pip_install_blocks_network_symbols() {
+        let engine = pip_install_engine();
+
+        for sym in &["connect", "socket", "sendto", "bind"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
+    fn test_pip_install_blocks_filesystem_bypass_symbols() {
+        let engine = pip_install_engine();
+
+        for sym in &["symlink", "link", "syscall"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
     fn test_pip_install_blocks_cloud_metadata() {
         let engine = pip_install_engine();
 
@@ -1300,6 +1350,26 @@ mod tests {
 
         let d = engine.evaluate_native_function("crypt", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_comfyui_blocks_network_symbols() {
+        let engine = comfyui_engine();
+
+        for sym in &["connect", "socket", "sendto", "bind"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
+    fn test_comfyui_blocks_filesystem_bypass_symbols() {
+        let engine = comfyui_engine();
+
+        for sym in &["symlink", "link", "syscall"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
     }
 
     #[test]
@@ -1866,6 +1936,26 @@ mod tests {
 
         let d = engine.evaluate_native_function("crypt", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_openclaw_blocks_network_symbols() {
+        let engine = openclaw_engine();
+
+        for sym in &["connect", "socket", "sendto", "bind"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
+    }
+
+    #[test]
+    fn test_openclaw_blocks_filesystem_bypass_symbols() {
+        let engine = openclaw_engine();
+
+        for sym in &["symlink", "link", "syscall"] {
+            let d = engine.evaluate_native_function(sym, &[]);
+            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+        }
     }
 
     #[test]

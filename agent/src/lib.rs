@@ -512,14 +512,9 @@ impl Agent {
             return;
         }
 
-        // Suppress hooks during the HTTP call so the agent's own socket/connect
-        // calls aren't intercepted by policy hooks (e.g., air-gap denying socket).
-        let was_suppressed = hooks::is_in_hook();
-        hooks::set_in_hook(true);
         if let Err(e) = self.http.send_child(&info) {
             warn!("Failed to send child created notification: {}", e);
         }
-        hooks::set_in_hook(was_suppressed);
     }
 }
 

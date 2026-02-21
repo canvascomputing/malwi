@@ -235,10 +235,7 @@ envvars:
     - DYLD_INSERT_LIBRARIES
     - LD_PRELOAD
 
-# Block credential-interception and filesystem bypass functions.
-# Note: connect/socket/sendto/bind are NOT denied here because the agent
-# uses them for CLI communication. Raw networking is blocked via commands:
-# deny (nc, socat) and protocols: [https, http].
+# Block credential-interception, filesystem bypass, and raw networking functions.
 symbols:
   deny:
     # Credential interception
@@ -249,6 +246,11 @@ symbols:
     - link
     # Direct syscall wrapper (prevents SYS_openat bypass of open() hooks)
     - syscall
+    # Raw networking — catches bash /dev/tcp, /dev/udp
+    - connect
+    - socket
+    - sendto
+    - bind
 
 # Restrict to HTTP/HTTPS protocols only.
 # Block cloud metadata endpoints (SSRF protection).
