@@ -13,6 +13,7 @@
 //! 7. DangerousPatterns — cross-command catch-all for universal danger signals
 
 use crate::policy_bridge::normalize_path;
+use crate::taxonomy::{self, Category};
 use malwi_protocol::glob::matches_glob;
 
 /// Result of command analysis when a suspicious pattern is detected.
@@ -104,30 +105,10 @@ const ENGINES: &[Engine] = &[
 // Engine 1: SafeByIdentity
 // ---------------------------------------------------------------------------
 
-const SAFE_IDENTITY: &[&str] = &[
-    // Shell primitives
-    "echo", "printf", "test", "[", "true", "false",
-    // Navigation & info
-    "pwd", "cd", "ls", "dir",
-    // System queries (read-only)
-    "date", "whoami", "hostname", "id", "uname", "arch",
-    "env", "printenv", "which", "command", "type",
-    "getconf", "sw_vers", "lsb_release", "locale",
-    // Path utilities
-    "basename", "dirname", "realpath", "readlink",
-    // Process control (harmless)
-    "sleep", "yes",
-    // Terminal
-    "tput", "stty", "clear", "reset",
-    // Checksums (read-only verification)
-    "sha256sum", "sha1sum", "md5sum", "shasum", "cksum", "b2sum",
-];
-
 fn engine_safe_by_identity(ctx: &EngineContext) -> Triage {
-    if SAFE_IDENTITY.contains(&ctx.basename) {
-        Triage::Benign
-    } else {
-        Triage::Unknown
+    match taxonomy::get().lookup(ctx.basename) {
+        Some((Category::Safe, _)) => Triage::Benign,
+        _ => Triage::Unknown,
     }
 }
 
@@ -135,20 +116,10 @@ fn engine_safe_by_identity(ctx: &EngineContext) -> Triage {
 // Engine 2: BuildAndDev
 // ---------------------------------------------------------------------------
 
-const BUILD_TOOLS: &[&str] = &[
-    "make", "cmake", "gcc", "g++", "cc", "c++",
-    "clang", "clang++", "cpp",
-    "ar", "ld", "nm", "strip", "ranlib", "objcopy", "objdump",
-    "pkg-config", "autoconf", "automake", "libtool",
-    "rustc", "rustup", "rustfmt", "clippy-driver",
-    "go", "configure", "install",
-];
-
 fn engine_build_and_dev(ctx: &EngineContext) -> Triage {
-    if BUILD_TOOLS.contains(&ctx.basename) {
-        Triage::Benign
-    } else {
-        Triage::Unknown
+    match taxonomy::get().lookup(ctx.basename) {
+        Some((Category::Build, _)) => Triage::Benign,
+        _ => Triage::Unknown,
     }
 }
 
@@ -156,22 +127,10 @@ fn engine_build_and_dev(ctx: &EngineContext) -> Triage {
 // Engine 3: TextProcessing
 // ---------------------------------------------------------------------------
 
-const TEXT_TOOLS: &[&str] = &[
-    "grep", "egrep", "fgrep", "rg",
-    "sed", "awk", "gawk", "mawk",
-    "sort", "uniq", "cut", "tr", "wc",
-    "comm", "diff", "patch", "fmt", "column",
-    "fold", "expand", "unexpand", "nl",
-    "rev", "tac", "paste", "join",
-    "strings", "od", "hexdump",
-    "jq", "yq", "xmllint", "xsltproc",
-];
-
 fn engine_text_processing(ctx: &EngineContext) -> Triage {
-    if TEXT_TOOLS.contains(&ctx.basename) {
-        Triage::Benign
-    } else {
-        Triage::Unknown
+    match taxonomy::get().lookup(ctx.basename) {
+        Some((Category::Text, _)) => Triage::Benign,
+        _ => Triage::Unknown,
     }
 }
 
@@ -179,22 +138,10 @@ fn engine_text_processing(ctx: &EngineContext) -> Triage {
 // Engine 4: PackageAndVCS
 // ---------------------------------------------------------------------------
 
-const PKG_AND_VCS: &[&str] = &[
-    "git", "svn", "hg",
-    "npm", "npx", "pnpm", "yarn", "corepack",
-    "pip", "pip3",
-    "brew", "apt", "apt-get", "yum", "dnf",
-    "pacman", "apk", "zypper", "dpkg", "rpm",
-    "snap", "flatpak",
-    "gem", "bundle", "bundler",
-    "nvm", "rbenv", "pyenv", "asdf", "volta",
-];
-
 fn engine_package_and_vcs(ctx: &EngineContext) -> Triage {
-    if PKG_AND_VCS.contains(&ctx.basename) {
-        Triage::Benign
-    } else {
-        Triage::Unknown
+    match taxonomy::get().lookup(ctx.basename) {
+        Some((Category::Package, _)) => Triage::Benign,
+        _ => Triage::Unknown,
     }
 }
 
@@ -202,21 +149,8 @@ fn engine_package_and_vcs(ctx: &EngineContext) -> Triage {
 // Engine 5: FileOperations
 // ---------------------------------------------------------------------------
 
-const FILE_OPS: &[&str] = &[
-    "cat", "head", "tail", "less", "more",
-    "cp", "mv", "rm", "ln",
-    "mkdir", "rmdir", "touch",
-    "chmod", "chown", "chgrp",
-    "stat", "file", "du", "df",
-    "find", "locate", "mlocate",
-    "mktemp", "tee",
-    "tar", "zip", "unzip", "gzip", "gunzip",
-    "bzip2", "xz", "ditto",
-    "rsync", "dd",
-];
-
 fn engine_file_operations(ctx: &EngineContext) -> Triage {
-    if !FILE_OPS.contains(&ctx.basename) {
+    if !matches!(taxonomy::get().lookup(ctx.basename), Some((Category::FileOperation, _))) {
         return Triage::Unknown;
     }
 
@@ -285,14 +219,6 @@ fn extract_file_paths<'a>(basename: &str, argv: &'a [&'a str]) -> Vec<&'a str> {
 // Engine 6: NetworkAndShell
 // ---------------------------------------------------------------------------
 
-/// Credential database filenames that indicate browser/keychain theft.
-const CREDENTIAL_DBS: &[&str] = &[
-    "Login Data",
-    "cookies.sqlite",
-    "logins.json",
-    "keychain",
-];
-
 fn engine_network_and_shell(ctx: &EngineContext) -> Triage {
     // Only inspect commands the policy considers noteworthy
     let is_noteworthy = ctx
@@ -349,10 +275,11 @@ fn engine_network_and_shell(ctx: &EngineContext) -> Triage {
 
     // Credential database access via sqlite3
     if ctx.basename == "sqlite3" {
+        let cred_dbs = &taxonomy::get().files.credential_dbs;
         for arg in args {
             if !arg.starts_with('-') {
-                for db in CREDENTIAL_DBS {
-                    if arg.contains(db) {
+                for db in cred_dbs {
+                    if arg.contains(db.as_str()) {
                         return Triage::Suspicious {
                             reason: format!("sqlite3 accessing credential database: {}", arg),
                             rule_id: "credential_db",

@@ -8,6 +8,8 @@ use crate::yaml::{self, YamlValue};
 pub struct PolicyFile {
     pub version: u32,
     pub sections: HashMap<String, SectionValue>,
+    /// Names of policies to inherit sections from (e.g. `includes: [base]`).
+    pub includes: Vec<String>,
 }
 
 /// Value of a policy section - can be different formats.
@@ -69,10 +71,13 @@ pub fn parse_policy(yaml_str: &str) -> Result<PolicyFile> {
 
     let mut version: Option<u32> = None;
     let mut sections = HashMap::new();
+    let mut includes: Vec<String> = Vec::new();
 
     for (key, value) in pairs {
         if key == "version" {
             version = Some(value_to_u32(&value)?);
+        } else if key == "includes" {
+            includes = value_to_string_list(&value, "includes")?;
         } else {
             let section = value_to_section_value(&value, &key)?;
             sections.insert(key, section);
@@ -88,7 +93,11 @@ pub fn parse_policy(yaml_str: &str) -> Result<PolicyFile> {
         return Err(PolicyError::Validation(ValidationError::MissingVersion));
     }
 
-    Ok(PolicyFile { version, sections })
+    Ok(PolicyFile {
+        version,
+        sections,
+        includes,
+    })
 }
 
 /// Convert a YamlValue to u32.

@@ -471,6 +471,124 @@ pub fn compile_policy_yaml(yaml: &str) -> Result<CompiledPolicy> {
     compile_policy(&parsed)
 }
 
+/// Parse and compile a YAML policy string, resolving `includes:` directives.
+///
+/// The `resolver` function maps include names (e.g. "base") to YAML strings.
+/// Returns `UnknownInclude` if any included name is not resolved.
+pub fn compile_policy_yaml_with_includes(
+    yaml: &str,
+    resolver: &dyn Fn(&str) -> Option<String>,
+) -> Result<CompiledPolicy> {
+    use crate::parser::parse_policy;
+    use crate::validate::validate_policy;
+
+    let mut parsed = parse_policy(yaml)?;
+    resolve_includes(&mut parsed, resolver)?;
+    validate_policy(&parsed)?;
+    compile_policy(&parsed)
+}
+
+/// Resolve `includes:` directives by merging sections from included policies.
+///
+/// For each included policy name:
+/// 1. Load and parse via the resolver function.
+/// 2. Recursively resolve its own includes.
+/// 3. Merge its sections into the child: sections absent in the child are copied;
+///    sections present in both get the included rules appended after the child's
+///    (child rules listed first = higher priority via specificity).
+pub fn resolve_includes(
+    policy: &mut PolicyFile,
+    resolver: &dyn Fn(&str) -> Option<String>,
+) -> Result<()> {
+    if policy.includes.is_empty() {
+        return Ok(());
+    }
+
+    let include_names = std::mem::take(&mut policy.includes);
+
+    for name in &include_names {
+        let included_yaml = resolver(name).ok_or_else(|| {
+            PolicyError::Validation(crate::error::ValidationError::UnknownInclude(
+                name.clone(),
+            ))
+        })?;
+        let mut included = crate::parser::parse_policy(&included_yaml)?;
+
+        // Recursively resolve the included policy's own includes
+        resolve_includes(&mut included, resolver)?;
+
+        // Merge: for each section in the included policy
+        for (section_name, included_value) in included.sections {
+            match policy.sections.entry(section_name) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // Child doesn't have this section — copy from included
+                    e.insert(included_value);
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    // Child has this section — append included rules after child's
+                    merge_section_values(e.get_mut(), included_value);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Merge an included section's values into an existing child section.
+///
+/// Child rules come first (higher priority via specificity); included rules
+/// are appended after, but only if their pattern doesn't already exist in the
+/// child at any disposition. This prevents a base deny from overriding a child
+/// warn for the same pattern.
+///
+/// Only AllowDeny sections are merged field-by-field; for other section types
+/// the child's value takes precedence entirely.
+fn merge_section_values(child: &mut SectionValue, included: SectionValue) {
+    match (child, included) {
+        (SectionValue::AllowDeny(child_ad), SectionValue::AllowDeny(included_ad)) => {
+            // Collect all patterns the child defines at any disposition.
+            let child_patterns: std::collections::HashSet<String> = child_ad
+                .allow
+                .iter()
+                .chain(child_ad.deny.iter())
+                .chain(child_ad.warn.iter())
+                .chain(child_ad.log.iter())
+                .chain(child_ad.review.iter())
+                .chain(child_ad.noop.iter())
+                .map(|r| rule_pattern(r).to_string())
+                .collect();
+
+            let not_in_child =
+                |r: &Rule| !child_patterns.contains(rule_pattern(r));
+
+            child_ad
+                .allow
+                .extend(included_ad.allow.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .deny
+                .extend(included_ad.deny.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .warn
+                .extend(included_ad.warn.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .log
+                .extend(included_ad.log.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .review
+                .extend(included_ad.review.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .noop
+                .extend(included_ad.noop.into_iter().filter(|r| not_in_child(r)));
+            if child_ad.protocols.is_empty() && !included_ad.protocols.is_empty() {
+                child_ad.protocols = included_ad.protocols;
+            }
+        }
+        // For List/RuleList, child takes precedence entirely
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,6 +11,7 @@ mod policy_bridge;
 mod shell_format;
 mod spawn;
 mod symbol_resolver;
+mod taxonomy;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;

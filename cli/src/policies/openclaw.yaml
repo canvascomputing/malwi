@@ -1,7 +1,11 @@
 version: 1
+includes: [base]
 
 # Auto-policy for openclaw (multi-channel AI gateway)
 # Customise: ~/.config/malwi/policies/openclaw.yaml
+#
+# Inherits from base: files, symbols, network deny/warn.
+# Custom envvars section (openclaw needs API tokens — warn instead of deny).
 
 nodejs:
   allow:
@@ -81,31 +85,6 @@ commands:
     - xclip
     # Persistence mechanisms
     - crontab
-    # Linux scripting interpreters — arbitrary code bypassing traced process
-    - gjs          # GNOME JavaScript: D-Bus, file, network via GLib/Gio
-    - dbus-send    # D-Bus: invoke polkit, systemd, NetworkManager
-    - gdbus        # GLib D-Bus tool
-    - busctl       # systemd D-Bus introspection/invocation
-    # Linux data exfiltration
-    - xdg-open     # opens URLs in browser bypassing network hooks
-    # Linux credential readers
-    - secret-tool  # GNOME Keyring: secret-tool lookup service github
-    # Process memory/injection
-    - strace       # trace syscalls of other processes
-    - gdb          # attach to process, dump memory
-    # Linux privilege escalation
-    - pkexec       # PolicyKit escalation (CVE-2021-4034)
-    # Linux security bypass — catastrophic
-    - setenforce   # disable SELinux
-    - aa-disable   # disable AppArmor
-    - debugfs      # raw filesystem access, bypasses ALL permissions
-    - nsenter      # container escape
-    # Kernel manipulation
-    - insmod       # load kernel module (rootkit)
-    - modprobe     # load kernel module by name
-    - rmmod        # remove kernel module (disable MAC)
-    - kexec        # load new kernel, bypass all controls
-    - setcap       # set file capabilities
   warn:
     # openclaw uses PTY shells and shell-env; warn for visibility
     - sh
@@ -116,6 +95,8 @@ commands:
     - su
     - doas
 
+# Multi-service gateway — allow AI APIs, messaging platforms, local dev.
+# Base provides cloud metadata deny + anonymity domain warnings.
 network:
   allow:
     - "openclaw.ai/**"
@@ -124,8 +105,10 @@ network:
     - "*.npmjs.org/**"
     - "github.com/**"
     - "*.githubusercontent.com/**"
+    # AI provider APIs
     - "api.anthropic.com/**"
     - "api.openai.com/**"
+    # Messaging platforms
     - "slack.com/**"
     - "*.slack.com/**"
     - "api.telegram.org/**"
@@ -133,35 +116,13 @@ network:
     - "*.discord.com/**"
     - "gateway.discord.gg/**"
     - "graph.facebook.com/**"
+    # Local dev
     - "127.0.0.1:*/**"
     - "localhost:*/**"
-  deny:
-    - "169.254.169.254/**"
-    - "metadata.google.internal/**"
-  warn: ["*.onion", "*.i2p", "*.bit", "*.loki"]
   protocols: [https, http, wss, ws]
 
-files:
-  deny:
-    - "~/.ssh/**"
-    - "*/.ssh/**"
-    - "~/.aws/**"
-    - "*/.aws/**"
-    - "~/.config/gcloud/**"
-    - "~/.azure/**"
-    - "~/.gnupg/**"
-    - "~/.config/gh/**"
-    - "*/.kube/config"
-    - "*.pem"
-    - "*.key"
-    - "*id_rsa*"
-    - "*id_ed25519*"
-    # Linux credential stores
-    - "~/.local/share/keyrings/**"     # GNOME Keyring files
-    - "~/.local/share/kwalletd/**"     # KDE Wallet files
-    # System-level preload (rootkit vector)
-    - "/etc/ld.so.preload"             # system-wide LD_PRELOAD
-
+# Openclaw-specific envvar overrides: API tokens are needed, warn instead of deny.
+# This overrides base's deny for *TOKEN*/*API_KEY* — child disposition takes priority.
 envvars:
   deny:
     - "*SECRET*"
@@ -174,6 +135,7 @@ envvars:
     - DYLD_INSERT_LIBRARIES
     - LD_PRELOAD
   warn:
+    # These are in base's deny, but openclaw needs them — warn instead
     - "*TOKEN*"
     - "*API_KEY*"
     - "OPENAI_*"
@@ -181,20 +143,3 @@ envvars:
     - "CLAUDE_*"
     - "OPENCLAW_*"
     - HF_TOKEN
-
-# Block credential-interception, filesystem bypass, and raw networking functions.
-symbols:
-  deny:
-    # Credential interception
-    - getpass
-    - crypt
-    # Symlink/hardlink creation (bypass file path patterns)
-    - symlink
-    - link
-    # Direct syscall wrapper
-    - syscall
-    # Raw networking
-    - connect
-    - socket
-    - sendto
-    - bind

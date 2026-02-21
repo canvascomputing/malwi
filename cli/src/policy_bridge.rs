@@ -11,6 +11,11 @@ use malwi_protocol::{HookConfig, HookType, NetworkInfo, TraceEvent};
 #[cfg(test)]
 use crate::default_policy::DEFAULT_SECURITY_YAML;
 
+/// Resolve an `includes:` name to a YAML string using the embedded policy templates.
+fn include_resolver(name: &str) -> Option<String> {
+    crate::auto_policy::embedded_policy(name)
+}
+
 /// Active policy loaded and ready for evaluation.
 pub struct ActivePolicy {
     engine: PolicyEngine,
@@ -104,11 +109,11 @@ impl CachedDisposition {
 }
 
 impl ActivePolicy {
-    /// Load a policy from a YAML file.
+    /// Load a policy from a YAML file, resolving `includes:` directives.
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let yaml = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Failed to read policy file '{}': {}", path, e))?;
-        let engine = PolicyEngine::from_yaml(&yaml)
+        let engine = PolicyEngine::from_yaml_with_includes(&yaml, &include_resolver)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy file '{}': {}", path, e))?;
         Ok(Self {
             engine,
@@ -116,9 +121,9 @@ impl ActivePolicy {
         })
     }
 
-    /// Load a policy from a YAML string.
+    /// Load a policy from a YAML string, resolving `includes:` directives.
     pub fn from_yaml(yaml: &str) -> anyhow::Result<Self> {
-        let engine = PolicyEngine::from_yaml(yaml)
+        let engine = PolicyEngine::from_yaml_with_includes(yaml, &include_resolver)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy YAML: {}", e))?;
         Ok(Self {
             engine,

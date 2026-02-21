@@ -1,33 +1,35 @@
 version: 1
+includes: [base]
 
 # Auto-policy for ComfyUI (AI image generation)
 # Customise: ~/.config/malwi/policies/comfyui.yaml
 #
 # Threat model: malicious custom node running arbitrary Python via importlib.
 # exec/compile/eval cannot be denied — Python's import system uses them.
+# Inherits from base: files, envvars, symbols, network deny/warn.
 
 python:
   deny:
-    # shell command execution
+    # Shell command execution
     - os.system
     - os.popen
-    # credential theft
+    # Credential theft
     - getpass.getpass
     - keyring.get_password
     - keyring.set_password
-    # native code escape hatch — blocks loading libc/C libraries
+    # Native code escape hatch — blocks loading libc/C libraries
     # to prevent raw socket exfiltration that bypasses network rules
     - ctypes.CDLL
     - ctypes.cdll.LoadLibrary
     - ctypes.WinDLL
-    # exfiltration via allowed HTTP hosts — argument-constrained denies
+    # Exfiltration via allowed HTTP hosts — argument-constrained denies
     - "requests.post": ["*api.github.com*"]
     - "requests.put": ["*api.github.com*"]
     - "requests.post": ["*upload.pypi.org*"]
     - "httpx.post": ["*api.github.com*"]
     - "aiohttp.ClientSession._request": ["*api.github.com*"]
   warn:
-    # subprocess use — not blocked (ComfyUI uses it for GPU detection),
+    # Subprocess use — not blocked (ComfyUI uses it for GPU detection),
     # but worth noticing if a custom node spawns processes
     - subprocess.run
     - subprocess.call
@@ -38,7 +40,7 @@ python:
 # Read-only git + package management. Block write operations and dangerous tools.
 commands:
   allow:
-    # custom node repos — read-only
+    # Custom node repos — read-only operations
     - "git clone *"
     - "git pull *"
     - "git fetch *"
@@ -48,65 +50,41 @@ commands:
     - "git rev-parse *"
     - "git log *"
     - "git diff *"
-    # custom node dependencies
+    # Custom node dependencies
     - "pip install *"
     - "pip3 install *"
     - "python -m pip *"
     - "python3 -m pip *"
   deny:
-    # git write operations — exfiltration channel
+    # Git write operations — exfiltration channel
     - "git push *"
     - "git remote add *"
     - "git remote set-url *"
-    # data exfiltration tools
+    # Data exfiltration tools
     - curl
     - wget
-    # remote access
+    # Remote access
     - ssh
     - nc
     - ncat
-    # privilege escalation
+    # Privilege escalation
     - "*sudo*"
-    # shell spawning
+    # Shell spawning — prevent arbitrary command execution
     - sh
     - bash
     - perl
     - ruby
-    # Linux scripting interpreters — arbitrary code bypassing traced process
-    - gjs          # GNOME JavaScript: D-Bus, file, network via GLib/Gio
-    - dbus-send    # D-Bus: invoke polkit, systemd, read GNOME Keyring
-    - gdbus        # GLib D-Bus tool
-    - busctl       # systemd D-Bus introspection/invocation
-    # Linux data exfiltration
-    - xdg-open     # opens URLs in browser bypassing network hooks
-    # Linux credential readers
-    - secret-tool  # GNOME Keyring: secret-tool lookup service github
-    # Process memory/injection
-    - strace       # trace syscalls of other processes
-    - gdb          # attach to process, dump memory
-    # Linux privilege escalation
-    - pkexec       # PolicyKit escalation (CVE-2021-4034)
-    # Linux security bypass — catastrophic
-    - setenforce   # disable SELinux
-    - aa-disable   # disable AppArmor
-    - debugfs      # raw filesystem access, bypasses ALL permissions
-    - nsenter      # container escape
-    # Kernel manipulation
-    - insmod       # load kernel module (rootkit)
-    - modprobe     # load kernel module by name
-    - rmmod        # remove kernel module (disable MAC)
-    - kexec        # load new kernel, bypass all controls
-    - setcap       # set file capabilities
 
 # Restrict outbound HTTP to known model hosting and package registries.
+# Base provides cloud metadata deny + anonymity domain warnings.
 network:
   allow:
-    # model downloads
+    # Model downloads
     - "huggingface.co/**"
     - "*.huggingface.co/**"
     - "civitai.com/**"
     - "*.civitai.com/**"
-    # custom nodes and raw content (NOT *.github.com — blocks api.github.com)
+    # Custom nodes and raw content (NOT *.github.com — blocks api.github.com)
     - "github.com/**"
     - "*.githubusercontent.com/**"
     # pip packages — download only (not upload.pypi.org)
@@ -117,69 +95,4 @@ network:
     # ComfyUI web UI (any port — kept broad for compatibility)
     - "127.0.0.1:*/**"
     - "localhost:*/**"
-  deny:
-    - "169.254.169.254/**"
-    - "metadata.google.internal/**"
-  warn:
-    - "*.onion"
-    - "*.i2p"
-    - "*.bit"
-    - "*.loki"
   protocols: [https, http, wss, ws]
-
-# Protect sensitive files from exfiltration.
-files:
-  deny:
-    - "~/.ssh/**"
-    - "*/.ssh/**"
-    - "~/.aws/**"
-    - "*/.aws/**"
-    - "~/.config/gcloud/**"
-    - "~/.azure/**"
-    - "~/.gnupg/**"
-    - "~/.config/gh/**"
-    - "*/.kube/config"
-    - "*.pem"
-    - "*.key"
-    - "*id_rsa*"
-    - "*id_ed25519*"
-    # Linux credential stores
-    - "~/.local/share/keyrings/**"     # GNOME Keyring files
-    - "~/.local/share/kwalletd/**"     # KDE Wallet files
-    # System-level preload (rootkit vector)
-    - "/etc/ld.so.preload"             # system-wide LD_PRELOAD
-
-# Protect sensitive environment variables.
-envvars:
-  deny:
-    - "*SECRET*"
-    - "*TOKEN*"
-    - "*PASSWORD*"
-    - "*API_KEY*"
-    - "*PRIVATE_KEY*"
-    - "AWS_*"
-    - "GITHUB_*"
-    - "GCP_*"
-    - "AZURE_*"
-    - "OPENAI_*"
-    - "ANTHROPIC_*"
-    - HF_TOKEN
-    - DYLD_INSERT_LIBRARIES
-    - LD_PRELOAD
-
-# Block credential-interception, filesystem bypass, and raw networking functions.
-symbols:
-  deny:
-    # Credential interception
-    - getpass
-    - crypt
-    # Symlink/hardlink creation (bypass file path patterns)
-    - symlink
-    - link
-    # Direct syscall wrapper
-    - syscall
-    # Raw networking
-    - connect
-    - socket
-    - sendto
-    - bind

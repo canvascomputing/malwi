@@ -70,6 +70,18 @@ impl PolicyEngine {
         Ok(Self::new(policy))
     }
 
+    /// Create a new policy engine from YAML, resolving `includes:` directives.
+    ///
+    /// The `resolver` maps include names (e.g. "base") to YAML strings.
+    pub fn from_yaml_with_includes(
+        yaml: &str,
+        resolver: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self> {
+        let policy =
+            crate::compiler::compile_policy_yaml_with_includes(yaml, resolver)?;
+        Ok(Self::new(policy))
+    }
+
     /// Get the underlying policy.
     pub fn policy(&self) -> &CompiledPolicy {
         &self.policy

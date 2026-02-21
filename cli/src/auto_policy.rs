@@ -435,7 +435,7 @@ mod tests {
 
     fn comfyui_engine() -> PolicyEngine {
         let yaml = embedded_policy("comfyui").expect("comfyui policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("comfyui policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("comfyui policy must parse")
     }
 
     #[test]
@@ -766,7 +766,7 @@ mod tests {
 
     fn bash_install_engine() -> PolicyEngine {
         let yaml = embedded_policy("bash-install").expect("bash-install policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("bash-install policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("bash-install policy must parse")
     }
 
     #[test]
@@ -1115,7 +1115,7 @@ mod tests {
 
     fn npm_install_engine() -> PolicyEngine {
         let yaml = embedded_policy("npm-install").expect("npm-install policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("npm-install policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("npm-install policy must parse")
     }
 
     #[test]
@@ -1224,7 +1224,7 @@ mod tests {
 
     fn pip_install_engine() -> PolicyEngine {
         let yaml = embedded_policy("pip-install").expect("pip-install policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("pip-install policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("pip-install policy must parse")
     }
 
     #[test]
@@ -1390,7 +1390,7 @@ mod tests {
     #[test]
     fn test_base_policy_parses() {
         let yaml = embedded_policy("base").expect("base policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("base policy must parse");
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("base policy must parse");
     }
 
     // =====================================================================
@@ -1399,7 +1399,7 @@ mod tests {
 
     fn air_gap_engine() -> PolicyEngine {
         let yaml = embedded_policy("air-gap").expect("air-gap policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("air-gap policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("air-gap policy must parse")
     }
 
     #[test]
@@ -1633,7 +1633,7 @@ mod tests {
 
     fn openclaw_engine() -> PolicyEngine {
         let yaml = embedded_policy("openclaw").expect("openclaw policy must exist");
-        PolicyEngine::from_yaml(&yaml).expect("openclaw policy must parse")
+        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name)).expect("openclaw policy must parse")
     }
 
     #[test]

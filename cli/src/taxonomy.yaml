@@ -1,0 +1,451 @@
+# Command taxonomy — single source of truth for command classification.
+# Categories determine triage engine routing; traits describe capabilities.
+#
+# Categories:
+#   safe           — Always benign, no side effects (Engine 1)
+#   build          — Build/compile toolchain (Engine 2)
+#   text           — Text transforms (Engine 3)
+#   package        — Package managers, version control (Engine 4)
+#   file_operation — File I/O — check args for sensitive targets (Engine 5)
+#   threat         — Noteworthy — check specific signals (Engine 6)
+#
+# Traits (one or more per command):
+#   read_only          No side effects (ls, whoami, date)
+#   side_effects       Modifies filesystem state (cp, mv, rm, chmod)
+#   network            Makes network connections (curl, wget, ssh)
+#   code_execution     Runs arbitrary code (python, perl, osascript)
+#   privilege_esc      Gains elevated privileges (sudo, pkexec)
+#   persistence        Survives reboot (crontab, launchctl, systemctl)
+#   credential_access  Reads secrets (sqlite3, security, keyctl, pass)
+#   process_control    Manages processes (kill, strace, gdb)
+#   encoding           Encodes/decodes data (base64, xxd)
+#   security_bypass    Disables protections (setenforce, xattr, spctl)
+#   kernel_access      Kernel manipulation (insmod, modprobe, kexec)
+#   container_escape   Escapes isolation (nsenter, unshare, chroot, mount)
+#   reconnaissance     Discovers targets (locate, mdfind, getcap)
+#   exfiltration       Leaks data out of process (open, xdg-open, pbcopy)
+
+commands:
+  shared:
+    safe:
+      - echo            # read_only
+      - printf          # read_only
+      - test            # read_only
+      - "["             # read_only
+      - "true"          # read_only
+      - "false"         # read_only
+      - pwd             # read_only
+      - cd              # read_only
+      - ls              # read_only
+      - dir             # read_only
+      - date            # read_only
+      - whoami          # read_only
+      - hostname        # read_only
+      - id              # read_only
+      - uname           # read_only
+      - arch            # read_only
+      - env             # read_only
+      - printenv        # read_only
+      - which           # read_only
+      - command         # read_only
+      - type            # read_only
+      - getconf         # read_only
+      - locale          # read_only
+      - basename        # read_only
+      - dirname         # read_only
+      - realpath        # read_only
+      - readlink        # read_only
+      - sleep           # read_only
+      - yes             # read_only
+      - tput            # read_only
+      - stty            # read_only
+      - clear           # read_only
+      - reset           # read_only
+      - sha256sum       # read_only
+      - sha1sum         # read_only
+      - md5sum          # read_only
+      - shasum          # read_only
+      - cksum           # read_only
+      - b2sum           # read_only
+      - gpg             # read_only
+      - gpgv            # read_only
+
+    build:
+      - make            # side_effects
+      - cmake           # side_effects
+      - gcc             # side_effects
+      - g++             # side_effects
+      - cc              # side_effects
+      - c++             # side_effects
+      - clang           # side_effects
+      - clang++         # side_effects
+      - cpp             # side_effects
+      - ar              # side_effects
+      - ld              # side_effects
+      - nm              # read_only
+      - strip           # side_effects
+      - ranlib          # side_effects
+      - objcopy         # side_effects
+      - objdump         # read_only
+      - pkg-config      # read_only
+      - autoconf        # side_effects
+      - automake        # side_effects
+      - libtool         # side_effects
+      - rustc           # side_effects
+      - rustup          # side_effects
+      - rustfmt         # side_effects
+      - clippy-driver   # read_only
+      - go              # side_effects
+      - configure       # side_effects
+      - install         # side_effects
+
+    text:
+      - grep            # read_only
+      - egrep           # read_only
+      - fgrep           # read_only
+      - rg              # read_only
+      - sed             # side_effects
+      - awk             # side_effects
+      - gawk            # side_effects
+      - mawk            # side_effects
+      - sort            # read_only
+      - uniq            # read_only
+      - cut             # read_only
+      - tr              # read_only
+      - wc              # read_only
+      - comm            # read_only
+      - diff            # read_only
+      - patch           # side_effects
+      - fmt             # read_only
+      - column          # read_only
+      - fold            # read_only
+      - expand          # read_only
+      - unexpand        # read_only
+      - nl              # read_only
+      - rev             # read_only
+      - tac             # read_only
+      - paste           # read_only
+      - join            # read_only
+      - strings         # read_only
+      - od              # read_only
+      - hexdump         # read_only
+      - jq              # read_only
+      - yq              # read_only
+      - xmllint         # read_only
+      - xsltproc        # side_effects
+
+    package:
+      - git             # network, side_effects
+      - svn             # network, side_effects
+      - hg              # network, side_effects
+      - npm             # network, code_execution
+      - npx             # network, code_execution
+      - yarn            # network, code_execution
+      - pnpm            # network, code_execution
+      - bun             # network, code_execution
+      - corepack        # side_effects
+      - pip             # network, code_execution
+      - pip3            # network, code_execution
+      - cargo           # network, side_effects
+      - gem             # network, code_execution
+      - bundle          # network, code_execution
+      - bundler         # network, code_execution
+      - nvm             # side_effects
+      - rbenv           # side_effects
+      - pyenv           # side_effects
+      - asdf            # side_effects
+      - volta           # side_effects
+
+    file_operation:
+      - cat             # read_only
+      - head            # read_only
+      - tail            # read_only
+      - less            # read_only
+      - more            # read_only
+      - cp              # side_effects
+      - mv              # side_effects
+      - rm              # side_effects
+      - ln              # side_effects
+      - mkdir           # side_effects
+      - rmdir           # side_effects
+      - touch           # side_effects
+      - chmod           # side_effects
+      - chown           # side_effects
+      - chgrp           # side_effects
+      - stat            # read_only
+      - file            # read_only
+      - du              # read_only
+      - df              # read_only
+      - find            # read_only
+      - mktemp          # side_effects
+      - tee             # side_effects
+      - dd              # side_effects
+      - tar             # side_effects
+      - unzip           # side_effects
+      - gzip            # side_effects
+      - gunzip          # side_effects
+      - bzip2           # side_effects
+      - xz              # side_effects
+
+    threat:
+      - curl            # network
+      - wget            # network
+      - nc              # network
+      - ncat            # network
+      - netcat          # network
+      - socat           # network
+      - telnet          # network
+      - ssh             # network
+      - scp             # network
+      - sftp            # network
+      - ftp             # network
+      - aria2c          # network
+      - nmap            # network, reconnaissance
+      - dig             # network, reconnaissance
+      - nslookup        # network, reconnaissance
+      - host            # network, reconnaissance
+      - python          # code_execution
+      - python3         # code_execution
+      - perl            # code_execution
+      - ruby            # code_execution
+      - node            # code_execution
+      - java            # code_execution
+      - sh              # code_execution
+      - bash            # code_execution
+      - zsh             # code_execution
+      - docker          # code_execution, network
+      - sudo            # privilege_esc
+      - su              # privilege_esc
+      - doas            # privilege_esc
+      - newgrp          # privilege_esc
+      - crontab         # persistence
+      - at              # persistence
+      - sqlite3         # credential_access
+      - base64          # encoding
+      - xxd             # encoding
+      - kill            # process_control
+      - pkill           # process_control
+      - killall         # process_control
+      - gdb             # process_control
+      - gcore           # process_control
+      - zip             # side_effects, exfiltration
+      - rsync           # network, side_effects
+      - openssl         # network, encoding
+      - eval            # code_execution
+
+  macos:
+    safe:
+      - sw_vers         # read_only
+      - sysctl          # read_only
+      - scutil          # read_only
+
+    package:
+      - brew            # network, side_effects
+
+    threat:
+      - osascript       # code_execution, exfiltration
+      - swift           # code_execution
+      - launchctl       # persistence
+      - security        # credential_access
+      - plutil          # credential_access
+      - defaults        # credential_access
+      - open            # exfiltration
+      - pbcopy          # exfiltration
+      - pbpaste         # exfiltration
+      - ditto           # side_effects, exfiltration
+      - hdiutil         # side_effects
+      - xattr           # security_bypass
+      - codesign        # security_bypass
+      - spctl           # security_bypass
+      - mdfind          # reconnaissance
+      - mdls            # reconnaissance
+
+  linux:
+    safe:
+      - lsb_release     # read_only
+      - dpkg-architecture  # read_only
+      - lsof            # read_only
+
+    package:
+      - apt             # network, side_effects
+      - apt-get         # network, side_effects
+      - yum             # network, side_effects
+      - dnf             # network, side_effects
+      - pacman          # network, side_effects
+      - apk             # network, side_effects
+      - zypper          # network, side_effects
+      - dpkg            # side_effects
+      - rpm             # side_effects
+      - snap            # network, side_effects
+      - flatpak         # network, side_effects
+
+    threat:
+      - systemctl       # persistence
+      - pkexec          # privilege_esc
+      - gjs             # code_execution
+      - dbus-send       # code_execution
+      - gdbus           # code_execution, credential_access
+      - busctl          # code_execution
+      - secret-tool     # credential_access
+      - kwallet-query   # credential_access
+      - kwalletcli      # credential_access
+      - keyctl          # credential_access
+      - pass            # credential_access
+      - strace          # process_control
+      - ltrace          # process_control
+      - xdg-open        # exfiltration
+      - xclip           # exfiltration
+      - xsel            # exfiltration
+      - wl-copy         # exfiltration
+      - wl-paste        # exfiltration
+      - setenforce      # security_bypass
+      - aa-disable      # security_bypass
+      - apparmor_parser # security_bypass
+      - chattr          # security_bypass
+      - setcap          # security_bypass
+      - getcap          # reconnaissance
+      - insmod          # kernel_access
+      - modprobe        # kernel_access
+      - rmmod           # kernel_access
+      - kexec           # kernel_access
+      - nsenter         # container_escape
+      - unshare         # container_escape
+      - chroot          # container_escape
+      - mount           # container_escape
+      - debugfs         # container_escape, security_bypass
+      - locate          # reconnaissance
+      - mlocate         # reconnaissance
+      - plocate         # reconnaissance
+      - ip              # network, reconnaissance
+      - ifconfig        # network, reconnaissance
+      - iptables        # network, security_bypass
+      - nft             # network, security_bypass
+      - route           # network, reconnaissance
+      - ping            # network, reconnaissance
+      - ping6           # network, reconnaissance
+      - traceroute      # network, reconnaissance
+      - tracepath       # network, reconnaissance
+
+files:
+  shared:
+    credentials:
+      - "~/.ssh/**"
+      - "*/.ssh/**"
+      - "~/.aws/**"
+      - "*/.aws/**"
+      - "~/.config/gcloud/**"
+      - "~/.azure/**"
+      - "~/.gnupg/**"
+      - "~/.config/gh/**"
+      - "*/.kube/config"
+      - "*.pem"
+      - "*.key"
+      - "*id_rsa*"
+      - "*id_ed25519*"
+
+    credential_dbs:
+      - "Login Data"
+      - "cookies.sqlite"
+      - "logins.json"
+      - "keychain"
+
+    shell_profiles:
+      - "~/.bashrc"
+      - "~/.bash_profile"
+      - "~/.zshrc"
+      - "~/.zprofile"
+      - "~/.profile"
+      - "~/.login"
+
+    git_hooks:
+      - ".git/hooks/*"
+      - "*/.git/hooks/*"
+
+    browser:
+      - "*/Google/Chrome/**"
+      - "*/Firefox/**"
+
+    system:
+      - "/etc/passwd"
+      - "/etc/shadow"
+
+  macos:
+    persistence:
+      - "~/Library/LaunchAgents/*"
+      - "~/Library/LaunchDaemons/*"
+      - "/etc/cron*"
+    browser:
+      - "*/Safari/**"
+
+  linux:
+    persistence:
+      - "/etc/systemd/**"
+      - "~/.config/autostart/**"
+      - "~/.config/systemd/user/**"
+      - "/etc/udev/rules.d/**"
+      - "/etc/init.d/**"
+      - "/var/spool/cron/**"
+      - "/etc/cron*"
+      - "/etc/ld.so.preload"
+      - "/etc/ld.so.conf"
+      - "/etc/ld.so.conf.d/**"
+    keyrings:
+      - "~/.local/share/keyrings/**"
+      - "~/.local/share/kwalletd/**"
+    proc:
+      - "/dev/shm/*"
+      - "/proc/*/environ"
+      - "/proc/*/maps"
+      - "/proc/*/mem"
+
+envvars:
+  shared:
+    sensitive:
+      - "*SECRET*"
+      - "*TOKEN*"
+      - "*PASSWORD*"
+      - "*API_KEY*"
+      - "*PRIVATE_KEY*"
+      - "AWS_*"
+      - "GITHUB_*"
+      - "GCP_*"
+      - "AZURE_*"
+      - "OPENAI_*"
+      - "ANTHROPIC_*"
+      - HF_TOKEN
+  macos:
+    anti_tracing:
+      - DYLD_INSERT_LIBRARIES
+  linux:
+    anti_tracing:
+      - LD_PRELOAD
+
+symbols:
+  shared:
+    - getpass
+    - crypt
+    - symlink
+    - link
+    - syscall
+    - socket
+    - connect
+    - sendto
+    - bind
+  air_gap_extra:
+    - send
+    - listen
+    - accept
+    - accept4
+    - getaddrinfo
+    - gethostbyname
+    - gethostbyname2
+
+network:
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn:
+    - "*.onion"
+    - "*.i2p"
+    - "*.bit"
+    - "*.loki"

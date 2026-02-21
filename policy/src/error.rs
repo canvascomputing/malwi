@@ -55,6 +55,7 @@ pub enum ValidationError {
     InvalidProtocol(String),
     InvalidRegex { pattern: String, reason: String },
     InvalidConstraint(String),
+    UnknownInclude(String),
 }
 
 impl fmt::Display for ValidationError {
@@ -77,6 +78,9 @@ impl fmt::Display for ValidationError {
             }
             ValidationError::InvalidConstraint(s) => {
                 write!(f, "invalid constraint format in rule: {}", s)
+            }
+            ValidationError::UnknownInclude(s) => {
+                write!(f, "unknown include: '{}' (not a known policy name)", s)
             }
         }
     }

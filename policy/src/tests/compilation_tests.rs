@@ -292,3 +292,203 @@ python:
     assert!(section.deny_rules[1].pattern.matches("os.path.join"));
     assert!(!section.deny_rules[1].pattern.matches("os_path_join"));
 }
+
+// =====================================================================
+// Includes tests
+// =====================================================================
+
+use crate::compiler::{compile_policy_yaml_with_includes, resolve_includes};
+use crate::parser::parse_policy;
+
+fn test_resolver(name: &str) -> Option<String> {
+    match name {
+        "base" => Some(
+            r#"
+version: 1
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*.pem"
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+symbols:
+  deny:
+    - getpass
+network:
+  deny:
+    - "169.254.169.254/**"
+  warn:
+    - "*.onion"
+"#
+            .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+#[test]
+fn test_includes_basic_inheritance() {
+    let policy = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+includes: [base]
+python:
+  deny:
+    - eval
+"#,
+        &test_resolver,
+    )
+    .unwrap();
+
+    // python section from child
+    let py_key = SectionKey::for_runtime(Runtime::Python, Category::Functions);
+    assert!(policy.get_section(&py_key).is_some());
+
+    // files section inherited from base
+    let files_key = SectionKey::global(Category::Files);
+    let files = policy.get_section(&files_key).unwrap();
+    assert!(files.deny_rules.iter().any(|r| r.pattern.matches("~/.ssh/id_rsa")));
+    assert!(files.deny_rules.iter().any(|r| r.pattern.matches("server.pem")));
+}
+
+#[test]
+fn test_includes_merge_sections() {
+    let policy = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+includes: [base]
+network:
+  allow:
+    - "registry.npmjs.org/**"
+"#,
+        &test_resolver,
+    )
+    .unwrap();
+
+    // Child's allow and base's deny/warn should all be present in the network sections
+    let http_key = SectionKey::global(Category::Http);
+    let http = policy.get_section(&http_key).unwrap();
+    // Child's allow
+    assert!(http.allow_rules.iter().any(|r| r.pattern.matches("registry.npmjs.org/foo")));
+    // Base's deny
+    assert!(http.deny_rules.iter().any(|r| r.pattern.matches("169.254.169.254/latest")));
+}
+
+#[test]
+fn test_includes_child_disposition_takes_priority() {
+    // Child warns about *TOKEN*, base denies it.
+    // With per-pattern dedup, the base's deny should be skipped.
+    let policy = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+includes: [base]
+envvars:
+  warn:
+    - "*TOKEN*"
+  deny:
+    - "*SECRET*"
+"#,
+        &test_resolver,
+    )
+    .unwrap();
+
+    let envvar_key = SectionKey::global(Category::EnvVars);
+    let section = policy.get_section(&envvar_key).unwrap();
+
+    // *SECRET* should be in deny (from child, same as base — no conflict)
+    assert!(section.deny_rules.iter().any(|r| r.pattern.matches("MY_SECRET")));
+
+    // *TOKEN* should be in deny with Warn mode (from child's warn),
+    // NOT in deny with Block mode (base's deny was skipped due to pattern dedup)
+    let token_rules: Vec<_> = section
+        .deny_rules
+        .iter()
+        .filter(|r| r.pattern.matches("MY_TOKEN"))
+        .collect();
+    assert!(!token_rules.is_empty(), "*TOKEN* should match");
+    assert_eq!(
+        token_rules[0].mode,
+        EnforcementMode::Warn,
+        "*TOKEN* should be Warn (from child), not Block (from base)"
+    );
+}
+
+#[test]
+fn test_includes_missing_errors() {
+    let result = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+includes: [nonexistent]
+"#,
+        &test_resolver,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_includes_empty_noop() {
+    let policy = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+python:
+  deny:
+    - eval
+"#,
+        &test_resolver,
+    )
+    .unwrap();
+
+    // No includes: field → should compile fine, no base sections
+    let files_key = SectionKey::global(Category::Files);
+    assert!(policy.get_section(&files_key).is_none());
+}
+
+#[test]
+fn test_resolve_includes_recursive() {
+    fn recursive_resolver(name: &str) -> Option<String> {
+        match name {
+            "level1" => Some(
+                r#"
+version: 1
+includes: [level2]
+python:
+  deny:
+    - eval
+"#
+                .to_string(),
+            ),
+            "level2" => Some(
+                r#"
+version: 1
+files:
+  deny:
+    - "*.key"
+"#
+                .to_string(),
+            ),
+            _ => None,
+        }
+    }
+
+    let policy = compile_policy_yaml_with_includes(
+        r#"
+version: 1
+includes: [level1]
+nodejs:
+  deny:
+    - eval
+"#,
+        &recursive_resolver,
+    )
+    .unwrap();
+
+    // python from level1
+    let py_key = SectionKey::for_runtime(Runtime::Python, Category::Functions);
+    assert!(policy.get_section(&py_key).is_some());
+
+    // files from level2 (transitive)
+    let files_key = SectionKey::global(Category::Files);
+    assert!(policy.get_section(&files_key).is_some());
+}
