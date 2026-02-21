@@ -508,9 +508,7 @@ pub fn resolve_includes(
 
     for name in &include_names {
         let included_yaml = resolver(name).ok_or_else(|| {
-            PolicyError::Validation(crate::error::ValidationError::UnknownInclude(
-                name.clone(),
-            ))
+            PolicyError::Validation(crate::error::ValidationError::UnknownInclude(name.clone()))
         })?;
         let mut included = crate::parser::parse_policy(&included_yaml)?;
 
@@ -559,8 +557,7 @@ fn merge_section_values(child: &mut SectionValue, included: SectionValue) {
                 .map(|r| rule_pattern(r).to_string())
                 .collect();
 
-            let not_in_child =
-                |r: &Rule| !child_patterns.contains(rule_pattern(r));
+            let not_in_child = |r: &Rule| !child_patterns.contains(rule_pattern(r));
 
             child_ad
                 .allow

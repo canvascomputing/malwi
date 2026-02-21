@@ -99,7 +99,7 @@ static TAXONOMY: OnceLock<Taxonomy> = OnceLock::new();
 
 /// Get the parsed taxonomy (lazy-initialized on first call).
 pub fn get() -> &'static Taxonomy {
-    TAXONOMY.get_or_init(|| parse_taxonomy(include_str!("taxonomy.yaml")))
+    TAXONOMY.get_or_init(|| parse_taxonomy(include_str!("presets/taxonomy.yaml")))
 }
 
 // ---------------------------------------------------------------------------
@@ -171,8 +171,7 @@ fn extract_traits(raw: &str) -> HashMap<String, Vec<Trait>> {
 
 fn unquote(s: &str) -> String {
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
         s[1..s.len() - 1].to_string()
     } else {
@@ -532,7 +531,7 @@ mod tests {
     fn no_duplicate_names() {
         // The HashMap naturally deduplicates, but verify no OS command
         // overwrites a shared one with a different category.
-        let raw = include_str!("taxonomy.yaml");
+        let raw = include_str!("presets/taxonomy.yaml");
         let trait_map = extract_traits(raw);
         let root = parse_yaml(raw).unwrap();
         let root_map = as_mapping(&root);
@@ -572,11 +571,7 @@ mod tests {
         let tax = get();
         for (cmd, (cat, traits)) in &tax.commands {
             if *cat == Category::Threat {
-                assert!(
-                    !traits.is_empty(),
-                    "threat command '{}' has no traits",
-                    cmd
-                );
+                assert!(!traits.is_empty(), "threat command '{}' has no traits", cmd);
             }
         }
     }
@@ -612,10 +607,7 @@ mod tests {
     #[test]
     fn network_patterns_present() {
         let tax = get();
-        assert!(tax
-            .network
-            .deny
-            .contains(&"169.254.169.254/**".to_string()));
+        assert!(tax.network.deny.contains(&"169.254.169.254/**".to_string()));
         assert!(tax.network.warn.contains(&"*.onion".to_string()));
     }
 }

@@ -45,7 +45,9 @@ pub use compiled::{
     Category, CompiledPolicy, CompiledRule, CompiledSection, Constraint, ConstraintKind,
     EnforcementMode, Operation, Runtime, SectionKey,
 };
-pub use compiler::{compile_policy, compile_policy_yaml, compile_policy_yaml_with_includes, resolve_includes};
+pub use compiler::{
+    compile_policy, compile_policy_yaml, compile_policy_yaml_with_includes, resolve_includes,
+};
 pub use engine::{
     EvalContext, HookSpecKind, PolicyAction, PolicyDecision, PolicyEngine, PolicyHookSpec,
 };

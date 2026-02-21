@@ -12,8 +12,8 @@
 //! 6. NetworkAndShell — policy-noteworthy commands, suspicious if specific signals detected
 //! 7. DangerousPatterns — cross-command catch-all for universal danger signals
 
-use crate::policy_bridge::normalize_path;
-use crate::taxonomy::{self, Category};
+use super::files::normalize_path;
+use super::taxonomy::{self, Category};
 use malwi_protocol::glob::matches_glob;
 
 /// Result of command analysis when a suspicious pattern is detected.
@@ -150,7 +150,10 @@ fn engine_package_and_vcs(ctx: &EngineContext) -> Triage {
 // ---------------------------------------------------------------------------
 
 fn engine_file_operations(ctx: &EngineContext) -> Triage {
-    if !matches!(taxonomy::get().lookup(ctx.basename), Some((Category::FileOperation, _))) {
+    if !matches!(
+        taxonomy::get().lookup(ctx.basename),
+        Some((Category::FileOperation, _))
+    ) {
         return Triage::Unknown;
     }
 
@@ -194,7 +197,11 @@ fn matches_any_sensitive(path: &str, sensitive_patterns: &[&str]) -> bool {
 
 /// Extract file path arguments from a command's argv.
 fn extract_file_paths<'a>(basename: &str, argv: &'a [&'a str]) -> Vec<&'a str> {
-    let args = if argv.len() > 1 { &argv[1..] } else { return vec![] };
+    let args = if argv.len() > 1 {
+        &argv[1..]
+    } else {
+        return vec![];
+    };
 
     if basename == "dd" {
         let mut paths = Vec::new();
@@ -389,8 +396,8 @@ mod tests {
 
     /// Standard command patterns (subset of the default policy's commands: deny/warn/log).
     const COMMANDS: &[&str] = &[
-        "curl", "wget", "nc", "ncat", "base64", "sqlite3", "bash", "sh", "zsh",
-        "dig", "nslookup", "host", "sudo", "ssh", "kill",
+        "curl", "wget", "nc", "ncat", "base64", "sqlite3", "bash", "sh", "zsh", "dig", "nslookup",
+        "host", "sudo", "ssh", "kill",
     ];
 
     // =================================================================
@@ -446,9 +453,7 @@ mod tests {
 
     #[test]
     fn test_engine3_sort() {
-        assert!(
-            analyze_command("sort", &["sort", "file.txt"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("sort", &["sort", "file.txt"], SENSITIVE, COMMANDS).is_none());
     }
 
     // =================================================================
@@ -457,10 +462,13 @@ mod tests {
 
     #[test]
     fn test_engine4_git() {
-        assert!(
-            analyze_command("git", &["git", "clone", "https://github.com/x/y"], SENSITIVE, COMMANDS)
-                .is_none()
-        );
+        assert!(analyze_command(
+            "git",
+            &["git", "clone", "https://github.com/x/y"],
+            SENSITIVE,
+            COMMANDS
+        )
+        .is_none());
     }
 
     #[test]
@@ -481,16 +489,12 @@ mod tests {
 
     #[test]
     fn test_engine5_cp_safe() {
-        assert!(
-            analyze_command("cp", &["cp", "/tmp/a", "/tmp/b"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("cp", &["cp", "/tmp/a", "/tmp/b"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
     fn test_engine5_cat_readme() {
-        assert!(
-            analyze_command("cat", &["cat", "README.md"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("cat", &["cat", "README.md"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
@@ -502,8 +506,7 @@ mod tests {
 
     #[test]
     fn test_engine5_ln_ssh_suspicious() {
-        let result =
-            analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], SENSITIVE, COMMANDS);
+        let result = analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], SENSITIVE, COMMANDS);
         assert!(result.is_some());
         let analysis = result.unwrap();
         assert_eq!(analysis.rule_id, "sensitive_path");
@@ -536,10 +539,13 @@ mod tests {
 
     #[test]
     fn test_engine5_dd_safe() {
-        assert!(
-            analyze_command("dd", &["dd", "if=/dev/zero", "of=/tmp/out", "bs=1M", "count=1"], SENSITIVE, COMMANDS)
-                .is_none()
-        );
+        assert!(analyze_command(
+            "dd",
+            &["dd", "if=/dev/zero", "of=/tmp/out", "bs=1M", "count=1"],
+            SENSITIVE,
+            COMMANDS
+        )
+        .is_none());
     }
 
     // =================================================================
@@ -548,25 +554,18 @@ mod tests {
 
     #[test]
     fn test_engine6_curl_safe() {
-        assert!(
-            analyze_command(
-                "curl",
-                &["curl", "https://example.com"],
-                SENSITIVE,
-                COMMANDS
-            )
-            .is_none()
-        );
+        assert!(analyze_command(
+            "curl",
+            &["curl", "https://example.com"],
+            SENSITIVE,
+            COMMANDS
+        )
+        .is_none());
     }
 
     #[test]
     fn test_engine6_curl_file_protocol() {
-        let result = analyze_command(
-            "curl",
-            &["curl", "file:///etc/passwd"],
-            SENSITIVE,
-            COMMANDS,
-        );
+        let result = analyze_command("curl", &["curl", "file:///etc/passwd"], SENSITIVE, COMMANDS);
         assert!(result.is_some());
         assert_eq!(result.unwrap().rule_id, "file_protocol");
     }
@@ -592,16 +591,17 @@ mod tests {
 
     #[test]
     fn test_engine6_base64_encode_benign() {
-        assert!(
-            analyze_command("base64", &["base64", "file.txt"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("base64", &["base64", "file.txt"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
     fn test_engine6_sqlite3_credential_db() {
         let result = analyze_command(
             "sqlite3",
-            &["sqlite3", "~/Library/Application Support/Google/Chrome/Default/Login Data"],
+            &[
+                "sqlite3",
+                "~/Library/Application Support/Google/Chrome/Default/Login Data",
+            ],
             SENSITIVE,
             COMMANDS,
         );
@@ -611,10 +611,13 @@ mod tests {
 
     #[test]
     fn test_engine6_sqlite3_safe() {
-        assert!(
-            analyze_command("sqlite3", &["sqlite3", "/tmp/mydb.sqlite"], SENSITIVE, COMMANDS)
-                .is_none()
-        );
+        assert!(analyze_command(
+            "sqlite3",
+            &["sqlite3", "/tmp/mydb.sqlite"],
+            SENSITIVE,
+            COMMANDS
+        )
+        .is_none());
     }
 
     #[test]
@@ -631,9 +634,7 @@ mod tests {
 
     #[test]
     fn test_engine6_bash_safe_script() {
-        assert!(
-            analyze_command("bash", &["bash", "script.sh"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("bash", &["bash", "script.sh"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
@@ -651,9 +652,7 @@ mod tests {
     #[test]
     fn test_engine6_not_noteworthy_skips() {
         // "ping" is not in COMMANDS, so engine 6 returns Unknown, falls through
-        assert!(
-            analyze_command("ping", &["ping", "google.com"], SENSITIVE, COMMANDS).is_none()
-        );
+        assert!(analyze_command("ping", &["ping", "google.com"], SENSITIVE, COMMANDS).is_none());
     }
 
     // =================================================================
@@ -699,10 +698,13 @@ mod tests {
     #[test]
     fn test_engine7_unknown_tool_safe() {
         // No dangerous signals → Unknown from engine 7, overall None
-        assert!(
-            analyze_command("custom_tool", &["custom_tool", "/tmp/ok"], SENSITIVE, COMMANDS)
-                .is_none()
-        );
+        assert!(analyze_command(
+            "custom_tool",
+            &["custom_tool", "/tmp/ok"],
+            SENSITIVE,
+            COMMANDS
+        )
+        .is_none());
     }
 
     // =================================================================
@@ -717,20 +719,13 @@ mod tests {
     #[test]
     fn test_empty_sensitive_patterns() {
         // With no sensitive patterns, file ops are always benign
-        assert!(
-            analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], &[], COMMANDS).is_none()
-        );
+        assert!(analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], &[], COMMANDS).is_none());
     }
 
     #[test]
     fn test_empty_command_patterns() {
         // With no command patterns, engine 6 skips; engine 7 catches file://
-        let result = analyze_command(
-            "curl",
-            &["curl", "file:///etc/passwd"],
-            SENSITIVE,
-            &[],
-        );
+        let result = analyze_command("curl", &["curl", "file:///etc/passwd"], SENSITIVE, &[]);
         // Engine 4/5 don't match curl; engine 6 skips (empty command_patterns);
         // engine 7 catches file:// protocol
         assert!(result.is_some());

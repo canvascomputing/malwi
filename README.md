@@ -22,7 +22,7 @@ pip install --user malwi
 
 ## Demo
 
-A policy controls what `malwi` allows, denies, warns about, or logs. The [default policy](cli/src/policies/default.yaml) warns on credential access, privilege escalation, and suspicious commands:
+A policy controls what `malwi` allows, denies, warns about, or logs. The [default policy](cli/src/policy/presets/default.yaml) warns on credential access, privilege escalation, and suspicious commands:
 
 ```bash
 $ malwi x python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
@@ -76,11 +76,11 @@ symbols:
 
 ## Auto-policies
 
-When `malwi` detects a known command, it automatically applies a tailored [policy](cli/src/policies/). The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
+When `malwi` detects a known command, it automatically applies a tailored [policy](cli/src/policy/presets/). The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
 
 #### <a id="openclaw"></a><img src="images/openclaw.png" alt="OpenClaw" height="20"> [OpenClaw](https://docs.openclaw.ai/)
 
-([policy](cli/src/policies/openclaw.yaml)) An OpenClaw agent connects to many external APIs. This policy guards the agent's own process — a compromised dependency can steal API keys, inject code, or open a reverse shell before any external safeguard sees it. Outbound traffic is limited to known providers; everything else is blocked.
+([policy](cli/src/policy/presets/openclaw.yaml)) An OpenClaw agent connects to many external APIs. This policy guards the agent's own process — a compromised dependency can steal API keys, inject code, or open a reverse shell before any external safeguard sees it. Outbound traffic is limited to known providers; everything else is blocked.
 
 > This policy does not protect against prompt injection or unsafe model outputs — only what the agent code itself does at runtime.
 
@@ -92,7 +92,7 @@ malwi x openclaw.mjs gateway
 
 #### <a id="comfyui"></a><img src="images/comfyui.png" alt="ComfyUI" height="20"> [ComfyUI](https://docs.comfy.org/)
 
-([policy](cli/src/policies/comfyui.yaml)) Custom nodes can run arbitrary Python — a malicious one could load native libraries directly, exfiltrate your code to a remote, or steal stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
+([policy](cli/src/policy/presets/comfyui.yaml)) Custom nodes can run arbitrary Python — a malicious one could load native libraries directly, exfiltrate your code to a remote, or steal stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
 
 ```bash
 malwi x python main.py # inside a ComfyUI directory
@@ -102,7 +102,7 @@ malwi x comfyui --listen
 
 #### <a id="npm-install"></a><img src="images/npm.png" alt="npm" height="20"> [npm-install](https://www.npmjs.com/)
 
-([policy](cli/src/policies/npm-install.yaml)) npm install can execute arbitrary scripts from any package in the dependency tree. A single malicious package can eval code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything an install script shouldn't need.
+([policy](cli/src/policy/presets/npm-install.yaml)) npm install can execute arbitrary scripts from any package in the dependency tree. A single malicious package can eval code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything an install script shouldn't need.
 
 ```bash
 malwi x npm install express
@@ -112,7 +112,7 @@ malwi x npm ci
 
 #### <a id="pip-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pip-install](https://pypi.org/)
 
-([policy](cli/src/policies/pip-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths.
+([policy](cli/src/policy/presets/pip-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths.
 
 ```bash
 malwi x pip install flask
@@ -122,7 +122,7 @@ malwi x python3 -m pip install six
 
 #### <a id="bash-execution"></a><img src="images/bash.png" alt="Bash" height="20"> [bash-execution](https://www.gnu.org/software/bash/)
 
-([policy](cli/src/policies/bash-install.yaml)) A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
+([policy](cli/src/policy/presets/bash-install.yaml)) A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
 
 ```bash
 curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x bash

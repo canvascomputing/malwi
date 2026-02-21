@@ -39,7 +39,7 @@ The tool injects an agent library into target processes to intercept function ca
 | `malwi-intercept` | intercept/ | Native function interception (code patching, module enumeration) |
 | `malwi-policy` | policy/ | Policy engine (YAML parsing, compilation, evaluation) |
 
-Policy YAML templates live in `cli/src/policies/` and are embedded at compile time via `include_str!`.
+Policy YAML templates live in `cli/src/policy/presets/` and are embedded at compile time via `include_str!`.
 
 ## Platform Support
 
@@ -135,21 +135,30 @@ cli/src/
 ├── agent_server.rs     # HTTP server receiving agent events
 ├── monitor.rs          # Trace event processing and display
 ├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
-├── config.rs           # Policy file management (~/.config/malwi/)
-├── auto_policy.rs      # Auto-detection of command-specific policies
-├── default_policy.rs   # Default observe-mode policy constant
-├── policy_bridge.rs    # Policy evaluation bridge (function/network/file/envvar)
 ├── shell_format.rs     # Shell output formatting
 │
-└── policies/           # YAML policy templates (embedded via include_str!)
-    ├── default.yaml    # Observe-mode policy (warn/log, no blocking)
-    ├── npm-install.yaml
-    ├── pip-install.yaml
-    ├── comfyui.yaml
-    ├── openclaw.yaml
-    ├── bash-install.yaml
-    ├── air-gap.yaml    # Total network isolation
-    └── base.yaml       # Shared base sections reference
+└── policy/             # Policy subsystem
+    ├── mod.rs          # Module root + re-exports
+    ├── active.rs       # ActivePolicy struct, evaluate_trace dispatch, hook derivation
+    ├── network.rs      # Network policy evaluation (URL, domain, endpoint, protocol)
+    ├── files.rs        # File access policy evaluation
+    ├── commands.rs     # Command analysis integration
+    ├── analysis.rs     # 7-engine command triage
+    ├── taxonomy.rs     # Command taxonomy singleton
+    ├── detect.rs       # Auto-detection of command-specific policies
+    ├── templates.rs    # Embedded YAML strings, DEFAULT_SECURITY_YAML
+    ├── config.rs       # Policy file management (~/.config/malwi/)
+    │
+    └── presets/        # YAML policy templates (embedded via include_str!)
+        ├── default.yaml    # Observe-mode policy (warn/log, no blocking)
+        ├── npm-install.yaml
+        ├── pip-install.yaml
+        ├── comfyui.yaml
+        ├── openclaw.yaml
+        ├── bash-install.yaml
+        ├── air-gap.yaml    # Total network isolation
+        ├── base.yaml       # Shared base sections reference
+        └── taxonomy.yaml   # Command taxonomy data
 ```
 
 ## Agent Module Structure
