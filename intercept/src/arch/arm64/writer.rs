@@ -41,6 +41,7 @@ pub struct Arm64Writer {
     code: *mut u32,
     pc: u64,
     size: usize,
+    ptrauth: bool,
 }
 
 impl Arm64Writer {
@@ -52,6 +53,19 @@ impl Arm64Writer {
             code: buffer as *mut u32,
             pc,
             size,
+            ptrauth: false,
+        }
+    }
+
+    /// # Safety
+    /// `buffer` must point to at least `size` bytes of writable memory.
+    pub unsafe fn new_with_ptrauth(buffer: *mut u8, size: usize, pc: u64, ptrauth: bool) -> Self {
+        Self {
+            base: buffer as *mut u32,
+            code: buffer as *mut u32,
+            pc,
+            size,
+            ptrauth,
         }
     }
 
@@ -85,22 +99,58 @@ impl Arm64Writer {
         self.put_u32(insn);
     }
 
+    /// RET — always plain (no authentication).
+    ///
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ret(&mut self) {
         self.put_u32(0xD65F03C0);
     }
 
+    /// BR Xn — or BRAAZ Xn when ptrauth is enabled.
+    ///
+    /// BRAAZ authenticates the target address with key A and zero discriminator
+    /// before branching. Use `put_br_reg_no_auth()` when the target is a raw
+    /// loaded address that was never signed.
+    ///
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_br_reg(&mut self, reg: Reg) {
         let n = reg as u32;
+        let extra = if self.ptrauth { 0x81f } else { 0 };
+        self.put_u32(0xD61F0000 | (n << 5) | extra);
+    }
+
+    /// BR Xn — always plain, never authenticated.
+    ///
+    /// Used for redirect code in function prologues where the target is a raw
+    /// loaded address (via LDR from literal pool), not a signed pointer.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
+    pub unsafe fn put_br_reg_no_auth(&mut self, reg: Reg) {
+        let n = reg as u32;
         self.put_u32(0xD61F0000 | (n << 5));
     }
 
+    /// BLR Xn — or BLRAAZ Xn when ptrauth is enabled.
+    ///
+    /// BLRAAZ authenticates the target address with key A and zero discriminator,
+    /// sets LR=PC+4, then branches. Use `put_blr_reg_no_auth()` for raw addresses.
+    ///
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_blr_reg(&mut self, reg: Reg) {
+        let n = reg as u32;
+        let extra = if self.ptrauth { 0x81f } else { 0 };
+        self.put_u32(0xD63F0000 | (n << 5) | extra);
+    }
+
+    /// BLR Xn — always plain, never authenticated.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
+    pub unsafe fn put_blr_reg_no_auth(&mut self, reg: Reg) {
         let n = reg as u32;
         self.put_u32(0xD63F0000 | (n << 5));
     }
@@ -203,9 +253,8 @@ impl Arm64Writer {
 
     /// Emit ADRP+ADD+BR sequence (12 bytes, ±4GB range).
     ///
-    /// This is shorter than the 16-byte LDR+BR+literal sequence and useful
-    /// for patching short functions where overwriting 16 bytes would corrupt
-    /// adjacent code.
+    /// Uses `put_br_reg_no_auth()` because the target is computed from
+    /// a raw ADRP+ADD result, not a signed pointer.
     ///
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
@@ -213,7 +262,6 @@ impl Arm64Writer {
         let rt = reg as u32;
 
         // ADRP: load page-aligned PC-relative address.
-        // immhi (19 bits) | immlo (2 bits) encode a 21-bit page offset.
         let target_page = target & !0xFFF;
         let pc_page = self.pc & !0xFFF;
         let page_off = ((target_page as i64) - (pc_page as i64)) >> 12;
@@ -225,23 +273,22 @@ impl Arm64Writer {
         let pageoff12 = (target & 0xFFF) as u32;
         self.put_u32(0x9100_0000 | (pageoff12 << 10) | (rt << 5) | rt);
 
-        // BR Xt
-        self.put_br_reg(reg);
+        // BR Xt — always no-auth for redirect code (raw computed address).
+        self.put_br_reg_no_auth(reg);
     }
 
+    /// Emit LDR+BR+literal sequence (16 bytes, any range).
+    ///
+    /// Uses `put_br_reg_no_auth()` because the target is loaded from an
+    /// inline literal, not a signed pointer.
+    ///
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_br_address(&mut self, reg: Reg, addr: u64) {
-        // Sequence:
-        //   LDR Xt, [PC, #8]
-        //   BR  Xt
-        //   .quad addr
-        //
-        // LDR (literal, 64-bit): op=01, imm19<<5, Rt.
         let rt = reg as u32;
         let imm19 = 2u32; // 2 * 4 = 8 bytes
         self.put_u32(0x5800_0000 | (imm19 << 5) | rt);
-        self.put_br_reg(reg);
+        self.put_br_reg_no_auth(reg);
 
         // Inline literal (8 bytes), little-endian.
         debug_assert!(self.can_write(8));
@@ -254,12 +301,6 @@ impl Arm64Writer {
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_reg_address(&mut self, reg: Reg, addr: u64) {
-        // Sequence:
-        //   LDR Xt, [PC, #8]
-        //   B   +12
-        //   .quad addr
-        //
-        // This loads an absolute pointer value into Xt and continues execution after the literal.
         let rt = reg as u32;
         let imm19 = 2u32; // 8 bytes
         self.put_u32(0x5800_0000 | (imm19 << 5) | rt);
@@ -277,8 +318,6 @@ impl Arm64Writer {
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_ldr_reg_reg_offset(&mut self, rt: Reg, rn: Reg, offset: i64) {
-        // LDR Xt, [Xn, #imm] (unsigned immediate, scaled by 8 for 64-bit)
-        // Encoding supports only non-negative, 8-byte aligned offsets here.
         if offset < 0 || (offset & 0x7) != 0 {
             panic!("unsupported LDR offset: {offset}");
         }
@@ -291,7 +330,6 @@ impl Arm64Writer {
     /// # Safety
     /// The writer's buffer must have sufficient remaining capacity.
     pub unsafe fn put_str_reg_reg_offset(&mut self, rt: Reg, rn: Reg, offset: i64) {
-        // STR Xt, [Xn, #imm] (unsigned immediate, scaled by 8 for 64-bit)
         if offset < 0 || (offset & 0x7) != 0 {
             panic!("unsupported STR offset: {offset}");
         }
@@ -299,6 +337,32 @@ impl Arm64Writer {
         let rt = rt as u32;
         let rn = rn as u32;
         self.put_u32(0xF900_0000 | (imm12 << 10) | (rn << 5) | rt);
+    }
+
+    // --- PAC-specific instruction emission ---
+
+    /// XPACI Xd — strip pointer authentication code from register.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
+    pub unsafe fn put_xpaci_reg(&mut self, reg: Reg) {
+        self.put_u32(0xDAC1_43E0 | (reg as u32));
+    }
+
+    /// PACIA Xd, Xn — sign Xd with IA key using Xn as discriminator.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
+    pub unsafe fn put_pacia_reg_reg(&mut self, d: Reg, n: Reg) {
+        self.put_u32(0xDAC1_0000 | ((n as u32) << 5) | (d as u32));
+    }
+
+    /// AUTIA Xd, Xn — authenticate Xd with IA key using Xn as discriminator.
+    ///
+    /// # Safety
+    /// The writer's buffer must have sufficient remaining capacity.
+    pub unsafe fn put_autia_reg_reg(&mut self, d: Reg, n: Reg) {
+        self.put_u32(0xDAC1_1000 | ((n as u32) << 5) | (d as u32));
     }
 }
 
@@ -314,7 +378,6 @@ mod tests {
             w.put_b_imm(0x1100);
         }
         let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        // PC-relative offset = (0x1100 - 0x1000) / 4 = 0x40
         assert_eq!(insn, 0x1400_0040);
     }
 
@@ -327,6 +390,83 @@ mod tests {
         }
         let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         assert_eq!(insn, 0xD61F0000 | (16 << 5));
+    }
+
+    #[test]
+    fn encode_braaz_x16_with_ptrauth() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_br_reg(Reg::X16);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xD61F0000 | (16 << 5) | 0x81F);
+    }
+
+    #[test]
+    fn encode_br_no_auth_ignores_ptrauth() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_br_reg_no_auth(Reg::X16);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xD61F0000 | (16 << 5));
+    }
+
+    #[test]
+    fn encode_blraaz_x16_with_ptrauth() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_blr_reg(Reg::X16);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xD63F0000 | (16 << 5) | 0x81F);
+    }
+
+    #[test]
+    fn encode_blr_no_auth_ignores_ptrauth() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_blr_reg_no_auth(Reg::X16);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xD63F_0000 | (16 << 5));
+    }
+
+    #[test]
+    fn encode_xpaci() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 0x1000);
+            w.put_xpaci_reg(Reg::X0);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xDAC1_43E0);
+    }
+
+    #[test]
+    fn encode_pacia() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 0x1000);
+            w.put_pacia_reg_reg(Reg::X0, Reg::SP);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xDAC1_03E0);
+    }
+
+    #[test]
+    fn encode_autia() {
+        let mut buf = [0u8; 16];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 0x1000);
+            w.put_autia_reg_reg(Reg::X0, Reg::SP);
+        }
+        let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        assert_eq!(insn, 0xDAC1_13E0);
     }
 
     #[test]
@@ -384,7 +524,6 @@ mod tests {
             w.put_mov_reg_reg(Reg::X16, Reg::SP);
         }
         let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        // ADD X16, SP, #0
         assert_eq!(insn, 0x9100_0000 | (31 << 5) | 16);
     }
 
@@ -399,13 +538,9 @@ mod tests {
         let i1 = u32::from_le_bytes(buf[4..8].try_into().unwrap());
         let i2 = u32::from_le_bytes(buf[8..12].try_into().unwrap());
         let i3 = u32::from_le_bytes(buf[12..16].try_into().unwrap());
-        // movz x16, #0xcdef
         assert_eq!(i0, 0xD280_0000 | (0xCDEF << 5) | 16);
-        // movk x16, #0x89ab, lsl #16
         assert_eq!(i1, 0xF280_0000 | (1 << 21) | (0x89AB << 5) | 16);
-        // movk x16, #0x4567, lsl #32
         assert_eq!(i2, 0xF280_0000 | (2 << 21) | (0x4567 << 5) | 16);
-        // movk x16, #0x0123, lsl #48
         assert_eq!(i3, 0xF280_0000 | (3 << 21) | (0x0123 << 5) | 16);
     }
 
@@ -426,6 +561,18 @@ mod tests {
     }
 
     #[test]
+    fn encode_ldr_br_literal_always_plain_br_with_ptrauth() {
+        let mut buf = [0u8; 32];
+        let addr = 0xDEAD_BEEF_CAFE_BABEu64;
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_ldr_br_address(Reg::X16, addr);
+        }
+        let br = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        assert_eq!(br, 0xD61F_0000 | (16 << 5));
+    }
+
+    #[test]
     fn encode_ldr_reg_address_literal() {
         let mut buf = [0u8; 32];
         let addr = 0x0123_4567_89AB_CDEFu64;
@@ -437,7 +584,6 @@ mod tests {
         let b = u32::from_le_bytes(buf[4..8].try_into().unwrap());
         let lit = u64::from_le_bytes(buf[8..16].try_into().unwrap());
         assert_eq!(ldr, 0x5800_0000 | (2 << 5) | 17);
-        // B from 0x1004 to 0x1010 => imm26 = 3
         assert_eq!(b, 0x1400_0003);
         assert_eq!(lit, addr);
     }
@@ -452,7 +598,6 @@ mod tests {
         }
         let ldr = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         let str_ = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-        // imm12 = 0x18 / 8 = 3
         assert_eq!(ldr, 0xF940_0000 | (3 << 10) | (1 << 5));
         assert_eq!(str_, 0xF900_0000 | (3 << 10) | (3 << 5) | 2);
     }
@@ -466,5 +611,16 @@ mod tests {
         }
         let insn = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         assert_eq!(insn, 0xD63F_0000 | (16 << 5));
+    }
+
+    #[test]
+    fn encode_adrp_add_br_always_plain_br_with_ptrauth() {
+        let mut buf = [0u8; 32];
+        unsafe {
+            let mut w = Arm64Writer::new_with_ptrauth(buf.as_mut_ptr(), buf.len(), 0x1000, true);
+            w.put_adrp_add_br(Reg::X16, 0x2000);
+        }
+        let br = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        assert_eq!(br, 0xD61F_0000 | (16 << 5));
     }
 }

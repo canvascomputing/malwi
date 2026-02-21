@@ -3,7 +3,7 @@ use crate::arch::arm64::relocator::Arm64Relocator;
 use crate::arch::arm64::writer::{Arm64Writer, Reg};
 use crate::code::allocator::CodeAllocator;
 use crate::code::patcher::patch_code;
-use crate::code::ptrauth::strip_code_ptr;
+use crate::code::ptrauth::{sign_code_ptr, strip_code_ptr};
 use crate::types::HookError;
 use core::ffi::c_void;
 
@@ -19,6 +19,7 @@ pub(crate) fn replace(
 ) -> Result<(), HookError> {
     let function_address = strip_code_ptr(function_address as usize) as *mut c_void;
     let key = function_address as usize;
+    let ptrauth = interceptor.ptrauth;
 
     // Attach and replace are mutually exclusive for a given function address.
     {
@@ -39,15 +40,22 @@ pub(crate) fn replace(
 
     let tramp_pc = slice.data as u64;
     unsafe {
-        let mut w = Arm64Writer::new(slice.data, slice.size, tramp_pc);
+        let mut w = Arm64Writer::new_with_ptrauth(slice.data, slice.size, tramp_pc, ptrauth);
         let mut r = Arm64Relocator::new(function_address as *const u32, function_address as u64);
         r.relocate_n(&mut w, 4)?;
-        w.put_mov_reg_u64(Reg::X16, (function_address as u64) + 16);
+
+        // Sign the resume address when ptrauth is active so that BRAAZ can
+        // authenticate it before branching.
+        let resume_raw = (function_address as u64) + 16;
+        let resume = sign_code_ptr(resume_raw as usize, ptrauth) as u64;
+        w.put_mov_reg_u64(Reg::X16, resume);
         w.put_br_reg(Reg::X16);
         alloc.make_executable(&slice)?;
     }
 
     // Emit the redirect stub to the replacement function.
+    // Uses put_ldr_br_address which always uses plain BR (no auth) — the target
+    // is a raw loaded constant, not a signed pointer.
     let mut stub = [0u8; 16];
     unsafe {
         let mut w = Arm64Writer::new(stub.as_mut_ptr(), stub.len(), function_address as u64);
@@ -61,7 +69,11 @@ pub(crate) fn replace(
         })?;
     }
 
-    let tramp_ptr = slice.pc as *const c_void;
+    // Sign the trampoline address so the replacement function can call
+    // through it on arm64e.
+    let tramp_raw = slice.pc as usize;
+    let tramp_signed = sign_code_ptr(tramp_raw, ptrauth);
+    let tramp_ptr = tramp_signed as *const c_void;
     if !original_out.is_null() {
         unsafe {
             *original_out = tramp_ptr;

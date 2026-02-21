@@ -1082,4 +1082,167 @@ mod tests {
             libc::munmap(page, page_sz);
         }
     }
+
+    /// Verify patch_code works on a dynamically allocated RX page (no code signing).
+    ///
+    /// This is the scenario the removed `is_codesign_clear` fast path was
+    /// optimising for. The full fallback chain handles it correctly — either
+    /// `mprotect(RWX)` succeeds directly (unsigned pages allow it) or
+    /// vm_remap creates a writable alias without issue.
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn patch_code_works_on_dynamically_allocated_rx_page() {
+        unsafe {
+            use mach2::traps::mach_task_self;
+            use mach2::vm::mach_vm_allocate;
+            use mach2::vm_statistics::VM_FLAGS_ANYWHERE;
+            use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
+
+            let task = mach_task_self();
+            let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+
+            // Allocate a page via Mach VM (no code signing).
+            let mut addr: mach_vm_address_t = 0;
+            let kr = mach_vm_allocate(
+                task,
+                &mut addr,
+                page_sz as mach_vm_size_t,
+                VM_FLAGS_ANYWHERE,
+            );
+            assert_eq!(kr, 0, "mach_vm_allocate failed: {kr}");
+
+            let page = addr as *mut u8;
+
+            // Write: MOV W0, #7; RET
+            (page as *mut u32).write(0x528000E0); // MOVZ W0, #7
+            (page as *mut u32).add(1).write(0xD65F03C0); // RET
+
+            // Make RX (no code signing on this page).
+            let kr = mach2::vm::mach_vm_protect(
+                task,
+                addr,
+                page_sz as mach_vm_size_t,
+                0,
+                mach2::vm_prot::VM_PROT_READ | mach2::vm_prot::VM_PROT_EXECUTE,
+            );
+            assert_eq!(kr, 0, "mach_vm_protect RX failed: {kr}");
+
+            // Verify baseline execution.
+            let f: extern "C" fn() -> u32 = core::mem::transmute(page);
+            let f = std::hint::black_box(f);
+            assert_eq!(f(), 7, "baseline should return 7");
+
+            // Patch: MOV W0, #42; RET
+            patch_code(page, 8, |p| {
+                (p as *mut u32).write(0x52800540); // MOVZ W0, #42
+                (p as *mut u32).add(1).write(0xD65F03C0); // RET
+            })
+            .expect("patch_code on dynamically allocated RX page");
+
+            // Verify bytes are visible.
+            let first_instr = core::ptr::read_unaligned(page as *const u32);
+            assert_eq!(
+                first_instr, 0x52800540,
+                "patched bytes must be visible (got {first_instr:#010x})"
+            );
+
+            // Verify CPU executes the patched code.
+            let f = std::hint::black_box(f);
+            assert_eq!(f(), 42, "patched function should return 42");
+
+            let _ = mach2::vm::mach_vm_deallocate(task, addr, page_sz as mach_vm_size_t);
+        }
+    }
+
+    /// Patch a libc function (code-signed shared cache), then patch a
+    /// dynamically allocated page (unsigned), verifying both succeed.
+    ///
+    /// Exercises different patcher strategies in the fallback chain within
+    /// the same test — catches regressions where one strategy path corrupts
+    /// state needed by another.
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn patch_code_works_on_libc_and_allocated_page_sequentially() {
+        let _g = crate::lock_hook_tests();
+
+        unsafe {
+            use mach2::traps::mach_task_self;
+            use mach2::vm::mach_vm_allocate;
+            use mach2::vm_statistics::VM_FLAGS_ANYWHERE;
+            use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
+
+            // --- Part 1: Patch a real libc function (code-signed page) ---
+            extern "C" {
+                fn abs(i: libc::c_int) -> libc::c_int;
+            }
+
+            let abs_addr = abs as *mut u8;
+            let abs_original = core::ptr::read_unaligned(abs_addr as *const [u8; 8]);
+
+            // MOV W0, #999; RET
+            let result = patch_code(abs_addr, 8, |p| {
+                (p as *mut u32).write(0x52807CE0); // MOVZ W0, #0x3E7
+                (p as *mut u32).add(1).write(0xD65F03C0); // RET
+            });
+
+            if let Err(e) = &result {
+                eprintln!("patch_code on libc failed (may be expected in CI): {:?}", e);
+                return;
+            }
+
+            let abs_fn: unsafe extern "C" fn(libc::c_int) -> libc::c_int = abs;
+            let abs_fn = std::hint::black_box(abs_fn);
+            assert_eq!(abs_fn(-1), 999, "abs should return 999 after patch");
+
+            // Restore abs.
+            patch_code(abs_addr, 8, |p| {
+                core::ptr::copy_nonoverlapping(abs_original.as_ptr(), p, 8);
+            })
+            .expect("restore abs");
+
+            let abs_fn = std::hint::black_box(abs_fn);
+            assert_eq!(abs_fn(-42), 42, "abs should work after restore");
+
+            // --- Part 2: Patch a dynamically allocated page (unsigned) ---
+            let task = mach_task_self();
+            let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+
+            let mut addr: mach_vm_address_t = 0;
+            let kr = mach_vm_allocate(
+                task,
+                &mut addr,
+                page_sz as mach_vm_size_t,
+                VM_FLAGS_ANYWHERE,
+            );
+            assert_eq!(kr, 0, "mach_vm_allocate failed: {kr}");
+
+            let page = addr as *mut u8;
+
+            // Write: MOV W0, #1; RET
+            (page as *mut u32).write(0x52800020); // MOVZ W0, #1
+            (page as *mut u32).add(1).write(0xD65F03C0); // RET
+
+            let kr = mach2::vm::mach_vm_protect(
+                task,
+                addr,
+                page_sz as mach_vm_size_t,
+                0,
+                mach2::vm_prot::VM_PROT_READ | mach2::vm_prot::VM_PROT_EXECUTE,
+            );
+            assert_eq!(kr, 0, "mach_vm_protect RX failed: {kr}");
+
+            // Patch: MOV W0, #77; RET
+            patch_code(page, 8, |p| {
+                (p as *mut u32).write(0x528009A0); // MOVZ W0, #77
+                (p as *mut u32).add(1).write(0xD65F03C0); // RET
+            })
+            .expect("patch_code on allocated page after libc patch");
+
+            let f: extern "C" fn() -> u32 = core::mem::transmute(page);
+            let f = std::hint::black_box(f);
+            assert_eq!(f(), 77, "allocated page should return 77 after patch");
+
+            let _ = mach2::vm::mach_vm_deallocate(task, addr, page_sz as mach_vm_size_t);
+        }
+    }
 }

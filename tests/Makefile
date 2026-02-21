@@ -7,6 +7,7 @@ CFLAGS = -Wall -g -O0 -rdynamic
 
 # Detect current platform
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
 # Platform-specific shared library extension and flags
 ifeq ($(UNAME_S),Darwin)
@@ -26,6 +27,11 @@ endif
 
 # All targets
 TARGETS = simple_target multithread spawner forker test_target malicious_target malicious_lib.$(SHLIB_EXT) direct_syscall_target
+
+# pac_target only on arm64 (requires -mbranch-protection=standard)
+ifeq ($(UNAME_M),arm64)
+  TARGETS += pac_target
+endif
 
 .PHONY: all clean check-platform
 
@@ -67,6 +73,9 @@ malicious_target: malicious_target.c
 
 direct_syscall_target: direct_syscall_target.c
 	$(CC) $(CFLAGS) -o $@ $<
+
+pac_target: pac_target.c
+	$(CC) $(CFLAGS) -mbranch-protection=standard -o $@ $<
 
 clean:
 	rm -f $(TARGETS)

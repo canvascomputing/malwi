@@ -326,3 +326,41 @@ fn test_invalid_program_path_exits_gracefully_with_error() {
         "Expected failure for nonexistent program"
     );
 }
+
+// ============================================================================
+// PAC (Pointer Authentication) Tests — arm64 only
+// ============================================================================
+
+/// Test hooking a function with PACIASP prologue (built with -mbranch-protection=standard).
+/// Verifies the relocator handles PAC instructions correctly.
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn test_native_tracing_hooks_function_with_pac_prologue() {
+    setup();
+
+    let pac = fixture("pac_target");
+    if !pac.exists() {
+        println!("SKIPPED: pac_target not built (arm64 only)");
+        return;
+    }
+
+    let output = run_tracer(&["x", "-s", "compute", "--", pac.to_str().unwrap()]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}\n{}", stdout, stderr);
+
+    assert!(
+        output.status.success(),
+        "pac_target tracing failed. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    assert!(
+        combined.contains("compute"),
+        "Expected compute trace event from pac_target. stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}

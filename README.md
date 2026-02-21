@@ -10,7 +10,7 @@
 
 Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. Campaigns like the Shai-Hulud npm attacks (2025) demonstrated how simple it is to misuse the trust in open-source software. `malwi` intercepts Python, Node.js and Bash code at runtime, blocking unauthorized network calls and sensitive file access before damage is done. `malwi` contains curated policies built from supply-chain security research and let's you create your own.
 
-**Compatibility**: `Python 3.10-3.14` · `Node.js 21-25` · `Bash 4.4-5.3` · `macOS` ([⚠️ SIP](#macos-system-integrity-protection-sip)) and `Linux` · `arm64` and `x86_64`
+**Compatibility**: `Python 3.10-3.14` · `Node.js 21-25` · `Bash 4.4-5.3` · `macOS arm64, arm64e` ([⚠️ SIP](#macos-system-integrity-protection-sip)) and `Linux arm64, x86_64`
 
 </div>
 

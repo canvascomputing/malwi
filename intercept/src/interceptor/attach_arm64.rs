@@ -3,7 +3,7 @@ use crate::arch::arm64::relocator::{can_relocate, Arm64Relocator};
 use crate::arch::arm64::writer::{Arm64Writer, Reg};
 use crate::code::allocator::{CodeAllocator, CodeSlice};
 use crate::code::patcher::patch_code;
-use crate::code::ptrauth::strip_code_ptr;
+use crate::code::ptrauth::{sign_code_ptr, strip_code_ptr};
 use crate::interceptor::listener::CallListener;
 use crate::types::{Arm64CpuContext, HookError, InvocationContext};
 use core::ffi::c_void;
@@ -118,15 +118,23 @@ unsafe fn restore_prologue(
 
 /// Build a trampoline that executes `n_insns` relocated instructions from
 /// the function prologue and then branches back to `function + n_insns * 4`.
-unsafe fn build_trampoline_n(function: *mut c_void, n_insns: usize) -> Result<usize, HookError> {
+unsafe fn build_trampoline_n(
+    function: *mut c_void,
+    n_insns: usize,
+    ptrauth: bool,
+) -> Result<usize, HookError> {
     let mut alloc = CodeAllocator::default();
     let slice = alloc.alloc_any()?;
 
     let tramp_pc = slice.data as u64;
-    let mut w = Arm64Writer::new(slice.data, slice.size, tramp_pc);
+    let mut w = Arm64Writer::new_with_ptrauth(slice.data, slice.size, tramp_pc, ptrauth);
     let mut r = Arm64Relocator::new(function as *const u32, function as u64);
     r.relocate_n(&mut w, n_insns)?;
-    let resume = (function as u64) + (n_insns as u64) * 4;
+
+    // Sign the resume address when ptrauth is active so that BRAAZ can
+    // authenticate it before branching.
+    let resume_raw = (function as u64) + (n_insns as u64) * 4;
+    let resume = sign_code_ptr(resume_raw as usize, ptrauth) as u64;
     w.put_mov_reg_u64(Reg::X16, resume);
     w.put_br_reg(Reg::X16);
     alloc.make_executable(&slice)?;
@@ -139,6 +147,7 @@ unsafe fn build_wrapper_in(
     trampoline: usize,
     slice: CodeSlice,
     alloc: &mut CodeAllocator,
+    ptrauth: bool,
 ) -> Result<usize, HookError> {
     // Stack frame layout:
     //   [sp + 0..96)                   saved: x0-x7 (64), lr (8), sp0 (8), ret (8), pad
@@ -153,7 +162,7 @@ unsafe fn build_wrapper_in(
     frame = (frame + 15) & !15;
 
     let wrapper_pc = slice.data as u64;
-    let mut w = Arm64Writer::new(slice.data, slice.size, wrapper_pc);
+    let mut w = Arm64Writer::new_with_ptrauth(slice.data, slice.size, wrapper_pc, ptrauth);
 
     // sub sp, sp, #frame
     w.put_sub_reg_reg_imm(Reg::SP, Reg::SP, frame as u32);
@@ -244,12 +253,20 @@ unsafe fn build_wrapper_in(
     // Load return value from ret slot.
     w.put_ldr_reg_reg_offset(Reg::X0, Reg::SP, 80);
 
-    // Restore LR for the final RET.
+    // Restore LR and return.
+    // On arm64e, use BR X16 instead of RET to avoid PAC validation failures
+    // (the saved LR was signed by the caller, not by us). This pattern matches
+    // the reference: pop return addr into X16, then BR X16 (no auth).
     w.put_ldr_reg_reg_offset(Reg::X30, Reg::SP, 64);
-
-    // add sp, sp, #frame; ret
     w.put_add_reg_reg_imm(Reg::SP, Reg::SP, frame as u32);
-    w.put_ret();
+    if ptrauth {
+        // On arm64e: load LR into X16, BR X16 (no auth). This avoids RET's
+        // implicit PAC check on LR which would fail since we didn't sign it.
+        w.put_mov_reg_reg(Reg::X16, Reg::X30);
+        w.put_br_reg_no_auth(Reg::X16);
+    } else {
+        w.put_ret();
+    }
 
     alloc.make_executable(&slice)?;
     Ok(slice.pc as usize)
@@ -286,6 +303,7 @@ pub(crate) fn attach(
 ) -> Result<(), HookError> {
     let function_address = strip_code_ptr(function_address as usize) as *mut c_void;
     let key = function_address as usize;
+    let ptrauth = interceptor.ptrauth;
 
     // Attach and replace are mutually exclusive for a given function address.
     // Mixing modes would build trampolines from already-patched prologues.
@@ -335,7 +353,7 @@ pub(crate) fn attach(
         }
     }
 
-    let trampoline = unsafe { build_trampoline_n(function_address, n_insns)? };
+    let trampoline = unsafe { build_trampoline_n(function_address, n_insns, ptrauth)? };
 
     let mut ctx = Box::new(FunctionContext {
         function: key,
@@ -347,10 +365,12 @@ pub(crate) fn attach(
     });
     let ctx_ptr: *mut FunctionContext = &mut *ctx;
 
-    let wrapper = unsafe { build_wrapper_in(ctx_ptr, trampoline, wrapper_slice, &mut alloc)? };
+    let wrapper =
+        unsafe { build_wrapper_in(ctx_ptr, trampoline, wrapper_slice, &mut alloc, ptrauth)? };
     ctx.wrapper = wrapper;
 
-    // Emit the prologue patch.
+    // Emit the prologue patch. Redirect stubs always use plain BR (no auth)
+    // because the target is a raw loaded/computed address.
     let mut stub = [0u8; 16];
     unsafe {
         let mut w = Arm64Writer::new(stub.as_mut_ptr(), stub.len(), func_addr);
@@ -378,6 +398,7 @@ pub(crate) fn attach_rebinding(
 ) -> Result<usize, HookError> {
     let function_address = strip_code_ptr(function_address as usize) as *mut c_void;
     let key = function_address as usize;
+    let ptrauth = interceptor.ptrauth;
 
     // Rebinding attach and replace are mutually exclusive for a given symbol.
     {
@@ -398,7 +419,7 @@ pub(crate) fn attach_rebinding(
 
     // Create context + wrapper, but do NOT patch the function prologue.
     let original_bytes = read_16(function_address as *const u8);
-    let trampoline = unsafe { build_trampoline_n(function_address, 4)? };
+    let trampoline = unsafe { build_trampoline_n(function_address, 4, ptrauth)? };
 
     let mut alloc = CodeAllocator::default();
     let slice = alloc.alloc_any()?;
@@ -413,7 +434,7 @@ pub(crate) fn attach_rebinding(
     });
     let ctx_ptr: *mut FunctionContext = &mut *ctx;
 
-    let wrapper = unsafe { build_wrapper_in(ctx_ptr, trampoline, slice, &mut alloc)? };
+    let wrapper = unsafe { build_wrapper_in(ctx_ptr, trampoline, slice, &mut alloc, ptrauth)? };
     ctx.wrapper = wrapper;
 
     let mut map = interceptor.attach_map.lock().unwrap();

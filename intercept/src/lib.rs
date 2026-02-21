@@ -10,6 +10,7 @@ pub mod module;
 pub mod types;
 
 // Re-exports for convenience (flattened imports)
+pub use code::ptrauth::query_ptrauth_support;
 pub use interceptor::invocation;
 pub use interceptor::listener::CallListener;
 pub use interceptor::Interceptor;

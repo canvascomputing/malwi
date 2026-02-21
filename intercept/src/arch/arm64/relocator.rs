@@ -17,9 +17,59 @@ enum InsnKind {
     LdrLiteralFp32,
     LdrLiteralFp128,
     Ldrsw,
+    // PAC branch instructions (arm64e)
+    BraazBrabz,   // BRAAZ/BRABZ — unconditional branch with auth, zero discriminator
+    BraaBrab,     // BRAA/BRAB — unconditional branch with auth, register discriminator
+    BlraazBlrabz, // BLRAAZ/BLRABZ — branch-link with auth, zero discriminator
+    BlraaBlrab,   // BLRAA/BLRAB — branch-link with auth, register discriminator
+    RetaaRetab,   // RETAA/RETAB — authenticated return
+    Paciasp,      // PACIASP — sign LR with IA key, SP as discriminator
+    Autiasp,      // AUTIASP — authenticate LR with IA key, SP as discriminator
 }
 
 fn insn_kind(insn: u32) -> InsnKind {
+    // --- PAC instructions (check specific encodings first) ---
+
+    // RETAA: 0xD65F0BFF, RETAB: 0xD65F0FFF
+    if insn == 0xD65F_0BFF || insn == 0xD65F_0FFF {
+        return InsnKind::RetaaRetab;
+    }
+
+    // PACIASP: 0xD503233F (HINT #25), AUTIASP: 0xD50323BF (HINT #29)
+    if insn == 0xD503_233F {
+        return InsnKind::Paciasp;
+    }
+    if insn == 0xD503_23BF {
+        return InsnKind::Autiasp;
+    }
+
+    // BRAAZ/BRABZ: fixed Rt encoding with zero discriminator
+    // BRAAZ Xn: 0xD61F081F (mask 0xFFFFFC1F, Rn in bits 9-5)
+    // BRABZ Xn: 0xD61F0C1F (mask 0xFFFFFC1F)
+    if (insn & 0xFFFF_FC1F) == 0xD61F_081F || (insn & 0xFFFF_FC1F) == 0xD61F_0C1F {
+        return InsnKind::BraazBrabz;
+    }
+
+    // BRAA Xn, Xm: 0xD71F0800 (mask 0xFE1FFC00)
+    // BRAB Xn, Xm: 0xD71F0C00 (mask 0xFE1FFC00)
+    if (insn & 0xFE1F_FC00) == 0xD71F_0800 || (insn & 0xFE1F_FC00) == 0xD71F_0C00 {
+        return InsnKind::BraaBrab;
+    }
+
+    // BLRAAZ Xn: 0xD63F081F (mask 0xFFFFFC1F)
+    // BLRABZ Xn: 0xD63F0C1F (mask 0xFFFFFC1F)
+    if (insn & 0xFFFF_FC1F) == 0xD63F_081F || (insn & 0xFFFF_FC1F) == 0xD63F_0C1F {
+        return InsnKind::BlraazBlrabz;
+    }
+
+    // BLRAA Xn, Xm: 0xD73F0800 (mask 0xFE1FFC00)
+    // BLRAB Xn, Xm: 0xD73F0C00 (mask 0xFE1FFC00)
+    if (insn & 0xFE1F_FC00) == 0xD73F_0800 || (insn & 0xFE1F_FC00) == 0xD73F_0C00 {
+        return InsnKind::BlraaBlrab;
+    }
+
+    // --- Standard instructions ---
+
     // B / BL
     match insn & 0xFC00_0000 {
         0x1400_0000 => return InsnKind::B,
@@ -171,6 +221,12 @@ unsafe fn emit_tbz_tbnz_skip(writer: &mut Arm64Writer, insn: u32, invert: bool) 
 fn estimated_size(kind: InsnKind) -> usize {
     match kind {
         InsnKind::Other => 4,
+        // PAC instructions are position-independent — copied verbatim (4 bytes).
+        InsnKind::Paciasp | InsnKind::Autiasp | InsnKind::RetaaRetab => 4,
+        // PAC branch variants are position-independent (register-based).
+        InsnKind::BraazBrabz | InsnKind::BraaBrab => 4,
+        // PAC BLR variants are treated like BLR — position-independent, 4 bytes.
+        InsnKind::BlraazBlrabz | InsnKind::BlraaBlrab => 4,
         InsnKind::Adr | InsnKind::Adrp => 16,
         InsnKind::LdrLiteral64
         | InsnKind::LdrLiteral32
@@ -219,7 +275,7 @@ fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
 ///
 /// Returns `(max_insns, scratch_reg)` where max_insns is the safe relocation
 /// limit and scratch_reg is the register available for long-branch stubs.
-/// Stops relocation at BL/BLR boundaries.
+/// Stops relocation at BL/BLR/BLRAA/BLRAAZ boundaries.
 ///
 /// # Safety
 /// `input` must point to at least `max_insns` valid ARM64 instructions.
@@ -237,8 +293,9 @@ pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) 
         x16_used |= u16;
         x17_used |= u17;
 
-        // BL and BLR mark boundaries where further relocation is unsafe
-        // (they set LR to pc+4, creating a return-address dependency).
+        // BL, BLR, and PAC BLR variants (BLRAA/BLRAAZ/BLRAB/BLRABZ) mark
+        // boundaries where further relocation is unsafe (they set LR to pc+4,
+        // creating a return-address dependency).
         //
         // Note: SVC (syscall trap) is NOT a boundary — it is fully
         // position-independent and the relocator copies it verbatim.
@@ -247,7 +304,11 @@ pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) 
         // instructions for the redirect patch.
         let is_blr = (insn & 0xFFFF_FC1F) == 0xD63F_0000;
 
-        if kind == InsnKind::BL || is_blr {
+        if kind == InsnKind::BL
+            || kind == InsnKind::BlraazBlrabz
+            || kind == InsnKind::BlraaBlrab
+            || is_blr
+        {
             // Include this instruction but stop after it.
             limit = i + 1;
             break;
@@ -338,6 +399,16 @@ impl Arm64Relocator {
 
             match insn_kind(insn) {
                 InsnKind::Other => {
+                    writer.put_u32_raw(insn);
+                }
+                // PAC instructions are position-independent — copy verbatim.
+                InsnKind::Paciasp
+                | InsnKind::Autiasp
+                | InsnKind::RetaaRetab
+                | InsnKind::BraazBrabz
+                | InsnKind::BraaBrab
+                | InsnKind::BlraazBlrabz
+                | InsnKind::BlraaBlrab => {
                     writer.put_u32_raw(insn);
                 }
                 InsnKind::Adr => {
@@ -838,5 +909,114 @@ mod tests {
             Reg::X16,
             "X17 in Rt2 should cause X16 to be chosen"
         );
+    }
+
+    // --- PAC instruction tests ---
+
+    /// PACIASP is recognized and copied verbatim (position-independent).
+    #[test]
+    fn relocator_paciasp_copies_verbatim() {
+        let input: [u32; 2] = [0xD503233F, 0xD503201F]; // PACIASP, NOP
+        let mut buf = [0u8; 128];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 1024);
+            let mut r = Arm64Relocator::new(input.as_ptr(), 2048);
+            r.relocate_n(&mut w, 2).unwrap();
+            assert_eq!(w.offset(), 8, "PACIASP + NOP = 8 bytes (verbatim)");
+        }
+        assert_eq!(read_u32(&buf, 0), 0xD503233F, "PACIASP copied verbatim");
+        assert_eq!(read_u32(&buf, 4), 0xD503201F, "NOP copied verbatim");
+    }
+
+    /// AUTIASP is recognized and copied verbatim.
+    #[test]
+    fn relocator_autiasp_copies_verbatim() {
+        let input: [u32; 1] = [0xD50323BF]; // AUTIASP
+        let mut buf = [0u8; 128];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 1024);
+            let mut r = Arm64Relocator::new(input.as_ptr(), 2048);
+            r.relocate_n(&mut w, 1).unwrap();
+            assert_eq!(w.offset(), 4);
+        }
+        assert_eq!(read_u32(&buf, 0), 0xD50323BF, "AUTIASP copied verbatim");
+    }
+
+    /// RETAA/RETAB are recognized, not a boundary, and copied verbatim.
+    #[test]
+    fn relocator_retaa_retab_not_boundary() {
+        let insns: [u32; 4] = [
+            0xD503201F, // NOP
+            0xD65F0BFF, // RETAA
+            0xD503201F, // NOP
+            0xD503201F, // NOP
+        ];
+        let (limit, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
+        assert_eq!(limit, 4, "RETAA is not a relocation boundary");
+    }
+
+    /// BRAAZ is not a relocation boundary (like BR, it's position-independent).
+    #[test]
+    fn can_relocate_does_not_stop_at_braaz() {
+        let insns: [u32; 4] = [
+            0xD503201F, // NOP
+            0xD61F0A1F, // BRAAZ X16 (0xD61F0000 | (16 << 5) | 0x81F)
+            0xD503201F, // NOP
+            0xD503201F, // NOP
+        ];
+        let (limit, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
+        assert_eq!(limit, 4, "BRAAZ is not a boundary (like BR)");
+    }
+
+    /// BLRAAZ IS a relocation boundary (like BLR, it sets LR).
+    #[test]
+    fn can_relocate_stops_at_blraaz() {
+        let insns: [u32; 4] = [
+            0xD503201F, // NOP
+            0xD63F0A1F, // BLRAAZ X16 (0xD63F0000 | (16 << 5) | 0x81F)
+            0xD503201F, // NOP
+            0xD503201F, // NOP
+        ];
+        let (limit, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
+        assert_eq!(limit, 2, "BLRAAZ should stop relocation (like BLR)");
+    }
+
+    /// PACIASP in a prologue doesn't affect can_relocate boundary.
+    #[test]
+    fn can_relocate_through_pac_prologue() {
+        // Typical arm64e function prologue:
+        //   PACIASP
+        //   STP X29, X30, [SP, #-16]!
+        //   MOV X29, SP
+        //   NOP
+        let insns: [u32; 4] = [
+            0xD503233F, // PACIASP
+            0xA9BF7BFD, // STP X29, X30, [SP, #-16]!
+            0x910003FD, // MOV X29, SP (ADD X29, SP, #0)
+            0xD503201F, // NOP
+        ];
+        let (limit, _) = unsafe { can_relocate(insns.as_ptr(), 4) };
+        assert_eq!(
+            limit, 4,
+            "PACIASP prologue is fully relocatable (no boundaries)"
+        );
+    }
+
+    /// BRAAZ/BRABZ are copied verbatim during relocation.
+    #[test]
+    fn relocator_braaz_copies_verbatim() {
+        // BRAAZ X16: 0xD61F081F | (16 << 5) but the encoding is: 0xD61F0000 | (16 << 5) | 0x81F
+        // Wait — BRAAZ Xn encoding: 0xD61F081F with Rn in bits 9-5.
+        // BRAAZ X16 = 0xD61F_081F & 0xFFFF_FC1F => base; Rn=16 => (16<<5)=0x200
+        // So: 0xD61F_0800 | 0x200 | 0x1F = 0xD61F_0A1F
+        let input: [u32; 1] = [0xD61F_0A1F]; // BRAAZ X16
+        let mut buf = [0u8; 128];
+        unsafe {
+            let mut w = Arm64Writer::new(buf.as_mut_ptr(), buf.len(), 1024);
+            let mut r = Arm64Relocator::new(input.as_ptr(), 2048);
+            r.relocate_n(&mut w, 1).unwrap();
+            assert_eq!(w.offset(), 4);
+        }
+        assert_eq!(read_u32(&buf, 0), 0xD61F_0A1F, "BRAAZ X16 copied verbatim");
     }
 }

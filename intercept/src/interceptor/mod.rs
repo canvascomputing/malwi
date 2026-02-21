@@ -1,3 +1,4 @@
+use crate::code::ptrauth::query_ptrauth_support;
 use crate::interceptor::listener::CallListener;
 use crate::types::HookError;
 use core::ffi::c_void;
@@ -36,13 +37,15 @@ struct FunctionContext {
     listeners: Vec<CallListener>,
 }
 
-/// Minimal interceptor implementation.
+/// Function interception via inline code patching.
 ///
-/// This currently supports `replace()` + `revert()` on AArch64 by overwriting the first 16 bytes
-/// with an absolute redirect (`LDR+BR` + literal). Listener-based attach/detach comes later.
+/// On arm64e systems, the interceptor detects pointer authentication at init
+/// time and generates PAC-aware trampolines/wrappers (BRAAZ/BLRAAZ branches,
+/// signed resume addresses).
 pub struct Interceptor {
     replace_map: Mutex<HashMap<usize, ReplacementEntry>>,
     attach_map: Mutex<HashMap<usize, Box<FunctionContext>>>,
+    ptrauth: bool,
 }
 
 impl Interceptor {
@@ -51,6 +54,7 @@ impl Interceptor {
         INSTANCE.get_or_init(|| Interceptor {
             replace_map: Mutex::new(HashMap::new()),
             attach_map: Mutex::new(HashMap::new()),
+            ptrauth: query_ptrauth_support(),
         })
     }
 
