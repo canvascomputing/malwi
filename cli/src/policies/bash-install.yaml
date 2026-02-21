@@ -143,10 +143,6 @@ commands:
     - at
     - launchctl
     - systemctl
-    # Obfuscation tools (S4.1)
-    - base64
-    - xxd
-    - rev
     # Clipboard exfiltration (S5.3)
     - pbcopy
     - pbpaste
@@ -163,6 +159,10 @@ commands:
     # eval and dd are common but dangerous
     - eval
     - dd
+    # Obfuscation tools (S4.1)
+    - base64
+    - xxd
+    - rev
   review:
     # Privilege escalation (S6.1) — review instead of block because
     # legitimate installers (e.g. Homebrew) need sudo for system-level setup.
