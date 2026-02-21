@@ -189,30 +189,50 @@ macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries under cert
 
 > Security researchers may disable SIP at their own risk.
 
+### Example Python Installation
+
+Install Python to `/usr/local`:
+
+```bash
+V=3.13.2  # check https://www.python.org/downloads/source/ for latest
+
+curl -fsSO https://www.python.org/ftp/python/$V/Python-$V.tgz
+tar xf Python-$V.tgz && cd Python-$V
+./configure --prefix=/usr/local && make && sudo make install
+```
+
+```bash
+malwi x /usr/local/bin/python3
+```
+
+### Example Node.js Installation
+
+Install Node.js to `/usr/local`:
+
+```bash
+V=22.14.0  # check https://nodejs.org/en/download for latest LTS
+ARCH=$(uname -m)
+
+curl -fsSO https://nodejs.org/dist/v$V/node-v$V-darwin-$ARCH.tar.gz
+tar xf node-v$V-darwin-$ARCH.tar.gz
+sudo cp -r node-v$V-darwin-$ARCH/{bin,include,lib,share} /usr/local/
+```
+
+```bash
+malwi x /usr/local/bin/node
+```
+
 ### Example Bash Installation
 
-This is how you could install a particular bash version in `/usr/local`:
+Install Bash to `/usr/local`:
 
 ```bash
 V=5.2.37  # check https://ftp.gnu.org/gnu/bash/ for latest
 
 curl -fsSO https://ftp.gnu.org/gnu/bash/bash-$V.tar.gz
-
-# verify (requires gpg)
-curl -fsSO https://ftp.gnu.org/gnu/bash/bash-$V.tar.gz.sig
-gpg --keyserver keyserver.ubuntu.com --recv-keys 7C0135FB088AAF6C66C650B9BB5869F064EA74AB
-gpg --verify bash-$V.tar.gz.sig bash-$V.tar.gz
-
-# build and install
 tar xf bash-$V.tar.gz && cd bash-$V
 ./configure --prefix=/usr/local && make && sudo make install
-
-# set as default shell (optional)
-sudo bash -c 'echo /usr/local/bin/bash >> /etc/shells'
-chsh -s /usr/local/bin/bash
 ```
-
-Trace execution with `malwi`:
 
 ```bash
 malwi x /usr/local/bin/bash
@@ -226,11 +246,5 @@ See [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 To report a vulnerability, email [security@canvascomputing.org](mailto:security@canvascomputing.org). See [SECURITY.md](.github/SECURITY.md) for details.
 
-### Dependencies
-
 A full dependency listing is automatically regenerated on every build when `Cargo.lock` or `package-lock.json` change. See [`DEPENDENCIES.md`](DEPENDENCIES.md).
-
-Regenerate manually:
-
-    make sbom
 

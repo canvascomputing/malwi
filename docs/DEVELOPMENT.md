@@ -25,6 +25,7 @@ make build          # Build CLI and agent
 make test           # Run tests
 make format         # Format all Rust code
 make bump           # Bump patch version and tag
+make sbom           # Regenerate DEPENDENCIES.md
 ```
 
 ### Full Multi-Version Build
