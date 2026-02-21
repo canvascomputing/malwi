@@ -23,6 +23,8 @@
 make addon-install  # Build Node.js addon for current Node version
 make build          # Build CLI and agent
 make test           # Run tests
+make format         # Format all Rust code
+make bump           # Bump patch version and tag
 ```
 
 ### Full Multi-Version Build
@@ -42,9 +44,11 @@ make test
 
 | Component | Command | Output |
 |-----------|---------|--------|
-| CLI | `cargo build --release` | `target/release/malwi` |
+| CLI | `make build` | `target/release/malwi` |
 | Agent | `cargo build --release -p malwi-agent` | `target/release/libmalwi_agent.{dylib,so}` |
 | Node Addon | `make addon` | `node-addon/build/Release/v8_introspect.node` |
+| Format | `make format` | — |
+| Release | `make bump` / `VERSION=0.1.0 make bump` | Git tag |
 | Test Fixtures | `make fixtures` | `tests/*.exe` |
 
 ## Node.js Addon Build

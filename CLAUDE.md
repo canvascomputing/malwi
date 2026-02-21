@@ -68,6 +68,9 @@ make addon
 # Install addon to prebuilt directory
 make addon-install
 
+# Format all Rust code
+make format
+
 # Clean everything
 make clean
 ```
@@ -76,10 +79,10 @@ make clean
 
 ```bash
 # Bump patch version (0.0.24 → 0.0.25), sync all files, and tag
-bash scripts/bump-version.sh
+make bump
 
 # Set explicit version
-bash scripts/bump-version.sh 0.1.0
+VERSION=0.1.0 make bump
 ```
 
 ## Testing

@@ -1,4 +1,4 @@
-.PHONY: all build fmt addon addon-install addon-all addon-node25 test clean fixtures
+.PHONY: all build fmt format bump addon addon-install addon-all addon-node25 test clean fixtures
 
 # Detect platform for addon installation
 UNAME_S := $(shell uname -s)
@@ -39,6 +39,11 @@ all: addon-install build
 
 fmt:
 	cargo fmt --all
+
+format: fmt
+
+bump:
+	@bash scripts/bump-version.sh $(VERSION)
 
 build: fmt
 	cargo build --release
