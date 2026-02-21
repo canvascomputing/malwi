@@ -74,56 +74,6 @@ symbols:
   deny: [dlopen, dlsym]
 ```
 
-## How It Works
-
-`malwi` injects a tracing agent into the target process at startup. The agent hooks function calls across runtimes — Node.js, Python, Bash, and native symbols — and reports every intercepted call back to the CLI over a local HTTP channel. The CLI evaluates each call against the loaded policy and decides whether to allow, deny, warn, or prompt for review. The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) — no source code changes or recompilation required. Tracing propagates automatically to child processes.
-
-```
-┌──────────────────────────────────────────────────────┐
-│ malwi CLI (server)                                   │
-│                                                      │
-│ ┌──────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│ │ Spawner  │  │ Policy Engine│  │ Output / Review  │ │
-│ └────┬─────┘  └──────▲───────┘  └────────▲─────────┘ │
-│      │               │                   │           │
-│      │ inject        │ evaluate          │ display   │
-│      │               │                   │           │
-└──────┼───────────────┼───────────────────┼───────────┘
-       │               │ HTTP              │
-       ▼               │ (trace events)    │
-┌──────────────────────┼───────────────────┼───────────┐
-│ Target Process       │                   │           │
-│                      │                   │           │
-│ ┌────────────────────┴───────────────────┴─────────┐ │
-│ │ malwi Agent (client)                             │ │
-│ │                                                  │ │
-│ │ ┌─────────┐ ┌────────┐ ┌───────┐ ┌────────────┐  │ │
-│ │ │ Node.js │ │ Python │ │ Bash  │ │  Binary    │  │ │
-│ │ │ hooks   │ │ hooks  │ │ hooks │ │  Symbols   │  │ │
-│ │ └─────────┘ └────────┘ └───────┘ └────────────┘  │ │
-│ └────────────────────┬─────────────────────────────┘ │
-│                      │ hook                          │
-│ ┌────────────────────▼─────────────────────────────┐ │
-│ │ Application code                                 │ │
-│ └──────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────┘
-```
-
-| Features | Explanation |
-|:--|:--|
-| **Runtime Interception** | Allow/deny runtime functions, network access, commands, files, and environment variables by pattern |
-| **Native Function Hooking** | Hooks C/system functions in the target process |
-| **System Library Interception** | Intercept libc/libSystem calls |
-| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
-| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
-| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver |
-
-| ⚠️ Limitations | Explanation | Future Mitigation |
-|:--|:--|:--|
-| **Direct Syscall Detection** | Inline `SVC`/`SYSCALL` instructions bypass libc hooks. The `syscall()` libc wrapper is denied in bash-install policy; full inline detection via the `syscalls:` section is available for hardened deployments | `in planning` |
-| **[SIP-Protected Child Processes](#macos-system-integrity-protection-sip)** | On macOS, malicious code can shell out to SIP-protected binaries (e.g. `/usr/bin/curl`) which strip `DYLD_INSERT_LIBRARIES` — the child runs untraced, so network calls, file reads, and other operations inside it are invisible to `malwi` | `in planning` |
-| **Indirect File Access** | Symlinks (`ln -s ~/.ssh /tmp/x`) or the file protocol (`curl file://`) can reach protected files without triggering `open()` deny patterns | `in progress`: AI based detection |
-
 ## Auto-policies
 
 When `malwi` detects a known command, it automatically applies a tailored [policy](cli/src/policies/). The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
@@ -177,6 +127,56 @@ malwi x python3 -m pip install six
 ```bash
 curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x bash
 ```
+
+## How It Works
+
+`malwi` injects a tracing agent into the target process at startup. The agent hooks function calls across runtimes — Node.js, Python, Bash, and native symbols — and reports every intercepted call back to the CLI over a local HTTP channel. The CLI evaluates each call against the loaded policy and decides whether to allow, deny, warn, or prompt for review. The agent is loaded via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux) — no source code changes or recompilation required. Tracing propagates automatically to child processes.
+
+```
+┌──────────────────────────────────────────────────────┐
+│ malwi CLI (server)                                   │
+│                                                      │
+│ ┌──────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│ │ Spawner  │  │ Policy Engine│  │ Output / Review  │ │
+│ └────┬─────┘  └──────▲───────┘  └────────▲─────────┘ │
+│      │               │                   │           │
+│      │ inject        │ evaluate          │ display   │
+│      │               │                   │           │
+└──────┼───────────────┼───────────────────┼───────────┘
+       │               │ HTTP              │
+       ▼               │ (trace events)    │
+┌──────────────────────┼───────────────────┼───────────┐
+│ Target Process       │                   │           │
+│                      │                   │           │
+│ ┌────────────────────┴───────────────────┴─────────┐ │
+│ │ malwi Agent (client)                             │ │
+│ │                                                  │ │
+│ │ ┌─────────┐ ┌────────┐ ┌───────┐ ┌────────────┐  │ │
+│ │ │ Node.js │ │ Python │ │ Bash  │ │  Binary    │  │ │
+│ │ │ hooks   │ │ hooks  │ │ hooks │ │  Symbols   │  │ │
+│ │ └─────────┘ └────────┘ └───────┘ └────────────┘  │ │
+│ └────────────────────┬─────────────────────────────┘ │
+│                      │ hook                          │
+│ ┌────────────────────▼─────────────────────────────┐ │
+│ │ Application code                                 │ │
+│ └──────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
+
+| Features | Explanation |
+|:--|:--|
+| **Runtime Interception** | Allow/deny runtime functions, network access, commands, files, and environment variables by pattern |
+| **Native Function Hooking** | Hooks C/system functions in the target process |
+| **System Library Interception** | Intercept libc/libSystem calls |
+| **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
+| **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
+| **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver |
+
+| ⚠️ Limitations | Explanation | Mitigation |
+|:--|:--|:--|
+| **Direct Syscall Detection** | Inline `SVC`/`SYSCALL` instructions bypass libc hooks. The `syscall()` libc wrapper is denied in bash-install policy; full inline detection via the `syscalls:` section is available for hardened deployments | `in planning` |
+| **[SIP-Protected Child Processes](#macos-system-integrity-protection-sip)** | On macOS, malicious code can shell out to SIP-protected binaries (e.g. `/usr/bin/curl`) which strip `DYLD_INSERT_LIBRARIES` — the child runs untraced, so network calls, file reads, and other operations inside it are invisible to `malwi` | `in planning` |
+| **Indirect File Access** | Symlinks (`ln -s ~/.ssh /tmp/x`) or the file protocol (`curl file://`) can reach protected files without triggering `open()` deny patterns | `in progress`: AI based detection |
 
 ## macOS System Integrity Protection (SIP)
 
