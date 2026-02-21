@@ -4,12 +4,9 @@
   "description": "V8 introspection addon for malwi-trace",
   "main": "build/Release/v8_introspect.node",
   "scripts": {
-    "build": "node-gyp rebuild",
-    "clean": "node-gyp clean",
-    "configure": "node-gyp configure"
-  },
-  "devDependencies": {
-    "node-gyp": "^12.2.0"
+    "build": "npx node-gyp@12 rebuild",
+    "clean": "npx node-gyp@12 clean",
+    "configure": "npx node-gyp@12 configure"
   },
   "engines": {
     "node": ">=18.0.0"

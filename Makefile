@@ -47,22 +47,16 @@ bump:
 
 sbom: DEPENDENCIES.md
 
-DEPENDENCIES.md: Cargo.lock node-addon/package-lock.json
+DEPENDENCIES.md: Cargo.lock
 	@echo "# Dependencies" > DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
-	@echo "Auto-generated from \`Cargo.lock\` and \`node-addon/package-lock.json\`." >> DEPENDENCIES.md
+	@echo "Auto-generated from \`Cargo.lock\`." >> DEPENDENCIES.md
 	@echo "Regenerate: \`make sbom\`" >> DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
 	@echo "## Rust" >> DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
 	@echo '```' >> DEPENDENCIES.md
 	cargo tree --workspace --depth 1 --prefix none | grep -v '^malwi' | grep -v '^$$' | sed 's/ (.*//' | sort -u >> DEPENDENCIES.md
-	@echo '```' >> DEPENDENCIES.md
-	@echo "" >> DEPENDENCIES.md
-	@echo "## Node.js (build tooling)" >> DEPENDENCIES.md
-	@echo "" >> DEPENDENCIES.md
-	@echo '```' >> DEPENDENCIES.md
-	cd node-addon && npm ls --all --parseable --long 2>/dev/null | sed 's/.*node_modules\///' | sed 's/.*://' | grep -v '^v8-introspect@' | grep -v ':' | sort -u >> ../DEPENDENCIES.md || true
 	@echo '```' >> DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
 	@echo "Updated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> DEPENDENCIES.md
@@ -72,7 +66,7 @@ build: fmt sbom
 	ln -sf target/release/malwi .
 
 addon:
-	cd node-addon && npm install && npm audit --audit-level=high && npm run build
+	cd node-addon && npx node-gyp@12 rebuild
 
 addon-install: addon
 	@mkdir -p node-addon/prebuilt/$(ADDON_PLATFORM)/$(NODE_VERSION)
@@ -88,7 +82,6 @@ addon-all:
 		echo "Error: MALWI_TEST_BINARIES not set"; \
 		exit 1; \
 	fi
-	cd node-addon && npm install
 	@# Build for current platform only (can't cross-compile native addons)
 	@for platform_spec in \
 		"darwin-arm64:arm64/mac/node" \
@@ -132,7 +125,6 @@ addon-node25:
 		echo "Error: NODE_TARGET not set (e.g., NODE_TARGET=25.4.0)"; \
 		exit 1; \
 	fi
-	cd node-addon && npm install
 	@major=$$(echo $(NODE_TARGET) | cut -d. -f1); \
 	./scripts/build-addon.sh "$$(which node)" \
 		"node-addon/prebuilt/$(ADDON_PLATFORM)/node$$major" "$(LLVM_PATH)"
@@ -170,6 +162,6 @@ test: fixtures
 
 clean:
 	cargo clean
-	rm -rf node-addon/build node-addon/node_modules
+	rm -rf node-addon/build
 	rm -f malwi
 	$(MAKE) -C tests clean
