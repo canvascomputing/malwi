@@ -22,7 +22,7 @@ pip install --user malwi
 
 ## Demo
 
-A policy controls what `malwi` allows, denies, warns about, or logs. The default policy warns on credential access, privilege escalation, and suspicious commands:
+A policy controls what `malwi` allows, denies, warns about, or logs. The [default policy](cli/src/policies/default.yaml) warns on credential access, privilege escalation, and suspicious commands:
 
 ```bash
 $ malwi x python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"

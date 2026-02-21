@@ -2,6 +2,7 @@
 
 mod agent_server;
 mod auto_policy;
+mod command_analysis;
 mod config;
 mod default_policy;
 mod monitor;

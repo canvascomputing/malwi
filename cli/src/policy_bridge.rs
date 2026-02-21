@@ -3,7 +3,8 @@
 //! Loads policies, derives hook configurations, and evaluates trace events.
 
 use malwi_policy::{
-    EnforcementMode, HookSpecKind, Operation, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
+    Category, EnforcementMode, HookSpecKind, Operation, PolicyDecision, PolicyEngine,
+    PolicyHookSpec, Runtime, SectionKey,
 };
 use malwi_protocol::{HookConfig, HookType, NetworkInfo, TraceEvent};
 
@@ -226,7 +227,8 @@ impl ActivePolicy {
         }
 
         let disp = self.evaluate_network_phase(event, disp);
-        self.evaluate_file_phase(event, disp)
+        let disp = self.evaluate_file_phase(event, disp);
+        self.evaluate_command_phase(event, disp)
     }
 
     /// Evaluate networking policy (URL, domain, endpoint, protocol) against a trace event.
@@ -441,6 +443,71 @@ impl ActivePolicy {
         disp
     }
 
+    /// Collect file deny/warn/log patterns from the `files:` policy section.
+    fn file_deny_patterns(&self) -> Vec<&str> {
+        let key = SectionKey::global(Category::Files);
+        self.engine
+            .policy()
+            .get_section(&key)
+            .map(|s| {
+                s.deny_rules
+                    .iter()
+                    .map(|r| r.pattern.original())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Collect command deny/warn/log patterns from the `commands:` policy section.
+    fn command_deny_patterns(&self) -> Vec<&str> {
+        let key = SectionKey::global(Category::Execution);
+        self.engine
+            .policy()
+            .get_section(&key)
+            .map(|s| {
+                s.deny_rules
+                    .iter()
+                    .map(|r| r.pattern.original())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Run the deterministic command triage layer on exec events.
+    ///
+    /// If suspicious, escalates the disposition to at least Warn.
+    fn evaluate_command_phase(
+        &self,
+        event: &TraceEvent,
+        disp: EventDisposition,
+    ) -> EventDisposition {
+        if event.hook_type != HookType::Exec || disp.is_blocked() {
+            return disp;
+        }
+        let args: Vec<&str> = event
+            .arguments
+            .iter()
+            .filter_map(|a| a.display.as_deref())
+            .collect();
+        let file_patterns = self.file_deny_patterns();
+        let cmd_patterns = self.command_deny_patterns();
+        match crate::command_analysis::analyze_command(
+            &event.function,
+            &args,
+            &file_patterns,
+            &cmd_patterns,
+        ) {
+            Some(analysis) => pick_stricter(
+                disp,
+                EventDisposition::Warn {
+                    rule: analysis.reason,
+                    section: "analysis".to_string(),
+                },
+            ),
+            None => disp,
+        }
+    }
+
     /// Check if the policy has any sections with review or block mode.
     /// Used to determine if review mode should be enabled in the agent.
     pub fn has_blocking_sections(&self) -> bool {
@@ -593,7 +660,7 @@ fn extract_url_from_arg(arg: &str) -> Option<String> {
 
 /// Normalize a file path by collapsing `.` and `..` segments.
 /// Prevents traversal bypasses like `/tmp/../../home/.ssh/id_rsa`.
-fn normalize_path(path: &str) -> String {
+pub(crate) fn normalize_path(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for seg in path.split('/') {
         match seg {
@@ -2212,6 +2279,91 @@ files:
         assert!(
             !disp.should_display(),
             "Python open() should not be checked by file phase (no python: rules)"
+        );
+    }
+
+    // =====================================================================
+    // Tests for command analysis integration
+    // =====================================================================
+
+    #[test]
+    fn test_command_analysis_ln_sensitive_warns() {
+        // `ln` is allowed by commands, but targeting ~/.ssh triggers analysis warning
+        let engine = PolicyEngine::from_yaml(
+            r#"
+version: 1
+commands:
+  allow:
+    - ln
+files:
+  warn:
+    - "*/.ssh/**"
+"#,
+        )
+        .unwrap();
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
+
+        let event = make_exec_event("ln", &["-s", "~/.ssh", "/tmp/x"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.should_display(),
+            "ln -s ~/.ssh /tmp/x should be warned by command analysis"
+        );
+    }
+
+    #[test]
+    fn test_command_analysis_blocked_stays_blocked() {
+        // If curl is already blocked by commands: deny, analysis doesn't downgrade
+        let engine = PolicyEngine::from_yaml(
+            r#"
+version: 1
+commands:
+  deny:
+    - curl
+files:
+  warn:
+    - "*/.ssh/**"
+"#,
+        )
+        .unwrap();
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
+
+        let event = make_exec_event("curl", &["file:///etc/passwd"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "blocked curl should stay blocked even with suspicious args"
+        );
+    }
+
+    #[test]
+    fn test_command_analysis_curl_file_protocol_warns() {
+        // curl is in the log list; file:// protocol triggers analysis warning
+        let engine = PolicyEngine::from_yaml(
+            r#"
+version: 1
+commands:
+  log:
+    - curl
+"#,
+        )
+        .unwrap();
+        let policy = ActivePolicy {
+            engine,
+            fn_cache: Default::default(),
+        };
+
+        let event = make_exec_event("curl", &["file:///etc/passwd"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            matches!(disp, EventDisposition::Warn { .. }),
+            "curl file:///etc/passwd should be warned by analysis"
         );
     }
 }
