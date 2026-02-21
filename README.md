@@ -225,3 +225,15 @@ malwi x /usr/local/bin/bash
 
 See [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
+## Security
+
+To report a vulnerability, email [security@canvascomputing.org](mailto:security@canvascomputing.org). See [SECURITY.md](.github/SECURITY.md) for details.
+
+### Dependencies
+
+A full dependency listing is automatically regenerated on every build when `Cargo.lock` or `package-lock.json` change. See [`DEPENDENCIES.md`](DEPENDENCIES.md).
+
+Regenerate manually:
+
+    make sbom
+

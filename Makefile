@@ -1,4 +1,4 @@
-.PHONY: all build fmt format bump addon addon-install addon-all addon-node25 test clean fixtures
+.PHONY: all build fmt format bump addon addon-install addon-all addon-node25 test clean fixtures sbom
 
 # Detect platform for addon installation
 UNAME_S := $(shell uname -s)
@@ -45,7 +45,29 @@ format: fmt
 bump:
 	@bash scripts/bump-version.sh $(VERSION)
 
-build: fmt
+sbom: DEPENDENCIES.md
+
+DEPENDENCIES.md: Cargo.lock node-addon/package-lock.json
+	@echo "# Dependencies" > DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo "Auto-generated from \`Cargo.lock\` and \`node-addon/package-lock.json\`." >> DEPENDENCIES.md
+	@echo "Regenerate: \`make sbom\`" >> DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo "## Rust" >> DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo '```' >> DEPENDENCIES.md
+	cargo tree --workspace --depth 1 --prefix none | grep -v '^malwi' | grep -v '^$$' | sed 's/ (.*//' | sort -u >> DEPENDENCIES.md
+	@echo '```' >> DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo "## Node.js (build tooling)" >> DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo '```' >> DEPENDENCIES.md
+	cd node-addon && npm ls --all --parseable --long 2>/dev/null | sed 's/.*node_modules\///' | sed 's/.*://' | grep -v '^v8-introspect@' | grep -v ':' | sort -u >> ../DEPENDENCIES.md || true
+	@echo '```' >> DEPENDENCIES.md
+	@echo "" >> DEPENDENCIES.md
+	@echo "Updated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> DEPENDENCIES.md
+
+build: fmt sbom
 	cargo build --release
 	ln -sf target/release/malwi .
 
