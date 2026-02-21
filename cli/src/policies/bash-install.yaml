@@ -178,6 +178,48 @@ commands:
     - codesign     # re-signs modified binaries to bypass integrity checks
     - spctl        # disables Gatekeeper: spctl --master-disable
     - hdiutil      # mounts/creates disk images for data staging
+    # Linux scripting interpreters (L1) — arbitrary code bypassing traced process
+    - gjs          # GNOME JavaScript: D-Bus, file, network via GLib/Gio
+    - dbus-send    # D-Bus messages: invoke polkit, systemd, NetworkManager
+    - gdbus        # GLib D-Bus: read GNOME Keyring, control services
+    - busctl       # systemd D-Bus: start/stop/enable services
+    # Linux data exfiltration (L2)
+    - xdg-open     # opens URLs in browser bypassing network hooks
+    - wl-copy      # Wayland clipboard write: cat creds | wl-copy
+    - wl-paste     # Wayland clipboard read: access previously copied secrets
+    # Linux credential readers (L3) — access desktop keyring stores
+    - secret-tool  # GNOME Keyring: secret-tool lookup service github
+    - kwallet-query  # KDE Wallet: kwallet-query -r entry kdewallet
+    - kwalletcli   # KDE Wallet CLI (alternative)
+    - keyctl       # kernel keyring: keyctl read <key-id>
+    - pass         # password-store: pass show email/gmail
+    # Linux reconnaissance (L4) — pre-indexed file search
+    - locate       # locate '*.pem' finds all credential files instantly
+    - mlocate      # alternative locate implementation
+    - plocate      # modern locate implementation
+    # Linux security bypass (L5) — disable protections, escape isolation
+    - setenforce   # disable SELinux: setenforce 0
+    - aa-disable   # disable AppArmor: aa-disable /usr/bin/target
+    - apparmor_parser  # remove AppArmor profile: apparmor_parser -R
+    - chattr       # remove immutable flag: chattr -i /etc/passwd
+    - setcap       # set capabilities: setcap cap_net_raw+ep binary
+    - debugfs      # raw ext2/3/4 access, bypasses ALL permissions
+    - chroot       # change root filesystem, escape containers
+    - unshare      # create namespaces: bypass network/PID isolation
+    - nsenter      # enter namespaces: nsenter -t 1 -m -p (container escape)
+    - mount        # mount attacker NFS/CIFS, bind-mount escape
+    # Kernel/module manipulation (L6) — rootkit installation
+    - insmod       # load kernel module: insmod rootkit.ko
+    - modprobe     # load module by name (resolves dependencies)
+    - rmmod        # remove module: rmmod apparmor disables MAC
+    - kexec        # load new kernel, bypass secure boot
+    # Process memory/injection (L7) — dump credentials via ptrace
+    - strace       # trace syscalls: strace -e read -p <pid>
+    - ltrace       # trace library calls, captures arguments
+    - gdb          # attach to process, inject code, dump memory
+    - gcore        # dump process core: gcore <pid>
+    # Linux privilege escalation (L9)
+    - pkexec       # PolicyKit: pkexec bash (CVE-2021-4034 PwnKit)
 
   warn:
     # eval is common but dangerous
@@ -241,6 +283,22 @@ files:
     - "*/Safari/**"
     # Shared memory (S5.3)
     - "/dev/shm/*"
+    # Linux credential stores (L3)
+    - "~/.local/share/keyrings/**"     # GNOME Keyring files
+    - "~/.local/share/kwalletd/**"     # KDE Wallet files
+    # Linux persistence (L8)
+    - "~/.config/autostart/**"         # XDG autostart entries
+    - "~/.config/systemd/user/**"      # systemd user services
+    - "/etc/udev/rules.d/**"           # udev rules (persistence via device events)
+    - "/etc/init.d/**"                 # SysV init scripts
+    - "/var/spool/cron/**"             # cron spool directory
+    - "/etc/ld.so.preload"             # system-wide preload (rootkit)
+    - "/etc/ld.so.conf"                # library search paths (hijack)
+    - "/etc/ld.so.conf.d/**"           # library search path fragments
+    # Process information (credential dumping)
+    - "/proc/*/environ"                # other processes' env vars (secrets)
+    - "/proc/*/maps"                   # process memory maps (aids dumping)
+    - "/proc/*/mem"                    # raw process memory (credential extraction)
 
 # Protect sensitive environment variables from exfiltration.
 envvars:

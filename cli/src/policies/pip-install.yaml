@@ -47,6 +47,31 @@ commands:
     - kill
     - pkill
     - killall
+    # Linux scripting interpreters — arbitrary code bypassing traced process
+    - gjs          # GNOME JavaScript: D-Bus, file, network access
+    - dbus-send    # D-Bus: invoke polkit, systemd, NetworkManager
+    - gdbus        # GLib D-Bus tool
+    - busctl       # systemd D-Bus introspection/invocation
+    # Linux data exfiltration
+    - xdg-open     # opens URLs in browser bypassing network hooks
+    # Linux credential readers
+    - secret-tool  # GNOME Keyring CLI
+    # Process memory/injection — dump credentials via ptrace
+    - strace       # trace syscalls of other processes
+    - gdb          # attach to process, inject code, dump memory
+    # Linux privilege escalation
+    - pkexec       # PolicyKit: pkexec bash (CVE-2021-4034)
+    # Linux security bypass — catastrophic impact
+    - setenforce   # disable SELinux
+    - aa-disable   # disable AppArmor
+    - debugfs      # raw filesystem access, bypasses ALL permissions
+    - nsenter      # container escape via namespace entry
+    # Kernel manipulation — rootkit installation
+    - insmod       # load kernel module
+    - modprobe     # load kernel module by name
+    - rmmod        # remove kernel module (disable security)
+    - kexec        # load new kernel, bypass all controls
+    - setcap       # set file capabilities (grant root-like powers)
 
 network:
   allow:
@@ -79,6 +104,11 @@ files:
     - "*.key"
     - "*id_rsa*"
     - "*id_ed25519*"
+    # Linux credential stores
+    - "~/.local/share/keyrings/**"     # GNOME Keyring files
+    - "~/.local/share/kwalletd/**"     # KDE Wallet files
+    # System-level preload (rootkit vector)
+    - "/etc/ld.so.preload"             # system-wide LD_PRELOAD
 
 # Protect sensitive environment variables.
 envvars:

