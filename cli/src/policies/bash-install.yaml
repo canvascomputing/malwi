@@ -56,7 +56,6 @@ commands:
     - mv
     - rm
     - mkdir
-    - ln
     - install
     - cat
     - tee
@@ -154,11 +153,14 @@ commands:
     - sftp
     # macOS keychain access (S2.3)
     - security
+    # File access bypass via if=/of= args
+    - dd
 
   warn:
-    # eval and dd are common but dangerous
+    # eval is common but dangerous
     - eval
-    - dd
+    # Symlink creation can bypass file path patterns
+    - ln
     # Obfuscation tools (S4.1)
     - base64
     - xxd
@@ -233,15 +235,26 @@ envvars:
     - DYLD_INSERT_LIBRARIES
     - LD_PRELOAD
 
-# Block credential-interception native functions.
+# Block credential-interception and filesystem bypass functions.
+# Note: connect/socket/sendto/bind are NOT denied here because the agent
+# uses them for CLI communication. Raw networking is blocked via commands:
+# deny (nc, socat) and protocols: [https, http].
 symbols:
   deny:
+    # Credential interception
     - getpass
     - crypt
+    # Symlink/hardlink creation (bypass file path patterns)
+    - symlink
+    - link
+    # Direct syscall wrapper (prevents SYS_openat bypass of open() hooks)
+    - syscall
 
+# Restrict to HTTP/HTTPS protocols only.
 # Block cloud metadata endpoints (SSRF protection).
 # Warn on suspicious TLDs and anonymity networks.
 network:
+  protocols: [https, http]
   deny:
     - "169.254.169.254/**"
     - "metadata.google.internal/**"

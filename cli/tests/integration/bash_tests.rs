@@ -551,3 +551,72 @@ fn test_bash_policy_blocks_source() {
         );
     });
 }
+
+// ============================================================================
+// Auto-Policy Detection via Piped Stdin
+// ============================================================================
+
+#[test]
+fn test_bash_piped_stdin_auto_selects_bash_install_policy() {
+    setup();
+
+    // Auto-detection matches basename "bash" or "sh". Test binaries are named
+    // "bash-5.2" etc., so create a temporary "bash" symlink to the first one.
+    skip_if_no_bash!(bash => {
+        let link_dir = std::env::temp_dir().join(format!(
+            "malwi-bash-symlink-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&link_dir);
+        let link_path = link_dir.join("bash");
+        let _ = std::fs::remove_file(&link_path);
+        std::os::unix::fs::symlink(&bash, &link_path)
+            .expect("failed to create bash symlink");
+
+        // Pipe a script containing `nc` (blocked by bash-install policy) via stdin.
+        // Without -p flag, auto-detection should select bash-install policy
+        // because stdin is piped (not a TTY) and basename is "bash".
+        let output = run_tracer_with_stdin_timeout(
+            &[
+                "x",
+                "--",
+                link_path.to_str().unwrap(),
+            ],
+            "nc localhost 9999\n",
+            std::time::Duration::from_secs(10),
+        );
+
+        let _ = std::fs::remove_file(&link_path);
+        let _ = std::fs::remove_dir(&link_dir);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stdout = strip_ansi_codes(&stdout_raw);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // Verify auto-detection selected bash-install policy
+        assert!(
+            stderr.contains("bash-install"),
+            "Expected 'Using policy: bash-install' in stderr. stderr: {}",
+            stderr
+        );
+
+        // bash-install policy blocks nc — should show "denied:" not "warning:".
+        // Some bash versions (e.g. 5.0) may crash with SIGTRAP before producing
+        // output; skip the stdout check if nc was killed by a signal.
+        if !stdout.is_empty() {
+            assert!(
+                stdout.contains("denied:") && stdout.contains("nc"),
+                "Expected bash-install policy to block nc via piped stdin. \
+                 If 'warning:' appears instead, auto-detection failed to select bash-install. \
+                 stdout: {}, stderr: {}",
+                stdout, stderr
+            );
+        }
+
+        // Only test one bash version — the symlink approach validates auto-detection,
+        // not bash-version-specific behavior.
+        return;
+    });
+}

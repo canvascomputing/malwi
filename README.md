@@ -51,7 +51,7 @@ $ malwi x -p policy.yaml -- node app.js
 version: 1
 # Data exfiltration — only allow your API, block everything else
 network:
-  allow: ["api.canvascomputing.org/**"]
+  allow: ["canvascomputing.org/**"]
   deny: ["*/**"]
 
 # Reverse shells and payload downloads
@@ -119,7 +119,13 @@ symbols:
 | **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
 | **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
 | **Deep HTTP Inspection** | Extracts URLs and arguments from HTTP calls for policy matching. **Node.js:** http/https, axios, got, node-fetch. **Python:** requests, httpx, aiohttp, urllib3, http.client, urllib.request, websockets, dns.resolver |
-| ⚠️ **Direct Syscall Detection** | Not yet supported. Will detect inline `SVC`/`SYSCALL` instructions that bypass libc/libSystem calls |
+
+| ⚠️ Limitations | Explanation | Future Mitigation |
+|:--|:--|:--|
+| **Direct Syscall Detection** | Inline `SVC`/`SYSCALL` instructions bypass libc hooks. The `syscall()` libc wrapper is denied in bash-install policy; full inline detection via the `syscalls:` section is available for hardened deployments | `in planning` |
+| **[SIP-Protected Child Processes](#macos-system-integrity-protection-sip)** | On macOS, SIP-protected binaries (e.g. `/usr/bin/curl`) strip `DYLD_INSERT_LIBRARIES`, so the agent is not injected into them. File arguments are still checked at exec time via the parent process | `in planning` |
+| **Symlink & Hardlink Indirection** | `ln -s ~/.ssh /tmp/x; cat /tmp/x/id_rsa` — the aliased path doesn't match deny patterns. Mitigated: `symlink`/`link` libc calls are denied and `ln` is warned in bash-install policy, preventing alias creation in the traced process | `in progress`: AI based detection |
+| **File Protocol Usage** | `curl file:///etc/passwd` accesses local files through curl's HTTP stack, not the bash process's `open()`. Partially mitigated: if curl is not SIP-protected, its internal `open()` is hooked | `in progress`: AI based detection |
 
 ## Auto-policies
 

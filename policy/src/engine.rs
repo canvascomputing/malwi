@@ -486,6 +486,17 @@ impl PolicyEngine {
                         kind: HookSpecKind::Syscall,
                     });
                 }
+                Category::Files => {
+                    // Hook open/openat to monitor file access.
+                    // CLI-side evaluate_trace() extracts paths and checks against files: policy.
+                    for sym in &["open", "openat"] {
+                        specs.push(PolicyHookSpec {
+                            runtime: None,
+                            pattern: sym.to_string(),
+                            kind: HookSpecKind::Function,
+                        });
+                    }
+                }
                 Category::EnvVars => {
                     // Emit a wildcard spec to signal envvar monitoring enablement,
                     // plus individual deny patterns for agent-side blocking.
@@ -1581,9 +1592,6 @@ network:
   deny:
     - "*.onion"
   protocols: [tcp, https]
-files:
-  deny:
-    - "/etc/*"
 python:
   deny:
     - eval
@@ -1593,9 +1601,31 @@ python:
         let specs = engine.extract_hook_specs();
 
         // Only python should produce specs
-        // domains, protocols, files should be skipped
+        // domains, protocols should be skipped
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].pattern, "eval");
+    }
+
+    #[test]
+    fn test_extract_hook_specs_files_emits_open_openat() {
+        let engine = engine_from_yaml(
+            r#"
+version: 1
+files:
+  deny:
+    - "/etc/*"
+"#,
+        );
+
+        let specs = engine.extract_hook_specs();
+
+        // files: section should emit open and openat native function specs
+        assert_eq!(specs.len(), 2);
+        let patterns: Vec<&str> = specs.iter().map(|s| s.pattern.as_str()).collect();
+        assert!(patterns.contains(&"open"));
+        assert!(patterns.contains(&"openat"));
+        assert!(specs.iter().all(|s| s.runtime.is_none()));
+        assert!(specs.iter().all(|s| s.kind == HookSpecKind::Function));
     }
 
     #[test]

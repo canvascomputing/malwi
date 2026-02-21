@@ -159,8 +159,8 @@ pub(crate) fn detect_policy(program: &[String]) -> Option<&'static str> {
 }
 
 /// Check whether bash/sh is being run non-interactively (i.e. running a script).
-/// Returns true for: `bash -c "..."`, `bash script.sh`.
-/// Returns false for: bare `bash`, `bash -i`, `bash --norc` (interactive REPL).
+/// Returns true for: `bash -c "..."`, `bash script.sh`, piped stdin.
+/// Returns false for: bare `bash` (TTY), `bash -i`, `bash --norc` (interactive REPL).
 fn is_bash_non_interactive(argv: &[String]) -> bool {
     // Skip argv[0] (the bash binary itself).
     let args = if argv.len() > 1 { &argv[1..] } else { &[] };
@@ -179,6 +179,17 @@ fn is_bash_non_interactive(argv: &[String]) -> bool {
         if !arg.starts_with('-') {
             return true;
         }
+    }
+
+    // Explicit `-i` flag → interactive shell, even if stdin is piped
+    if args.iter().any(|a| a == "-i") {
+        return false;
+    }
+
+    // Stdin is piped → script via stdin (e.g. curl ... | malwi x bash)
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return true;
     }
 
     false
@@ -696,15 +707,26 @@ mod tests {
     // =====================================================================
 
     #[test]
-    fn test_detect_bash_install_bare_bash_is_interactive() {
-        // Bare `bash` is an interactive REPL — should NOT match bash-install.
-        // (When stdin is a TTY, as in tests, bare bash is interactive.)
-        assert_eq!(detect_policy(&strs(&["bash"])), None);
+    fn test_detect_bash_install_bare_bash_depends_on_stdin() {
+        // Bare `bash` is interactive only when stdin is a TTY.
+        // In cargo test, stdin is piped → correctly matches bash-install.
+        // In a real terminal, stdin is a TTY → no match (interactive REPL).
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            assert_eq!(detect_policy(&strs(&["bash"])), None);
+        } else {
+            assert_eq!(detect_policy(&strs(&["bash"])), Some("bash-install"));
+        }
     }
 
     #[test]
-    fn test_detect_bash_install_bare_sh_is_interactive() {
-        assert_eq!(detect_policy(&strs(&["sh"])), None);
+    fn test_detect_bash_install_bare_sh_depends_on_stdin() {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            assert_eq!(detect_policy(&strs(&["sh"])), None);
+        } else {
+            assert_eq!(detect_policy(&strs(&["sh"])), Some("bash-install"));
+        }
     }
 
     #[test]
@@ -733,7 +755,8 @@ mod tests {
 
     #[test]
     fn test_detect_bash_interactive_flag_only() {
-        // `bash -i` is explicitly interactive — should NOT match.
+        // `bash -i` is explicitly interactive — should NOT match,
+        // even when stdin is piped (e.g. in cargo test).
         assert_eq!(detect_policy(&strs(&["bash", "-i"])), None);
     }
 
@@ -982,6 +1005,60 @@ mod tests {
 
         let d = engine.evaluate_envvar("LD_PRELOAD");
         assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_bash_install_blocks_dd() {
+        let engine = bash_install_engine();
+
+        // dd is in deny: (Block mode) — prevents if=/of= file access bypass
+        let d = engine.evaluate_execution("dd if=~/.ssh/id_rsa of=/dev/stdout");
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.section_mode(), EnforcementMode::Block);
+    }
+
+    #[test]
+    fn test_bash_install_warns_ln() {
+        let engine = bash_install_engine();
+
+        // ln is in warn: mode — symlink creation can bypass file path patterns
+        let d = engine.evaluate_execution("ln -s ~/.ssh /tmp/x");
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.section_mode(), EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_bash_install_blocks_symlink_link_symbols() {
+        let engine = bash_install_engine();
+
+        let d = engine.evaluate_native_function("symlink", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+
+        let d = engine.evaluate_native_function("link", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_bash_install_blocks_syscall_symbol() {
+        let engine = bash_install_engine();
+
+        let d = engine.evaluate_native_function("syscall", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_bash_install_protocols_restricted() {
+        let engine = bash_install_engine();
+
+        assert_eq!(
+            engine.evaluate_protocol("https").action,
+            PolicyAction::Allow
+        );
+        assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
+
+        // Raw TCP/UDP denied
+        assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Deny);
+        assert_eq!(engine.evaluate_protocol("udp").action, PolicyAction::Deny);
     }
 
     #[test]
