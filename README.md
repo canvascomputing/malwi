@@ -26,13 +26,13 @@ A policy controls what `malwi` allows, denies, warns about, or logs. The default
 
 ```bash
 $ malwi x python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
-[malwi] warned: AWS_SECRET_ACCESS_KEY                    # credential theft
+[malwi] warned: AWS_SECRET_ACCESS_KEY
 
 $ malwi x node -e "require('child_process').execSync('ssh user@canvascomputing.org')"
-[malwi] warned: ssh user@canvascomputing.org             # lateral movement
+[malwi] warned: ssh user@canvascomputing.org
 
 $ malwi x bash -c 'echo cGF5bG9hZA== | base64 -d | sh'
-[malwi] warned: base64 -d                                # obfuscated payload
+[malwi] warned: base64 -d
 ```
 
 ## Policies
@@ -185,6 +185,35 @@ macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries under cert
 | **⚠️ SIP-protected** | `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications` |
 
 > Security researchers may disable SIP at their own risk.
+
+### Example Bash Installation
+
+This is how you could install a particular bash version in `/usr/local`:
+
+```bash
+V=5.2.37  # check https://ftp.gnu.org/gnu/bash/ for latest
+
+curl -fsSO https://ftp.gnu.org/gnu/bash/bash-$V.tar.gz
+
+# verify (requires gpg)
+curl -fsSO https://ftp.gnu.org/gnu/bash/bash-$V.tar.gz.sig
+gpg --keyserver keyserver.ubuntu.com --recv-keys 7C0135FB088AAF6C66C650B9BB5869F064EA74AB
+gpg --verify bash-$V.tar.gz.sig bash-$V.tar.gz
+
+# build and install
+tar xf bash-$V.tar.gz && cd bash-$V
+./configure --prefix=/usr/local && make && sudo make install
+
+# set as default shell (optional)
+sudo bash -c 'echo /usr/local/bin/bash >> /etc/shells'
+chsh -s /usr/local/bin/bash
+```
+
+Trace execution with `malwi`:
+
+```bash
+malwi x /usr/local/bin/bash
+```
 
 ## Development
 
