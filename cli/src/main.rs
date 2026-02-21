@@ -1,17 +1,12 @@
 //! Malwi-trace CLI - function tracing tool.
 
 mod agent_server;
-mod auto_policy;
-mod command_analysis;
-mod config;
-mod default_policy;
 mod monitor;
 mod native_spawn;
-mod policy_bridge;
+mod policy;
 mod shell_format;
 mod spawn;
 mod symbol_resolver;
-mod taxonomy;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -183,9 +178,9 @@ fn main() -> Result<()> {
             monitor::run_monitor(port, stack_trace)?;
         }
         Commands::P { name } => match name.as_deref() {
-            None => config::list_policies()?,
-            Some("reset") => config::reset_policies()?,
-            Some(name) => config::write_policy(name)?,
+            None => policy::list_policies()?,
+            Some("reset") => policy::reset_policies()?,
+            Some(name) => policy::write_policy(name)?,
         },
     }
 
@@ -579,40 +574,37 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         || !config.exec.is_empty();
 
     // Load policy (if applicable)
-    let active_policy: Option<policy_bridge::ActivePolicy> =
-        if let Some(ref path) = config.policy_file {
-            // Explicit --policy flag: try as named policy first, then as file path.
-            let path_str = path.to_string_lossy();
-            let p = if !path.exists() {
-                if let Some(yaml) = auto_policy::embedded_policy(&path_str) {
-                    policy_bridge::ActivePolicy::from_yaml(&yaml).map_err(|e| {
-                        anyhow::anyhow!("Failed to parse named policy '{}': {}", path_str, e)
-                    })?
-                } else {
-                    policy_bridge::ActivePolicy::from_file(&path_str)?
-                }
+    let active_policy: Option<policy::ActivePolicy> = if let Some(ref path) = config.policy_file {
+        // Explicit --policy flag: try as named policy first, then as file path.
+        let path_str = path.to_string_lossy();
+        let p = if !path.exists() {
+            if let Some(yaml) = policy::embedded_policy(&path_str) {
+                policy::ActivePolicy::from_yaml(&yaml).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse named policy '{}': {}", path_str, e)
+                })?
             } else {
-                policy_bridge::ActivePolicy::from_file(&path_str)?
-            };
-            Some(p)
-        } else if has_manual_hooks {
-            // Manual hooks given → no policy
-            None
-        } else if let Some(policy_name) = auto_policy::detect_policy(&program) {
-            // Auto-detected command-specific policy
-            let path = auto_policy::ensure_auto_policy(policy_name)?;
-            eprintln!("Using policy: {} ({})", policy_name, path.display());
-            Some(policy_bridge::ActivePolicy::from_file(
-                &path.to_string_lossy(),
-            )?)
+                policy::ActivePolicy::from_file(&path_str)?
+            }
         } else {
-            // Default policy from config file
-            let config_path = self::config::default_policy_path()?;
-            self::config::ensure_default_policy(&config_path)?;
-            Some(policy_bridge::ActivePolicy::from_file(
-                &config_path.to_string_lossy(),
-            )?)
+            policy::ActivePolicy::from_file(&path_str)?
         };
+        Some(p)
+    } else if has_manual_hooks {
+        // Manual hooks given → no policy
+        None
+    } else if let Some(policy_name) = policy::detect_policy(&program) {
+        // Auto-detected command-specific policy
+        let path = policy::ensure_auto_policy(policy_name)?;
+        eprintln!("Using policy: {} ({})", policy_name, path.display());
+        Some(policy::ActivePolicy::from_file(&path.to_string_lossy())?)
+    } else {
+        // Default policy from config file
+        let config_path = policy::default_policy_path()?;
+        policy::ensure_default_policy(&config_path)?;
+        Some(policy::ActivePolicy::from_file(
+            &config_path.to_string_lossy(),
+        )?)
+    };
 
     // Build hook configs from policy + manual specs
     let mut hook_configs: Vec<HookConfig> = Vec::new();
@@ -889,7 +881,7 @@ struct EventLoopConfig<'a> {
     stack_trace_enabled: bool,
     arg_filter: &'a ArgFilter,
     monitor_client: Option<&'a MonitorClient>,
-    active_policy: Option<&'a policy_bridge::ActivePolicy>,
+    active_policy: Option<&'a policy::ActivePolicy>,
     manual_functions: &'a HashSet<String>,
     requested_hooks: &'a [HookConfig],
 }
@@ -1100,8 +1092,8 @@ fn process_event(
                 // For policy-driven events: evaluate against policy
                 let disp = policy.evaluate_trace(&trace_event);
                 match disp {
-                    policy_bridge::EventDisposition::Suppress => return Ok(()),
-                    policy_bridge::EventDisposition::Block { rule, section } => {
+                    policy::EventDisposition::Suppress => return Ok(()),
+                    policy::EventDisposition::Block { rule, section } => {
                         emit_blocked(
                             &trace_event,
                             &rule,
@@ -1111,7 +1103,7 @@ fn process_event(
                         );
                         return Ok(());
                     }
-                    policy_bridge::EventDisposition::Warn {
+                    policy::EventDisposition::Warn {
                         rule: _,
                         section: _,
                     } => {
@@ -1126,8 +1118,7 @@ fn process_event(
                             return Ok(());
                         }
                     }
-                    policy_bridge::EventDisposition::Display
-                    | policy_bridge::EventDisposition::Review { .. } => {
+                    policy::EventDisposition::Display | policy::EventDisposition::Review { .. } => {
                         // Show the event normally
                     }
                 }
@@ -1168,7 +1159,7 @@ fn process_event(
             let decision = if !is_manual_function(&event.function, config.manual_functions) {
                 if let Some(pol) = config.active_policy {
                     match pol.evaluate_trace(&event) {
-                        policy_bridge::EventDisposition::Block { rule, section } => {
+                        policy::EventDisposition::Block { rule, section } => {
                             emit_blocked(
                                 &event,
                                 &rule,
@@ -1178,8 +1169,8 @@ fn process_event(
                             );
                             ReviewDecision::Block
                         }
-                        policy_bridge::EventDisposition::Suppress => ReviewDecision::Suppress,
-                        policy_bridge::EventDisposition::Warn { .. } => {
+                        policy::EventDisposition::Suppress => ReviewDecision::Suppress,
+                        policy::EventDisposition::Warn { .. } => {
                             emit_warning(
                                 &event,
                                 config.monitor_client,
@@ -1187,8 +1178,8 @@ fn process_event(
                             );
                             ReviewDecision::Warn
                         }
-                        policy_bridge::EventDisposition::Display => ReviewDecision::Allow,
-                        policy_bridge::EventDisposition::Review { .. } => {
+                        policy::EventDisposition::Display => ReviewDecision::Allow,
+                        policy::EventDisposition::Review { .. } => {
                             prompt_review_decision(&event, state.output_writer.as_deref_mut())
                         }
                     }

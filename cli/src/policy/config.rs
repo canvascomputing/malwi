@@ -45,10 +45,7 @@ pub(crate) fn ensure_default_policy(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(
-        path,
-        crate::default_policy::DEFAULT_SECURITY_YAML.trim_start(),
-    )?;
+    std::fs::write(path, super::templates::DEFAULT_SECURITY_YAML.trim_start())?;
     Ok(())
 }
 
@@ -92,11 +89,11 @@ pub(crate) fn reset_policies() -> Result<()> {
 
     for name in &names {
         let yaml = if *name == "default" {
-            crate::default_policy::DEFAULT_SECURITY_YAML
+            super::templates::DEFAULT_SECURITY_YAML
                 .trim_start()
                 .to_string()
         } else {
-            crate::auto_policy::embedded_policy(name)
+            super::templates::embedded_policy(name)
                 .ok_or_else(|| anyhow::anyhow!("No embedded template for '{}'", name))?
         };
         let path = dir.join(format!("{}.yaml", name));
@@ -110,11 +107,11 @@ pub(crate) fn reset_policies() -> Result<()> {
 /// Write a single policy from its embedded template.
 pub(crate) fn write_policy(name: &str) -> Result<()> {
     let yaml = if name == "default" {
-        crate::default_policy::DEFAULT_SECURITY_YAML
+        super::templates::DEFAULT_SECURITY_YAML
             .trim_start()
             .to_string()
     } else {
-        crate::auto_policy::embedded_policy(name).ok_or_else(|| {
+        super::templates::embedded_policy(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Unknown policy '{}'. Available: default, npm-install, pip-install, comfyui, openclaw, bash-install, air-gap, base",
                 name

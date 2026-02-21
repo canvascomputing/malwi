@@ -349,8 +349,14 @@ python:
     // files section inherited from base
     let files_key = SectionKey::global(Category::Files);
     let files = policy.get_section(&files_key).unwrap();
-    assert!(files.deny_rules.iter().any(|r| r.pattern.matches("~/.ssh/id_rsa")));
-    assert!(files.deny_rules.iter().any(|r| r.pattern.matches("server.pem")));
+    assert!(files
+        .deny_rules
+        .iter()
+        .any(|r| r.pattern.matches("~/.ssh/id_rsa")));
+    assert!(files
+        .deny_rules
+        .iter()
+        .any(|r| r.pattern.matches("server.pem")));
 }
 
 #[test]
@@ -371,9 +377,15 @@ network:
     let http_key = SectionKey::global(Category::Http);
     let http = policy.get_section(&http_key).unwrap();
     // Child's allow
-    assert!(http.allow_rules.iter().any(|r| r.pattern.matches("registry.npmjs.org/foo")));
+    assert!(http
+        .allow_rules
+        .iter()
+        .any(|r| r.pattern.matches("registry.npmjs.org/foo")));
     // Base's deny
-    assert!(http.deny_rules.iter().any(|r| r.pattern.matches("169.254.169.254/latest")));
+    assert!(http
+        .deny_rules
+        .iter()
+        .any(|r| r.pattern.matches("169.254.169.254/latest")));
 }
 
 #[test]
@@ -398,7 +410,10 @@ envvars:
     let section = policy.get_section(&envvar_key).unwrap();
 
     // *SECRET* should be in deny (from child, same as base — no conflict)
-    assert!(section.deny_rules.iter().any(|r| r.pattern.matches("MY_SECRET")));
+    assert!(section
+        .deny_rules
+        .iter()
+        .any(|r| r.pattern.matches("MY_SECRET")));
 
     // *TOKEN* should be in deny with Warn mode (from child's warn),
     // NOT in deny with Block mode (base's deny was skipped due to pattern dedup)
