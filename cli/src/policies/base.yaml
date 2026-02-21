@@ -1,0 +1,58 @@
+version: 1
+
+# Base security sections — shared across all malwi policies.
+# Each specific policy file includes these sections inline.
+# Reset with: malwi p base
+
+# Protect sensitive files from exfiltration.
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+
+# Protect sensitive environment variables.
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD
+
+# Block credential-interception native functions.
+symbols:
+  deny:
+    - getpass
+    - crypt
+
+# Block cloud metadata endpoints (SSRF protection).
+# Warn on suspicious TLDs and anonymity networks.
+network:
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn:
+    - "*.onion"
+    - "*.i2p"
+    - "*.bit"
+    - "*.loki"

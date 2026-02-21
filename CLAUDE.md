@@ -37,6 +37,9 @@ The tool injects an agent library into target processes to intercept function ca
 | `malwi-agent` | agent/ | Injected agent library (cdylib) |
 | `malwi-protocol` | protocol/ | Wire protocol types (TraceEvent, messages) |
 | `malwi-intercept` | intercept/ | Native function interception (code patching, module enumeration) |
+| `malwi-policy` | policy/ | Policy engine (YAML parsing, compilation, evaluation) |
+
+Policy YAML templates live in `cli/src/policies/` and are embedded at compile time via `include_str!`.
 
 ## Platform Support
 
@@ -116,6 +119,34 @@ binaries/
 ├── arm64/mac/bash/bash-5.2               # Direct executables
 ├── x64/linux/node/node-v.../bin/node     # Or direct executables
 └── x64/linux/python/python3.../bin/python3
+```
+
+## CLI Module Structure
+
+```
+cli/src/
+├── main.rs             # CLI entry point, arg parsing
+├── lib.rs              # Library root
+├── spawn.rs            # Process spawning orchestration
+├── native_spawn.rs     # posix_spawn/fork+exec implementation
+├── agent_server.rs     # HTTP server receiving agent events
+├── monitor.rs          # Trace event processing and display
+├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
+├── config.rs           # Policy file management (~/.config/malwi/)
+├── auto_policy.rs      # Auto-detection of command-specific policies
+├── default_policy.rs   # Default observe-mode policy constant
+├── policy_bridge.rs    # Policy evaluation bridge (function/network/file/envvar)
+├── shell_format.rs     # Shell output formatting
+│
+└── policies/           # YAML policy templates (embedded via include_str!)
+    ├── default.yaml    # Observe-mode policy (warn/log, no blocking)
+    ├── npm-install.yaml
+    ├── pip-install.yaml
+    ├── comfyui.yaml
+    ├── openclaw.yaml
+    ├── bash-install.yaml
+    ├── air-gap.yaml    # Total network isolation
+    └── base.yaml       # Shared base sections reference
 ```
 
 ## Agent Module Structure

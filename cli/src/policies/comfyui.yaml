@@ -1,0 +1,144 @@
+version: 1
+
+# Auto-policy for ComfyUI (AI image generation)
+# Customise: ~/.config/malwi/policies/comfyui.yaml
+#
+# Threat model: malicious custom node running arbitrary Python via importlib.
+# exec/compile/eval cannot be denied — Python's import system uses them.
+
+python:
+  deny:
+    # shell command execution
+    - os.system
+    - os.popen
+    # credential theft
+    - getpass.getpass
+    - keyring.get_password
+    - keyring.set_password
+    # native code escape hatch — blocks loading libc/C libraries
+    # to prevent raw socket exfiltration that bypasses network rules
+    - ctypes.CDLL
+    - ctypes.cdll.LoadLibrary
+    - ctypes.WinDLL
+    # exfiltration via allowed HTTP hosts — argument-constrained denies
+    - "requests.post": ["*api.github.com*"]
+    - "requests.put": ["*api.github.com*"]
+    - "requests.post": ["*upload.pypi.org*"]
+    - "httpx.post": ["*api.github.com*"]
+    - "aiohttp.ClientSession._request": ["*api.github.com*"]
+  warn:
+    # subprocess use — not blocked (ComfyUI uses it for GPU detection),
+    # but worth noticing if a custom node spawns processes
+    - subprocess.run
+    - subprocess.call
+    - subprocess.check_output
+    - subprocess.check_call
+    - subprocess.Popen.__init__
+
+# Read-only git + package management. Block write operations and dangerous tools.
+commands:
+  allow:
+    # custom node repos — read-only
+    - "git clone *"
+    - "git pull *"
+    - "git fetch *"
+    - "git checkout *"
+    - "git submodule *"
+    - "git status"
+    - "git rev-parse *"
+    - "git log *"
+    - "git diff *"
+    # custom node dependencies
+    - "pip install *"
+    - "pip3 install *"
+    - "python -m pip *"
+    - "python3 -m pip *"
+  deny:
+    # git write operations — exfiltration channel
+    - "git push *"
+    - "git remote add *"
+    - "git remote set-url *"
+    # data exfiltration tools
+    - curl
+    - wget
+    # remote access
+    - ssh
+    - nc
+    - ncat
+    # privilege escalation
+    - "*sudo*"
+    # shell spawning
+    - sh
+    - bash
+    - perl
+    - ruby
+
+# Restrict outbound HTTP to known model hosting and package registries.
+network:
+  allow:
+    # model downloads
+    - "huggingface.co/**"
+    - "*.huggingface.co/**"
+    - "civitai.com/**"
+    - "*.civitai.com/**"
+    # custom nodes and raw content (NOT *.github.com — blocks api.github.com)
+    - "github.com/**"
+    - "*.githubusercontent.com/**"
+    # pip packages — download only (not upload.pypi.org)
+    - "pypi.org/simple/**"
+    - "*.pypi.org/simple/**"
+    - "files.pythonhosted.org/**"
+    - "*.pythonhosted.org/**"
+    # ComfyUI web UI (any port — kept broad for compatibility)
+    - "127.0.0.1:*/**"
+    - "localhost:*/**"
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn:
+    - "*.onion"
+    - "*.i2p"
+    - "*.bit"
+    - "*.loki"
+  protocols: [https, http, wss, ws]
+
+# Protect sensitive files from exfiltration.
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+
+# Protect sensitive environment variables.
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD
+
+# Block credential-interception native functions.
+symbols:
+  deny:
+    - getpass
+    - crypt

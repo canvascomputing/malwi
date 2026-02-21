@@ -1,0 +1,115 @@
+version: 1
+
+# Air-gap policy — total network isolation.
+# No outbound connections of any kind.
+# Use: malwi x --policy air-gap -- <command>
+# Customise: ~/.config/malwi/policies/air-gap.yaml
+
+# Block ALL network access.
+network:
+  deny:
+    - "*"        # all domains
+    - "*/**"     # all URLs
+    - "*:*"      # all endpoints
+
+# Block network-capable commands, privilege escalation, and network config.
+commands:
+  deny:
+    # HTTP/download tools
+    - curl
+    - wget
+    - aria2c
+    # Remote access / file transfer
+    - ssh
+    - scp
+    - sftp
+    - ftp
+    - rsync
+    # Raw networking
+    - nc
+    - ncat
+    - netcat
+    - socat
+    - telnet
+    - openssl
+    # Network reconnaissance
+    - nmap
+    - ping
+    - ping6
+    - traceroute
+    - tracepath
+    # DNS tools
+    - dig
+    - nslookup
+    - host
+    # Privilege escalation (can change network config)
+    - sudo
+    - su
+    - doas
+    # Network configuration
+    - ip
+    - ifconfig
+    - iptables
+    - nft
+    - route
+
+# Block ALL networking at the C level — catches Python socket.connect(),
+# Node.js net.connect(), and Bash /dev/tcp regardless of runtime.
+symbols:
+  deny:
+    # Socket creation
+    - socket
+    # Outbound connections
+    - connect
+    # Data sending (covers UDP without connect, inherited FDs)
+    - sendto
+    - send
+    # Server binding/listening
+    - bind
+    - listen
+    - accept
+    - accept4
+    # DNS resolution
+    - getaddrinfo
+    - gethostbyname
+    - gethostbyname2
+    # Raw syscall wrapper (blocks syscall(SYS_socket, ...) style bypass)
+    - syscall
+    # Credential interception (from base policy)
+    - getpass
+    - crypt
+
+# Protect sensitive files from exfiltration.
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+
+# Protect sensitive environment variables.
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD

@@ -1,0 +1,159 @@
+version: 1
+
+# Auto-policy for openclaw (multi-channel AI gateway)
+# Customise: ~/.config/malwi/policies/openclaw.yaml
+
+nodejs:
+  allow:
+    - dns.lookup
+    - dns.resolve
+    - net.connect
+    - net.createServer
+    - tls.connect
+    - fetch
+    - "http.request"
+    - "https.request"
+    - "http.get"
+    - "https.get"
+    - "http.createServer"
+    - "https.createServer"
+  deny:
+    - eval
+    - vm.runInContext
+    - vm.runInNewContext
+    - vm.compileFunction
+    - "child_process.exec"
+    - "child_process.execSync"
+
+commands:
+  allow:
+    # Core runtime
+    - node
+    - git
+    - npm
+    - npx
+    - pnpm
+    - corepack
+    # Service management (daemon install/restart)
+    - launchctl
+    - systemctl
+    - schtasks
+    # Sandbox containers
+    - docker
+    # SSH tunnels (remote gateway connections)
+    - ssh
+    # TLS certificate generation
+    - openssl
+    # Audio/voice message processing (Discord)
+    - ffmpeg
+    - ffprobe
+    # macOS system info + keychain
+    - security
+    - sw_vers
+    - sysctl
+    - scutil
+    - defaults
+    - lsof
+    # Package management
+    - brew
+    # Google Cloud CLI (Gmail integration)
+    - gcloud
+    # Windows process control
+    - taskkill
+  deny:
+    # Network tools openclaw never uses (it uses Node.js HTTP)
+    - curl
+    - wget
+    - nc
+    - ncat
+    - netcat
+    - socat
+    - telnet
+    - scp
+    # Interpreters openclaw never spawns
+    - "python*"
+    - perl
+    - ruby
+    # Obfuscation / exfiltration
+    - base64
+    - xxd
+    - pbcopy
+    - xclip
+    # Persistence mechanisms
+    - crontab
+  warn:
+    # openclaw uses PTY shells and shell-env; warn for visibility
+    - sh
+    - bash
+  review:
+    # openclaw uses sudo for DNS/coredns setup; prompt user
+    - sudo
+    - su
+    - doas
+
+network:
+  allow:
+    - "openclaw.ai/**"
+    - "*.openclaw.ai/**"
+    - "registry.npmjs.org/**"
+    - "*.npmjs.org/**"
+    - "github.com/**"
+    - "*.githubusercontent.com/**"
+    - "api.anthropic.com/**"
+    - "api.openai.com/**"
+    - "slack.com/**"
+    - "*.slack.com/**"
+    - "api.telegram.org/**"
+    - "discord.com/**"
+    - "*.discord.com/**"
+    - "gateway.discord.gg/**"
+    - "graph.facebook.com/**"
+    - "127.0.0.1:*/**"
+    - "localhost:*/**"
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn: ["*.onion", "*.i2p", "*.bit", "*.loki"]
+  protocols: [https, http, wss, ws]
+
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*PASSWORD*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD
+  warn:
+    - "*TOKEN*"
+    - "*API_KEY*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - "CLAUDE_*"
+    - "OPENCLAW_*"
+    - HF_TOKEN
+
+# Block credential-interception native functions.
+symbols:
+  deny:
+    - getpass
+    - crypt

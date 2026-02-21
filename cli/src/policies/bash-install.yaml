@@ -1,0 +1,252 @@
+version: 1
+
+# Auto-policy for bash/sh install scripts (curl ... | bash)
+# Customise: ~/.config/malwi/policies/bash-install.yaml
+#
+# Threat model: malicious install scripts that exfiltrate credentials,
+# install persistence, or escalate privileges.
+# See SCRIPT_INSTALL.md for the full threat analysis.
+#
+# Key difference from the default policy: curl/wget are ALLOWED because
+# install scripts legitimately download files. Protection is provided by
+# file/envvar/network restrictions and blocking dangerous tools.
+
+# Allow download tools and common install utilities.
+# Deny interpreters, persistence, privilege escalation, obfuscation,
+# raw networking, clipboard access, DNS exfiltration, and remote access tools.
+commands:
+  allow:
+    # Download tools (install scripts need these)
+    - curl
+    - wget
+    # Package managers
+    - apt
+    - apt-get
+    - yum
+    - dnf
+    - brew
+    - pacman
+    - apk
+    - zypper
+    - dpkg
+    - rpm
+    - snap
+    - flatpak
+    - pip
+    - pip3
+    - npm
+    - gem
+    # Build tools
+    - make
+    - cmake
+    - gcc
+    - g++
+    - cc
+    - cargo
+    - rustup
+    - go
+    # File and text utilities
+    - tar
+    - unzip
+    - gzip
+    - gunzip
+    - bzip2
+    - xz
+    - cp
+    - mv
+    - rm
+    - mkdir
+    - ln
+    - install
+    - cat
+    - tee
+    - sed
+    - awk
+    - grep
+    - cut
+    - sort
+    - head
+    - tail
+    - wc
+    - tr
+    - find
+    - dirname
+    - basename
+    - mktemp
+    - realpath
+    - readlink
+    # Checksum and verification
+    - sha256sum
+    - sha1sum
+    - md5sum
+    - shasum
+    - gpg
+    - gpgv
+    # System info
+    - uname
+    - arch
+    - id
+    - whoami
+    - hostname
+    - getconf
+    - sw_vers
+    - lsb_release
+    - dpkg-architecture
+    # Process control
+    - "true"
+    - "false"
+    - test
+    - "["
+    - sleep
+    - env
+    - printenv
+    - which
+    - command
+    - type
+    # Version managers and tools
+    - git
+    - nvm
+    - rbenv
+    - pyenv
+    - asdf
+    - volta
+    - "python -m venv *"
+    - "python3 -m venv *"
+    # Shell utilities
+    - chmod
+    - chown
+    - chgrp
+    - touch
+    - date
+    - echo
+    - printf
+    - tput
+    - stty
+  deny:
+    # Interpreters — prevent proxy attacks (S4.2)
+    - "python*"
+    - perl
+    - ruby
+    - node
+    # Raw networking — prevent unmonitored connections (S5.3)
+    - nc
+    - ncat
+    - netcat
+    - socat
+    - telnet
+    # DNS exfiltration tools (S5.2)
+    - dig
+    - nslookup
+    - host
+    # Persistence mechanisms (S3.2, S8.1)
+    - crontab
+    - at
+    - launchctl
+    - systemctl
+    # Obfuscation tools (S4.1)
+    - base64
+    - xxd
+    - rev
+    # Clipboard exfiltration (S5.3)
+    - pbcopy
+    - pbpaste
+    - xclip
+    - xsel
+    # Remote access
+    - ssh
+    - scp
+    - sftp
+    # macOS keychain access (S2.3)
+    - security
+
+  warn:
+    # eval and dd are common but dangerous
+    - eval
+    - dd
+  review:
+    # Privilege escalation (S6.1) — review instead of block because
+    # legitimate installers (e.g. Homebrew) need sudo for system-level setup.
+    - sudo
+    - su
+    - doas
+
+# Protect credentials, shell profiles, persistence dirs, and system files.
+files:
+  deny:
+    # Credentials (S2.1)
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+    # Shell profiles (S3.1)
+    - "~/.bashrc"
+    - "~/.bash_profile"
+    - "~/.zshrc"
+    - "~/.zprofile"
+    - "~/.profile"
+    - "~/.login"
+    # Persistence directories (S3.2)
+    - "~/Library/LaunchAgents/*"
+    - "~/Library/LaunchDaemons/*"
+    - "/etc/cron*"
+    - "/etc/systemd/**"
+    # Git hooks (S3.3)
+    - ".git/hooks/*"
+    - "*/.git/hooks/*"
+    # System files
+    - "/etc/passwd"
+    - "/etc/shadow"
+    # Browser data (S2.1)
+    - "*/Google/Chrome/**"
+    - "*/Firefox/**"
+    - "*/Safari/**"
+    # Shared memory (S5.3)
+    - "/dev/shm/*"
+
+# Protect sensitive environment variables from exfiltration.
+envvars:
+  deny:
+    # Secret patterns (S2.2)
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    # Cloud provider prefixes
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    # Anti-tracing (S8.2)
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD
+
+# Block credential-interception native functions.
+symbols:
+  deny:
+    - getpass
+    - crypt
+
+# Block cloud metadata endpoints (SSRF protection).
+# Warn on suspicious TLDs and anonymity networks.
+network:
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn:
+    - "*.onion"
+    - "*.i2p"
+    - "*.bit"
+    - "*.loki"

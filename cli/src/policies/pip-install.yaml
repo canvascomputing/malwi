@@ -1,0 +1,88 @@
+version: 1
+
+# Auto-policy for pip install
+# Customise: ~/.config/malwi/policies/pip-install.yaml
+#
+# pip uses subprocess/exec/compile internally — cannot deny those.
+# Security: HTTP URL whitelist + command restrictions.
+
+# Trace networking calls — required for http: URL rules to fire.
+python:
+  allow:
+    - socket.create_connection
+    - socket.socket.connect
+    - ssl.SSLSocket.connect
+    - urllib.request.urlopen
+    - "http.client.HTTPConnection.request"
+    - "http.client.HTTPSConnection.request"
+
+commands:
+  allow:
+    - git
+  deny:
+    - curl
+    - wget
+    - ssh
+    - nc
+    - ncat
+    - "*sudo*"
+    - sh
+    - bash
+    - perl
+    - ruby
+
+network:
+  allow:
+    - "pypi.org/**"
+    - "*.pypi.org/**"
+    - "files.pythonhosted.org/**"
+    - "*.pythonhosted.org/**"
+  deny:
+    - "169.254.169.254/**"
+    - "metadata.google.internal/**"
+  warn:
+    - "*.onion"
+    - "*.i2p"
+    - "*.bit"
+    - "*.loki"
+
+# Protect sensitive files from exfiltration.
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+
+# Protect sensitive environment variables.
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD
+
+# Block credential-interception native functions.
+symbols:
+  deny:
+    - getpass
+    - crypt
