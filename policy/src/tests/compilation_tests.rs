@@ -297,8 +297,7 @@ python:
 // Includes tests
 // =====================================================================
 
-use crate::compiler::{compile_policy_yaml_with_includes, resolve_includes};
-use crate::parser::parse_policy;
+use crate::compiler::compile_policy_yaml_with_includes;
 
 fn test_resolver(name: &str) -> Option<String> {
     match name {

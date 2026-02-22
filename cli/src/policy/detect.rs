@@ -243,7 +243,6 @@ impl PathPattern {
 
 #[cfg(test)]
 mod tests {
-    use super::super::templates::embedded_policy;
     use super::*;
 
     #[test]
