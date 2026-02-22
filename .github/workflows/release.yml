@@ -218,6 +218,9 @@ jobs:
           name: agent-${{ matrix.platform }}
           path: malwi.data/data/lib
 
+      - name: Ensure data directory structure
+        run: mkdir -p malwi.data/data/lib
+
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
