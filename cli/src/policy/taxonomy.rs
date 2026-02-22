@@ -76,6 +76,7 @@ pub struct TaxonomyNetwork {
 }
 
 /// Parsed taxonomy data (shared + current-OS commands merged).
+#[allow(dead_code)] // fields used in tests and reserved for future policy generation
 pub struct Taxonomy {
     commands: HashMap<String, (Category, Vec<Trait>)>,
     pub files: TaxonomyFiles,

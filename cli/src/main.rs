@@ -1065,6 +1065,7 @@ fn process_event(
                 // agent's hook list.
                 for hc in config.requested_hooks {
                     if hc.hook_type == malwi_protocol::HookType::Native
+                        && config.manual_functions.contains(&hc.symbol)
                         && !hooks
                             .iter()
                             .any(|h| h == &hc.symbol || matches_glob(&hc.symbol, h))

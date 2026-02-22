@@ -602,13 +602,16 @@ fn test_bash_piped_stdin_auto_selects_bash_install_policy() {
             stderr
         );
 
-        // bash-install policy blocks nc — should show "denied:" not "warning:".
-        // Some bash versions (e.g. 5.0) may crash with SIGTRAP before producing
-        // output; skip the stdout check if nc was killed by a signal.
+        // bash-install policy denies dangerous commands and symbols —
+        // any "denied:" output proves auto-detection selected bash-install
+        // (default policy only warns, never denies).
+        // The specific denied item varies: `syscall` fires before `nc` on
+        // some platforms because the native symbol hook intercepts before
+        // the exec filter processes the command.
         if !stdout.is_empty() {
             assert!(
-                stdout.contains("denied:") && stdout.contains("nc"),
-                "Expected bash-install policy to block nc via piped stdin. \
+                stdout.contains("denied:"),
+                "Expected bash-install policy to deny something via piped stdin. \
                  If 'warning:' appears instead, auto-detection failed to select bash-install. \
                  stdout: {}, stderr: {}",
                 stdout, stderr

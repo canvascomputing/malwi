@@ -68,7 +68,7 @@ make addon
 # Install addon to prebuilt directory
 make addon-install
 
-# Format all Rust code
+# Format all Rust code (also runs automatically as part of `make build`)
 make format
 
 # Clean everything

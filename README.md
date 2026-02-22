@@ -166,7 +166,7 @@ curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x bash
 | Features | Explanation |
 |:--|:--|
 | **Runtime Interception** | Allow/deny runtime functions, network access, commands, files, and environment variables by pattern |
-| **Native Function Hooking** | Hooks C/system functions in the target process |
+| **Native Function Hooking** | Hooks binary symbols in the target process |
 | **System Library Interception** | Intercept libc/libSystem calls |
 | **Subprocess Propagation** | Tracing propagates automatically to all subprocesses |
 | **Thread-Aware Tracing** | Per-thread tracing with independent policy evaluation |
@@ -238,13 +238,12 @@ tar xf bash-$V.tar.gz && cd bash-$V
 malwi x /usr/local/bin/bash
 ```
 
-## Development
-
-See [DEVELOPMENT.md](docs/DEVELOPMENT.md).
-
 ## Security
 
 To report a vulnerability, email [security@canvascomputing.org](mailto:security@canvascomputing.org). See [SECURITY.md](.github/SECURITY.md) for details.
 
 A full dependency listing is automatically regenerated on every build when `Cargo.lock` or `package-lock.json` change. See [`DEPENDENCIES.md`](DEPENDENCIES.md).
 
+## Development
+
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md).
