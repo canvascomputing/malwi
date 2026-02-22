@@ -28,10 +28,14 @@ jobs:
       - name: Install LLVM (macOS Node 25+)
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
         run: |
-          LLVM_VERSION=21.0.0
-          ARCH=$(uname -m)
-          curl -sSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/clang+llvm-${LLVM_VERSION}-${ARCH}-apple-darwin.tar.xz" | tar xJ
-          echo "LLVM_PATH=$PWD/clang+llvm-${LLVM_VERSION}-${ARCH}-apple-darwin" >> $GITHUB_ENV
+          if [ "$(uname -m)" = "arm64" ]; then
+            LLVM_VERSION=21.1.8
+            curl -sSfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-macOS-ARM64.tar.xz" | tar xJ
+            echo "LLVM_PATH=$PWD/LLVM-${LLVM_VERSION}-macOS-ARM64" >> $GITHUB_ENV
+          else
+            brew install llvm
+            echo "LLVM_PATH=$(brew --prefix llvm)" >> $GITHUB_ENV
+          fi
 
       - name: Build addon (Node 25+ macOS)
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
@@ -44,8 +48,7 @@ jobs:
         if: "!(matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin'))"
         run: |
           cd node-addon
-          npm install
-          npx node-gyp rebuild
+          npx node-gyp@12 rebuild
           cd ..
           mkdir -p "node-addon/prebuilt/${{ matrix.platform.name }}/node${{ matrix.node }}"
           cp node-addon/build/Release/v8_introspect.node \
