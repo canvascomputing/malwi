@@ -1,7 +1,3 @@
-[build-system]
-requires = ["maturin>=1.12"]
-build-backend = "maturin"
-
 [project]
 name = "malwi"
 version = "0.0.24"
@@ -33,10 +29,3 @@ keywords = ["tracing", "debugging", "profiling", "python", "javascript"]
 [project.urls]
 Homepage = "https://github.com/user/malwi-trace"
 Repository = "https://github.com/user/malwi-trace"
-
-[tool.maturin]
-bindings = "bin"
-python-source = "python"
-data = "malwi.data"
-manifest-path = "cli/Cargo.toml"
-strip = true

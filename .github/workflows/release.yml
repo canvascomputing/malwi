@@ -187,75 +187,61 @@ jobs:
   wheel:
     name: Wheel ${{ matrix.platform }}
     needs: build
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            runner: macos-14
+          - platform: darwin-arm64
             lib: dylib
-            platform: darwin-arm64
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            platform_tag: macosx_11_0_arm64
+          - platform: linux-x64
             lib: so
-            platform: linux-x64
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            platform_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
+          - platform: linux-arm64
             lib: so
-            platform: linux-arm64
+            platform_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          sparse-checkout: |
+            scripts/build-wheel.sh
+            python/malwi/__init__.py
+            version.toml
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep 'version' version.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-${{ matrix.platform }}
+          path: staging
 
       - name: Download agent
         uses: actions/download-artifact@v4
         with:
           name: agent-${{ matrix.platform }}
-          path: malwi.data/data/lib
-
-      - name: Ensure data directory structure
-        run: mkdir -p malwi.data/data/lib
+          path: staging
 
       - name: Build wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist
-          manylinux: auto
+        run: |
+          chmod +x staging/malwi
+          bash scripts/build-wheel.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ matrix.platform_tag }}" \
+            staging/malwi \
+            staging/libmalwi_agent.${{ matrix.lib }} \
+            dist/
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.platform }}
           path: dist/*.whl
-          retention-days: 5
-
-  # --------------------------------------------------------------------------
-  # Stage 3c: Source distribution
-  # --------------------------------------------------------------------------
-  sdist:
-    name: Source distribution
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
-        with:
-          name: sdist
-          path: dist/*.tar.gz
           retention-days: 5
 
   # --------------------------------------------------------------------------
@@ -282,7 +268,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [wheel, sdist]
+    needs: [wheel]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
@@ -298,12 +284,6 @@ jobs:
           pattern: wheel-*
           path: dist
           merge-multiple: true
-
-      - name: Download sdist
-        uses: actions/download-artifact@v4
-        with:
-          name: sdist
-          path: dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
