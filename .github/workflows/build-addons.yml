@@ -28,14 +28,14 @@ jobs:
       - name: Install LLVM (macOS Node 25+)
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
         run: |
+          LLVM_VERSION=19.1.7
           if [ "$(uname -m)" = "arm64" ]; then
-            LLVM_VERSION=21.1.8
-            curl -sSfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-macOS-ARM64.tar.xz" | tar xJ
-            echo "LLVM_PATH=$PWD/LLVM-${LLVM_VERSION}-macOS-ARM64" >> $GITHUB_ENV
+            PLATFORM="macOS-ARM64"
           else
-            brew install llvm
-            echo "LLVM_PATH=$(brew --prefix llvm)" >> $GITHUB_ENV
+            PLATFORM="macOS-X64"
           fi
+          curl -sSfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-${PLATFORM}.tar.xz" | tar xJ
+          echo "LLVM_PATH=$PWD/LLVM-${LLVM_VERSION}-${PLATFORM}" >> $GITHUB_ENV
 
       - name: Build addon (Node 25+ macOS)
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
