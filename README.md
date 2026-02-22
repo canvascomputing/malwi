@@ -46,32 +46,45 @@ $ malwi x -p policy.yaml -- node app.js
 ```
 
 ```yaml
-# policy.yaml
+# policy.yaml — lock down a Node.js web app
 
 version: 1
-# Data exfiltration — only allow your API, block everything else
-network:
-  allow: ["canvascomputing.org/**"]
-  deny: ["*/**"]
 
-# Reverse shells and payload downloads
+# Network — only allow your API and npm registry
+network:
+  allow: ["api.canvascomputing.org/**", "registry.npmjs.org/**"]
+  deny: ["169.254.169.254/**", "*/**"]
+  protocols: [https]
+
+# Commands — block reverse shells, prompt on privilege escalation
 commands:
-  deny: [nc, ncat, curl, wget, crontab, ssh]
+  allow: [node, git, npm]
+  deny: [curl, wget, nc, ncat, ssh, crontab, base64]
+  warn: [docker, pip]
   review: [sudo]
 
-# Credential theft
+# Files — protect credentials
 files:
   deny: ["~/.ssh/**", "~/.aws/**", "*.pem", "*.key"]
-envvars:
-  deny: ["*SECRET*", "*TOKEN*", "AWS_*"]
 
-# Runtime control bypass
+# Environment variables — block secret exfiltration
+envvars:
+  deny: ["*SECRET*", "*PASSWORD*", "AWS_*"]
+  warn: ["*TOKEN*", "*API_KEY*"]
+
+# Node.js — block eval and shell-outs, log network calls
 nodejs:
-  deny: [child_process.exec, child_process.execSync]
+  deny: [eval, child_process.exec, child_process.execSync]
+  log: [fetch, http.request, https.request]
+
+# Python — block native library loading and os.system
 python:
-  deny: [ctypes.CDLL]
+  deny: [ctypes.CDLL, os.system, os.popen]
+  warn: [subprocess.run, subprocess.Popen.__init__]
+
+# Native symbols — block credential interception and raw networking
 symbols:
-  deny: [dlopen, dlsym]
+  deny: [getpass, crypt, dlopen, syscall]
 ```
 
 ## Auto-policies
