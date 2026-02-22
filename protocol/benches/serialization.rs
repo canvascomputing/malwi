@@ -52,9 +52,7 @@ fn make_event() -> TraceEvent {
                 is_user_javascript: true,
             },
         ])),
-        network_info: None,
-        source_file: None,
-        source_line: None,
+        ..Default::default()
     }
 }
 

@@ -7,6 +7,7 @@ mod policy;
 mod shell_format;
 mod spawn;
 mod symbol_resolver;
+mod ws_server;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -25,6 +26,7 @@ use malwi_protocol::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEv
 use std::path::Path;
 
 use agent_server::{AgentEvent, AgentServer};
+use ws_server::BusControl;
 
 const BANNER: &str = "                    __          __\n    .--------.---.-|  .--.--.--|__|\n    |        |  _  |  |  |  |  |  |\n    |__|__|__|___._|__|________|__|\n\n  Your in-process application firewall\n  for Python, Node.js and Bash.\n  ____________________________________";
 
@@ -114,6 +116,10 @@ enum Commands {
         #[arg(long, default_value = "9123", help_heading = "Output")]
         monitor_port: u16,
 
+        /// WebSocket port for live event streaming to browsers (disabled if not set)
+        #[arg(long = "ws", value_name = "PORT", help_heading = "Output")]
+        ws_port: Option<u16>,
+
         /// Execute, trace and protect a program
         #[arg(trailing_var_arg = true, required = true)]
         program: Vec<String>,
@@ -158,6 +164,7 @@ fn main() -> Result<()> {
             output,
             monitor,
             monitor_port,
+            ws_port,
             program,
         } => {
             let trace_config = TraceConfig {
@@ -171,6 +178,7 @@ fn main() -> Result<()> {
                 output,
                 use_monitor: monitor,
                 monitor_port,
+                ws_port,
             };
             spawn_and_trace(trace_config, program)?;
         }
@@ -454,6 +462,7 @@ struct TraceConfig {
     output: Option<PathBuf>,
     use_monitor: bool,
     monitor_port: u16,
+    ws_port: Option<u16>,
 }
 
 /// Detect `malwi x curl ... | bash` and transform to `malwi x -- bash <tempfile>`.
@@ -705,29 +714,19 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         let mut block_eval = false;
         let mut block_source = false;
         if let Some(ref policy) = active_policy {
-            use malwi_protocol::{Argument, EventType, HookType as EvHookType, TraceEvent};
+            use malwi_protocol::{EventType, HookType as EvHookType, TraceEvent};
 
             let eval_event = TraceEvent {
                 hook_type: EvHookType::Exec,
                 event_type: EventType::Enter,
                 function: "eval".to_string(),
-                arguments: Vec::<Argument>::new(),
-                native_stack: Vec::new(),
-                runtime_stack: None,
-                network_info: None,
-                source_file: None,
-                source_line: None,
+                ..Default::default()
             };
             let source_event = TraceEvent {
                 hook_type: EvHookType::Exec,
                 event_type: EventType::Enter,
                 function: "source".to_string(),
-                arguments: Vec::<Argument>::new(),
-                native_stack: Vec::new(),
-                runtime_stack: None,
-                network_info: None,
-                source_file: None,
-                source_line: None,
+                ..Default::default()
             };
 
             block_eval = policy.evaluate_trace(&eval_event).is_blocked();
@@ -820,6 +819,17 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         client.start_session(&program, root_pid as u32)?;
     }
 
+    // Fan-out control channel for external WS subscribers
+    let (control_tx, control_rx) = mpsc::sync_channel::<BusControl>(16);
+
+    let _ws_broadcast_handle = if let Some(ws_port) = config.ws_port {
+        let ws = ws_server::WsServer::new(ws_port, control_tx)?;
+        Some(thread::spawn(move || ws.run()))
+    } else {
+        drop(control_tx);
+        None
+    };
+
     // Build event loop config and state
     let loop_config = EventLoopConfig {
         root_pid,
@@ -848,6 +858,9 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         all_pids: HashMap::new(),
         root_dead_since: None,
         symbol_resolver: symbol_resolver::SymbolResolver::new(),
+        subscribers: Vec::new(),
+        next_seq: 0,
+        control_rx,
     };
 
     // Main event loop - process events and print output
@@ -893,6 +906,12 @@ struct EventLoopState {
     all_pids: HashMap<u32, bool>,
     root_dead_since: Option<std::time::Instant>,
     symbol_resolver: symbol_resolver::SymbolResolver,
+    /// Fan-out subscribers for enriched events (external WS clients).
+    subscribers: Vec<mpsc::SyncSender<Arc<TraceEvent>>>,
+    /// Monotonic sequence number for enriched events.
+    next_seq: u64,
+    /// Receiver for new subscriber registrations.
+    control_rx: Receiver<BusControl>,
 }
 
 /// Check if a process is still running using waitpid with WNOHANG.
@@ -923,6 +942,13 @@ fn run_main_event_loop(
     state: &mut EventLoopState,
 ) -> Result<Option<i32>> {
     loop {
+        // Process pending subscriber registrations
+        while let Ok(ctrl) = state.control_rx.try_recv() {
+            match ctrl {
+                BusControl::Subscribe(sub) => state.subscribers.push(sub),
+            }
+        }
+
         // Wait for events
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(event) => {
@@ -1081,8 +1107,11 @@ fn process_event(
             let name = display_runtime_name(&runtime);
             eprintln!("{}[malwi] Detected {} {}{}", DIM, name, version, RESET);
         }
-        AgentEvent::Trace(trace_event) => {
+        AgentEvent::Trace(mut trace_event) => {
             let is_manual = is_manual_function(&trace_event.function, config.manual_functions);
+
+            // Determine disposition label for fan-out (set by policy eval)
+            let mut disp_label = "display";
 
             // For manual -c functions: use ArgFilter as before
             if is_manual {
@@ -1102,12 +1131,14 @@ fn process_event(
                             config.monitor_client,
                             state.output_writer.as_deref_mut(),
                         );
+                        fan_out(&mut trace_event, state, config, "block");
                         return Ok(());
                     }
                     policy::EventDisposition::Warn {
                         rule: _,
                         section: _,
                     } => {
+                        disp_label = "warn";
                         emit_warning(
                             &trace_event,
                             config.monitor_client,
@@ -1116,6 +1147,7 @@ fn process_event(
                         // For exec events, the warning line already contains the full command.
                         // For function calls, fall through to also print the call details.
                         if trace_event.hook_type == HookType::Exec {
+                            fan_out(&mut trace_event, state, config, "warn");
                             return Ok(());
                         }
                     }
@@ -1150,6 +1182,9 @@ fn process_event(
                     config.stack_trace_enabled,
                 )?;
             }
+
+            // Enrich and fan out to WS subscribers
+            fan_out(&mut trace_event, state, config, disp_label);
         }
         AgentEvent::Disconnected { pid } => {
             debug!("Agent {} disconnected", pid);
@@ -1194,6 +1229,41 @@ fn process_event(
         }
     }
     Ok(())
+}
+
+/// Derive event category from hook type.
+fn category_from_hook_type(hook_type: &HookType) -> malwi_protocol::EventCategory {
+    use malwi_protocol::EventCategory;
+    match hook_type {
+        HookType::Exec => EventCategory::CommandExec,
+        HookType::DirectSyscall => EventCategory::SyscallDirect,
+        HookType::EnvVar => EventCategory::EnvVarAccess,
+        _ => EventCategory::FunctionCall,
+    }
+}
+
+/// Enrich a trace event with CLI-side fields and fan out to subscribers.
+fn fan_out(
+    trace_event: &mut TraceEvent,
+    state: &mut EventLoopState,
+    config: &EventLoopConfig,
+    disposition: &str,
+) {
+    if state.subscribers.is_empty() {
+        return;
+    }
+    state.next_seq += 1;
+    trace_event.seq = state.next_seq;
+    trace_event.source = Some(malwi_protocol::EventSource::Agent {
+        pid: config.root_pid as u32,
+    });
+    trace_event.category = Some(category_from_hook_type(&trace_event.hook_type));
+    trace_event.disposition = Some(disposition.to_string());
+
+    let arc = Arc::new(trace_event.clone());
+    state
+        .subscribers
+        .retain(|sub| sub.try_send(Arc::clone(&arc)).is_ok());
 }
 
 /// Emit a "[malwi] denied:" message for a blocked event.
@@ -1594,11 +1664,7 @@ mod tests {
                     display: Some(s.to_string()),
                 })
                 .collect(),
-            native_stack: vec![],
-            runtime_stack: None,
-            network_info: None,
-            source_file: None,
-            source_line: None,
+            ..Default::default()
         }
     }
 
@@ -1618,11 +1684,7 @@ mod tests {
                     display: Some(s.to_string()),
                 })
                 .collect(),
-            native_stack: vec![],
-            runtime_stack: None,
-            network_info: None,
-            source_file: None,
-            source_line: None,
+            ..Default::default()
         }
     }
 

@@ -148,31 +148,24 @@ impl Agent {
                 break;
             }
 
-            // Poll for commands from CLI
-            match self.http.poll_command() {
-                Ok(Some(cmd)) if cmd == "shutdown" => {
-                    info!("Received shutdown command from CLI");
+            // Check if CLI is still connected (WS connection alive)
+            if !self.http.is_connected() {
+                // Server unreachable — if we're shutting down, that's expected
+                if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+                    info!("Server unreachable during shutdown (expected)");
                     break;
                 }
-                Ok(_) => {
-                    consecutive_errors = 0;
+                consecutive_errors += 1;
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    info!(
+                        "Server unreachable after {} attempts, shutting down",
+                        consecutive_errors
+                    );
+                    break;
                 }
-                Err(e) => {
-                    // Server unreachable — if we're shutting down, that's expected
-                    if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
-                        info!("Server unreachable during shutdown (expected)");
-                        break;
-                    }
-                    consecutive_errors += 1;
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        info!(
-                            "Server unreachable after {} attempts, shutting down",
-                            consecutive_errors
-                        );
-                        break;
-                    }
-                    debug!("Command poll error (attempt {}): {}", consecutive_errors, e);
-                }
+                debug!("CLI connection lost (attempt {})", consecutive_errors);
+            } else {
+                consecutive_errors = 0;
             }
 
             // Send Node.js version to CLI once it becomes available.

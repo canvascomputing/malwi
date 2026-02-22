@@ -1,11 +1,11 @@
-//! HTTP client for agent-to-CLI communication.
+//! WebSocket client for agent-to-CLI communication.
 //!
-//! Uses raw `TcpStream` for localhost HTTP to minimize dependencies.
-//! Each operation is a single independent HTTP request — no shared stream,
-//! no mutexes, no reconnection ceremony after fork.
+//! Uses `malwi-websocket` over raw `TcpStream` for localhost transport.
+//! Maintains a persistent WebSocket connection with automatic reconnection.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -13,279 +13,115 @@ use anyhow::Result;
 use log::debug;
 
 use malwi_protocol::{
-    protocol::ModuleInfo, ChildReconnectRequest, CommandResponse, ConfigureRequest,
-    ConfigureResponse, HostChildInfo, ReadyRequest, ReviewDecision, ReviewRequest, ReviewResponse,
-    RuntimeInfoRequest, ShutdownRequest, TraceEvent,
+    protocol::ModuleInfo, AgentMessage, ChildReconnectRequest, CliMessage, ConfigureRequest,
+    ConfigureResponse, HostChildInfo, ReadyRequest, ReviewDecision, RuntimeInfoRequest,
+    ShutdownRequest, TraceEvent,
+};
+use malwi_websocket::{
+    build_client_handshake_request, parse_server_handshake_response_with_len,
+    ClientHandshakeRequest, Connection, ConnectionConfig, Event, HandshakeParseConfig, Message,
+    PeerRole,
 };
 
-/// HTTP client for communicating with the CLI server.
-///
-/// Uses raw `TcpStream` with HTTP/1.1 keep-alive for connection pooling.
-/// Endpoint URLs are precomputed to avoid per-request formatting.
-/// Falls back to reconnection on any I/O error.
-pub struct HttpClient {
-    addr: String,
-    conn: Mutex<Option<TcpStream>>,
-    path_configure: String,
-    path_ready: String,
-    path_event: String,
-    path_events: String,
-    path_child: String,
-    path_child_reconnect: String,
-    path_review: String,
-    path_command: String,
-    path_runtime: String,
-    path_shutdown: String,
-}
-
-/// Maximum number of retries for initial connection endpoints (/configure, /ready).
+/// Maximum number of retries for initial connection.
 const INIT_MAX_RETRIES: u32 = 5;
 
-/// Read a complete HTTP response from a stream.
-/// Returns (status_code, body).
-fn read_http_response(stream: &mut TcpStream) -> Result<(u16, String)> {
-    // Read headers byte-by-byte until we find \r\n\r\n
-    let mut header_buf = Vec::with_capacity(512);
-    let mut prev = [0u8; 4];
-    loop {
-        let mut byte = [0u8; 1];
-        stream.read_exact(&mut byte)?;
-        header_buf.push(byte[0]);
-        prev[0] = prev[1];
-        prev[1] = prev[2];
-        prev[2] = prev[3];
-        prev[3] = byte[0];
-        if prev == [b'\r', b'\n', b'\r', b'\n'] {
-            break;
-        }
-        if header_buf.len() > 8192 {
-            anyhow::bail!("HTTP response headers too large");
-        }
-    }
-
-    let header_str = String::from_utf8_lossy(&header_buf);
-
-    // Parse status code from first line
-    let status_line = header_str.lines().next().unwrap_or("");
-    let status_code: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    // Find Content-Length
-    let content_length: usize = header_str
-        .lines()
-        .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
-        .and_then(|line| line.split(':').nth(1))
-        .and_then(|val| val.trim().parse().ok())
-        .unwrap_or(0);
-
-    // Check for chunked transfer encoding
-    let is_chunked = header_str.lines().any(|line| {
-        line.to_ascii_lowercase().starts_with("transfer-encoding:")
-            && line.to_ascii_lowercase().contains("chunked")
-    });
-
-    // Read body
-    let body = if is_chunked {
-        read_chunked_body(stream)?
-    } else if content_length > 0 {
-        let mut body_buf = vec![0u8; content_length];
-        stream.read_exact(&mut body_buf)?;
-        String::from_utf8_lossy(&body_buf).to_string()
-    } else {
-        String::new()
-    };
-
-    Ok((status_code, body))
+/// Internal WebSocket connection state.
+struct WsConnection {
+    stream: TcpStream,
+    ws: Connection,
 }
 
-/// Read a chunked transfer-encoding body.
-fn read_chunked_body(stream: &mut TcpStream) -> Result<String> {
-    let mut body = Vec::new();
-    loop {
-        // Read chunk size line
-        let mut size_line = Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            stream.read_exact(&mut byte)?;
-            if byte[0] == b'\n' && size_line.last() == Some(&b'\r') {
-                size_line.pop(); // remove \r
-                break;
-            }
-            size_line.push(byte[0]);
+/// WebSocket client for communicating with the CLI server.
+///
+/// Maintains a persistent WebSocket connection. The connection is
+/// wrapped in a Mutex to allow shared access from multiple threads.
+pub struct HttpClient {
+    addr: String,
+    conn: Mutex<Option<WsConnection>>,
+    next_review_id: AtomicU32,
+}
+
+/// Generate a WebSocket key from system time and PID.
+/// Must be valid base64-encoded 16 bytes per RFC 6455.
+fn generate_ws_key() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id() as u128;
+    // Build 16 bytes from nanos + pid
+    let bytes: [u8; 16] = {
+        let mut b = [0u8; 16];
+        let n = nanos.to_le_bytes();
+        let p = pid.to_le_bytes();
+        b[..8].copy_from_slice(&n[..8]);
+        b[8..12].copy_from_slice(&p[..4]);
+        // Mix in some variation
+        let t2 = (nanos >> 64).to_le_bytes();
+        b[12..16].copy_from_slice(&t2[..4]);
+        b
+    };
+    base64_encode(&bytes)
+}
+
+/// Simple base64 encoding for 16 bytes (no external dependency needed).
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(ALPHABET[(n >> 18) as usize & 0x3F] as char);
+        result.push(ALPHABET[(n >> 12) as usize & 0x3F] as char);
+        if chunk.len() > 1 {
+            result.push(ALPHABET[(n >> 6) as usize & 0x3F] as char);
+        } else {
+            result.push('=');
         }
-        let size_str = String::from_utf8_lossy(&size_line);
-        let chunk_size = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
-        if chunk_size == 0 {
-            // Read trailing \r\n
-            let mut trailer = [0u8; 2];
-            let _ = stream.read_exact(&mut trailer);
-            break;
+        if chunk.len() > 2 {
+            result.push(ALPHABET[n as usize & 0x3F] as char);
+        } else {
+            result.push('=');
         }
-        let mut chunk = vec![0u8; chunk_size];
-        stream.read_exact(&mut chunk)?;
-        body.extend_from_slice(&chunk);
-        // Read trailing \r\n after chunk data
-        let mut crlf = [0u8; 2];
-        stream.read_exact(&mut crlf)?;
     }
-    Ok(String::from_utf8_lossy(&body).to_string())
+    result
+}
+
+/// Generate a simple mask key from a counter.
+fn mask_key_from_counter(counter: u32) -> [u8; 4] {
+    counter.to_le_bytes()
 }
 
 impl HttpClient {
-    /// Create a new HTTP client pointing at the CLI server.
+    /// Create a new client pointing at the CLI server.
     pub fn new(url: &str) -> Self {
         // Extract host:port from URL like "http://127.0.0.1:12345"
         let addr = url.strip_prefix("http://").unwrap_or(url).to_string();
 
         HttpClient {
-            addr: addr.clone(),
+            addr,
             conn: Mutex::new(None),
-            path_configure: "/configure".to_string(),
-            path_ready: "/ready".to_string(),
-            path_event: "/event".to_string(),
-            path_events: "/events".to_string(),
-            path_child: "/child".to_string(),
-            path_child_reconnect: "/child/reconnect".to_string(),
-            path_review: "/review".to_string(),
-            path_command: "/command".to_string(),
-            path_runtime: "/runtime".to_string(),
-            path_shutdown: "/shutdown".to_string(),
+            next_review_id: AtomicU32::new(1),
         }
     }
 
-    /// Get or create a TCP connection with keep-alive.
-    fn get_conn(&self, timeout: Duration) -> Result<TcpStream> {
-        // Try to reuse existing connection
-        if let Some(stream) = self.conn.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            let _ = stream.set_read_timeout(Some(timeout));
-            let _ = stream.set_write_timeout(Some(timeout));
-            return Ok(stream);
-        }
-
-        // Create new connection
-        let stream = TcpStream::connect_timeout(&self.addr.parse()?, timeout)?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        stream.set_nodelay(true)?;
-        Ok(stream)
-    }
-
-    /// Return a connection to the pool for reuse.
-    fn return_conn(&self, stream: TcpStream) {
-        *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = Some(stream);
-    }
-
-    /// Send an HTTP POST request and return the response body.
-    fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<String> {
-        let _guard = crate::hooks::HookSuppressGuard::new();
-        // Try with existing connection first, then retry with new connection
-        for attempt in 0..2 {
-            let mut stream = match self.get_conn(timeout) {
-                Ok(s) => s,
-                Err(e) if attempt == 0 => {
-                    // Connection pool had a stale connection, retry
-                    debug!("Stale connection, reconnecting: {}", e);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-
-            let request = format!(
-                "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                path, self.addr, body.len(), body
-            );
-
-            if let Err(e) = stream.write_all(request.as_bytes()) {
-                if attempt == 0 {
-                    debug!("Write failed, reconnecting: {}", e);
-                    continue;
-                }
-                return Err(e.into());
-            }
-
-            match read_http_response(&mut stream) {
-                Ok((status, resp_body)) => {
-                    if (200..300).contains(&status) {
-                        self.return_conn(stream);
-                        return Ok(resp_body);
-                    }
-                    self.return_conn(stream);
-                    anyhow::bail!("HTTP {} from POST {}: {}", status, path, resp_body);
-                }
-                Err(e) if attempt == 0 => {
-                    debug!("Read failed, reconnecting: {}", e);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        anyhow::bail!("Failed to POST {} after retries", path)
-    }
-
-    /// Send an HTTP GET request and return the response body.
-    fn get(&self, path: &str, timeout: Duration) -> Result<String> {
-        let _guard = crate::hooks::HookSuppressGuard::new();
-        for attempt in 0..2 {
-            let mut stream = match self.get_conn(timeout) {
-                Ok(s) => s,
-                Err(e) if attempt == 0 => {
-                    debug!("Stale connection, reconnecting: {}", e);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-
-            let request = format!("GET {} HTTP/1.1\r\nHost: {}\r\n\r\n", path, self.addr);
-
-            if let Err(e) = stream.write_all(request.as_bytes()) {
-                if attempt == 0 {
-                    debug!("Write failed, reconnecting: {}", e);
-                    continue;
-                }
-                return Err(e.into());
-            }
-
-            match read_http_response(&mut stream) {
-                Ok((status, resp_body)) => {
-                    if (200..300).contains(&status) {
-                        self.return_conn(stream);
-                        return Ok(resp_body);
-                    }
-                    self.return_conn(stream);
-                    anyhow::bail!("HTTP {} from GET {}: {}", status, path, resp_body);
-                }
-                Err(e) if attempt == 0 => {
-                    debug!("Read failed, reconnecting: {}", e);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        anyhow::bail!("Failed to GET {} after retries", path)
-    }
-
-    /// POST with retry and exponential backoff. Used for initial connection
-    /// endpoints where the CLI server may not be listening yet.
-    fn post_with_retry(&self, path: &str, body: &str, max_retries: u32) -> Result<String> {
+    /// Establish a WebSocket connection with retry.
+    fn connect_with_retry(&self, max_retries: u32) -> Result<()> {
         let mut last_err = None;
         for attempt in 0..=max_retries {
             if attempt > 0 {
-                // Backoff: 50ms, 100ms, 200ms, 400ms, 800ms (capped)
                 std::thread::sleep(Duration::from_millis(50 * (1 << attempt.min(4))));
             }
-            match self.post(path, body, Duration::from_secs(10)) {
-                Ok(resp) => return Ok(resp),
+            match self.try_connect() {
+                Ok(ws_conn) => {
+                    *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = Some(ws_conn);
+                    return Ok(());
+                }
                 Err(e) => {
-                    debug!(
-                        "POST {} attempt {}/{} failed: {}",
-                        path,
-                        attempt + 1,
-                        max_retries + 1,
-                        e
-                    );
+                    debug!("Connect attempt {}/{}: {}", attempt + 1, max_retries + 1, e);
                     last_err = Some(e);
                 }
             }
@@ -293,20 +129,145 @@ impl HttpClient {
         Err(last_err.unwrap())
     }
 
-    /// Request configuration from the CLI (POST /configure).
-    /// Retries with backoff to handle race between agent init and CLI server start.
-    pub fn configure(&self, pid: u32, nodejs_version: Option<u32>) -> Result<ConfigureResponse> {
-        let req = ConfigureRequest {
-            pid,
-            nodejs_version,
+    /// Single connection attempt: TCP connect → WS handshake.
+    fn try_connect(&self) -> Result<WsConnection> {
+        let mut stream = TcpStream::connect_timeout(&self.addr.parse()?, Duration::from_secs(10))?;
+        stream.set_nodelay(true)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+        // Build and send WebSocket upgrade request
+        let key = generate_ws_key();
+        let handshake_req = ClientHandshakeRequest {
+            host: self.addr.clone(),
+            path: "/".to_string(),
+            key: key.clone(),
+            origin: None,
+            protocols: vec![],
+            extensions: vec![],
         };
-        let json = serde_json::to_string(&req)?;
-        let body = self.post_with_retry(&self.path_configure, &json, INIT_MAX_RETRIES)?;
-        Ok(serde_json::from_str(&body)?)
+        let request_bytes = build_client_handshake_request(&handshake_req)
+            .map_err(|e| anyhow::anyhow!("WS handshake build failed: {}", e))?;
+        stream.write_all(&request_bytes)?;
+
+        // Read upgrade response
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            anyhow::bail!("Server closed connection during handshake");
+        }
+        let (response, _) =
+            parse_server_handshake_response_with_len(&buf[..n], HandshakeParseConfig::default())
+                .map_err(|e| anyhow::anyhow!("WS handshake parse failed: {}", e))?;
+        response
+            .validate_server_response(&key)
+            .map_err(|e| anyhow::anyhow!("WS handshake validation failed: {}", e))?;
+
+        let ws = Connection::new(ConnectionConfig {
+            role: PeerRole::Client,
+            ..ConnectionConfig::default()
+        });
+
+        Ok(WsConnection { stream, ws })
     }
 
-    /// Notify CLI that hooks are installed (POST /ready).
+    /// Ensure a connection exists, connecting if needed.
+    fn ensure_connected(&self) -> Result<()> {
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return Ok(());
+        }
+        drop(guard);
+        self.connect_with_retry(INIT_MAX_RETRIES)
+    }
+
+    /// Send a fire-and-forget message.
+    fn send(&self, msg: &AgentMessage) -> Result<()> {
+        let _guard = crate::hooks::HookSuppressGuard::new();
+        self.ensure_connected()?;
+
+        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let ws_conn = lock
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("not connected"))?;
+
+        let json = serde_json::to_string(msg)?;
+        let mask = mask_key_from_counter(self.next_review_id.fetch_add(1, Ordering::Relaxed));
+        ws_conn
+            .ws
+            .send_message(Message::Text(json), Some(mask))
+            .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
+
+        // Flush outbox
+        while let Some(bytes) = ws_conn.ws.poll_outbound() {
+            ws_conn.stream.write_all(&bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Send a message and wait for a response.
+    fn send_and_recv(&self, msg: &AgentMessage) -> Result<CliMessage> {
+        let _guard = crate::hooks::HookSuppressGuard::new();
+        self.ensure_connected()?;
+
+        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let ws_conn = lock
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("not connected"))?;
+
+        // Send
+        let json = serde_json::to_string(msg)?;
+        let mask = mask_key_from_counter(self.next_review_id.fetch_add(1, Ordering::Relaxed));
+        ws_conn
+            .ws
+            .send_message(Message::Text(json), Some(mask))
+            .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
+        while let Some(bytes) = ws_conn.ws.poll_outbound() {
+            ws_conn.stream.write_all(&bytes)?;
+        }
+
+        // Read until we get a text message response
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let n = ws_conn.stream.read(&mut buf)?;
+            if n == 0 {
+                anyhow::bail!("connection closed while waiting for response");
+            }
+            let events = ws_conn
+                .ws
+                .ingest(&buf[..n], None)
+                .map_err(|e| anyhow::anyhow!("WS ingest failed: {}", e))?;
+
+            // Flush any auto-generated frames (pongs)
+            while let Some(bytes) = ws_conn.ws.poll_outbound() {
+                ws_conn.stream.write_all(&bytes)?;
+            }
+
+            for event in events {
+                if let Event::Message(Message::Text(text)) = event {
+                    return Ok(serde_json::from_str(&text)?);
+                }
+            }
+        }
+    }
+
+    /// Request configuration from the CLI.
     /// Retries with backoff to handle race between agent init and CLI server start.
+    pub fn configure(&self, pid: u32, nodejs_version: Option<u32>) -> Result<ConfigureResponse> {
+        // Ensure connection with retry (server may not be ready yet)
+        self.connect_with_retry(INIT_MAX_RETRIES)?;
+
+        let msg = AgentMessage::Configure(ConfigureRequest {
+            pid,
+            nodejs_version,
+        });
+        match self.send_and_recv(&msg)? {
+            CliMessage::ConfigureResponse(resp) => Ok(resp),
+            other => anyhow::bail!("unexpected response to configure: {:?}", other),
+        }
+    }
+
+    /// Notify CLI that hooks are installed.
     pub fn ready(
         &self,
         pid: u32,
@@ -316,91 +277,91 @@ impl HttpClient {
         bash_version: Option<String>,
         modules: Vec<ModuleInfo>,
     ) -> Result<()> {
-        let req = ReadyRequest {
+        let msg = AgentMessage::Ready(ReadyRequest {
             pid,
             hooks_installed,
             nodejs_version,
             python_version,
             bash_version,
             modules,
-        };
-        let json = serde_json::to_string(&req)?;
-        self.post_with_retry(&self.path_ready, &json, INIT_MAX_RETRIES)?;
-        Ok(())
+        });
+        self.send(&msg)
     }
 
-    /// Send a trace event (POST /event).
+    /// Send a trace event.
     pub fn send_event(&self, event: &TraceEvent) -> Result<()> {
-        let json = serde_json::to_string(event)?;
-        self.post(&self.path_event, &json, Duration::from_secs(5))?;
-        Ok(())
+        self.send(&AgentMessage::Event(event.clone()))
     }
 
-    /// Send a batch of trace events (POST /events).
+    /// Send a batch of trace events.
     pub fn send_events(&self, events: &[TraceEvent]) -> Result<()> {
-        let json = serde_json::to_string(events)?;
-        self.post(&self.path_events, &json, Duration::from_secs(5))?;
-        Ok(())
+        self.send(&AgentMessage::Events(events.to_vec()))
     }
 
-    /// Send a child process notification (POST /child).
+    /// Send a child process notification.
     pub fn send_child(&self, info: &HostChildInfo) -> Result<()> {
-        let json = serde_json::to_string(info)?;
-        self.post(&self.path_child, &json, Duration::from_secs(5))?;
-        Ok(())
+        self.send(&AgentMessage::Child(info.clone()))
     }
 
-    /// Request a review decision (POST /review).
-    /// Blocks until the CLI user decides.
+    /// Request a review decision. Blocks until the CLI user decides.
     pub fn review(&self, event: &TraceEvent) -> Result<ReviewDecision> {
-        let req = ReviewRequest {
+        let request_id = self.next_review_id.fetch_add(1, Ordering::Relaxed);
+        let msg = AgentMessage::Review {
+            request_id,
             event: event.clone(),
         };
-        let json = serde_json::to_string(&req)?;
-        let body = self.post(&self.path_review, &json, Duration::from_secs(300))?;
-        let resp: ReviewResponse = serde_json::from_str(&body)?;
-        Ok(resp.decision)
+        match self.send_and_recv(&msg)? {
+            CliMessage::ReviewResponse { decision, .. } => Ok(decision),
+            other => anyhow::bail!("unexpected response to review: {:?}", other),
+        }
     }
 
-    /// Poll for pending commands (GET /command).
-    pub fn poll_command(&self) -> Result<Option<String>> {
-        let body = self.get(&self.path_command, Duration::from_secs(2))?;
-        let resp: CommandResponse = serde_json::from_str(&body)?;
-        Ok(resp.command)
+    /// Check if the WebSocket connection is still alive.
+    /// Returns true if connected, false if connection is dead or absent.
+    pub fn is_connected(&self) -> bool {
+        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ws_conn) = lock.as_mut() {
+            // Try a non-blocking peek to detect closed connection
+            let _ = ws_conn.stream.set_nonblocking(true);
+            let mut peek_buf = [0u8; 1];
+            let alive = match ws_conn.stream.peek(&mut peek_buf) {
+                Ok(0) => false,                                                   // EOF = closed
+                Ok(_) => true,                                                    // Data available
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => true, // No data but alive
+                Err(_) => false,                                                  // Error = dead
+            };
+            let _ = ws_conn.stream.set_nonblocking(false);
+            alive
+        } else {
+            false
+        }
     }
 
-    /// Send a late runtime info notification (POST /runtime).
+    /// Send a late runtime info notification.
     pub fn send_runtime_info(&self, pid: u32, runtime: &str, version: &str) -> Result<()> {
-        let req = RuntimeInfoRequest {
+        self.send(&AgentMessage::Runtime(RuntimeInfoRequest {
             pid,
             runtime: runtime.to_string(),
             version: version.to_string(),
-        };
-        let json = serde_json::to_string(&req)?;
-        self.post(&self.path_runtime, &json, Duration::from_secs(5))?;
-        Ok(())
+        }))
     }
 
-    /// Notify CLI of agent shutdown (POST /shutdown).
+    /// Notify CLI of agent shutdown.
     pub fn shutdown(&self, pid: u32) -> Result<()> {
-        let req = ShutdownRequest { pid };
-        let json = serde_json::to_string(&req)?;
-        self.post(&self.path_shutdown, &json, Duration::from_secs(2))?;
-        Ok(())
+        self.send(&AgentMessage::Shutdown(ShutdownRequest { pid }))
     }
 
-    /// Notify CLI of child reconnection after fork (POST /child/reconnect).
+    /// Notify CLI of child reconnection after fork.
+    /// Drops the inherited connection and creates a fresh one.
     pub fn child_reconnect(&self, parent_pid: u32, child_pid: u32) -> Result<()> {
-        let req = ChildReconnectRequest {
+        // Drop inherited connection from parent (avoid shared socket state)
+        *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Establish fresh WS connection
+        self.connect_with_retry(INIT_MAX_RETRIES)?;
+        // Send reconnect message
+        self.send(&AgentMessage::Reconnect(ChildReconnectRequest {
             parent_pid,
             child_pid,
-        };
-        let json = serde_json::to_string(&req)?;
-        debug!(
-            "Child reconnect: parent={}, child={}",
-            parent_pid, child_pid
-        );
-        self.post(&self.path_child_reconnect, &json, Duration::from_secs(5))?;
-        Ok(())
+        }))
     }
 }

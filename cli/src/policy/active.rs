@@ -433,11 +433,7 @@ pub(super) mod test_helpers {
                     display: Some(s.to_string()),
                 })
                 .collect(),
-            native_stack: vec![],
-            runtime_stack: None,
-            network_info: None,
-            source_file: None,
-            source_line: None,
+            ..Default::default()
         }
     }
 

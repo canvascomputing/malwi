@@ -108,6 +108,7 @@ impl EventBuilder {
             network_info: self.network_info,
             source_file: self.source_file,
             source_line: self.source_line,
+            ..Default::default()
         }
     }
 }

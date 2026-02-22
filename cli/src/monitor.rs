@@ -3,11 +3,12 @@
 //! The monitor runs in a separate terminal and displays trace events sent from
 //! `malwi x --monitor` sessions, keeping the traced application's output clean.
 
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tiny_http::{Response, Server};
 
 use malwi_protocol::{EventType, HookType, RuntimeStack, TraceEvent};
 
@@ -61,8 +62,8 @@ pub struct SessionEndRequest {
 /// Run the monitor HTTP server.
 pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
-    let server =
-        Server::http(&addr).map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+    let listener = TcpListener::bind(&addr)
+        .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
 
     println!(
         "{}[malwi monitor]{} Listening on http://{}",
@@ -80,87 +81,132 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
     }
 
     // Main request loop
-    for request in server.incoming_requests() {
+    for stream in listener.incoming() {
         if MONITOR_SHUTDOWN.load(Ordering::SeqCst) {
             break;
         }
 
-        let url = request.url().to_string();
-        let method = request.method().to_string();
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
 
-        match (method.as_str(), url.as_str()) {
-            ("GET", "/health") => {
-                let response = Response::from_string("OK");
-                let _ = request.respond(response);
-            }
-            ("POST", "/session/start") => match read_json_body::<SessionStartRequest>(request) {
-                Ok((req, request)) => {
-                    println!(
-                        "{}[session:{}]{} Started: {} (PID {})",
-                        YELLOW,
-                        &req.session_id[..8.min(req.session_id.len())],
-                        RESET,
-                        req.command.join(" "),
-                        req.pid
-                    );
-                    let _ = request.respond(Response::from_string("OK"));
-                }
-                Err((e, request)) => {
-                    let _ = request.respond(
-                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
-                    );
-                }
-            },
-            ("POST", "/event") => match read_json_body::<EventRequest>(request) {
-                Ok((req, request)) => {
-                    print_trace_event(&req.event, show_stack, Some(req.session_id.as_str()));
-                    let _ = request.respond(Response::from_string("OK"));
-                }
-                Err((e, request)) => {
-                    let _ = request.respond(
-                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
-                    );
-                }
-            },
-            ("POST", "/session/end") => match read_json_body::<SessionEndRequest>(request) {
-                Ok((req, request)) => {
-                    println!(
-                        "{}[session:{}]{} Ended (exit code: {:?})",
-                        YELLOW,
-                        &req.session_id[..8.min(req.session_id.len())],
-                        RESET,
-                        req.exit_code
-                    );
-                    let _ = request.respond(Response::from_string("OK"));
-                }
-                Err((e, request)) => {
-                    let _ = request.respond(
-                        Response::from_string(format!("Error: {}", e)).with_status_code(400),
-                    );
-                }
-            },
-            _ => {
-                let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
-            }
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+
+        if let Err(e) = handle_monitor_request(&mut stream, show_stack) {
+            log::debug!("Monitor request error: {}", e);
         }
     }
 
     Ok(())
 }
 
-/// Read and parse JSON body from request.
-#[allow(clippy::result_large_err)]
-fn read_json_body<T: for<'de> Deserialize<'de>>(
-    mut request: tiny_http::Request,
-) -> std::result::Result<(T, tiny_http::Request), (String, tiny_http::Request)> {
-    let mut body = String::new();
-    if let Err(e) = request.as_reader().read_to_string(&mut body) {
-        return Err((format!("Failed to read body: {}", e), request));
+/// Parse a single HTTP request from a stream and handle it.
+fn handle_monitor_request(stream: &mut TcpStream, show_stack: bool) -> Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+
+    // Read request line
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line)?;
+    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    if parts.len() < 2 {
+        return Ok(());
     }
-    match serde_json::from_str(&body) {
-        Ok(parsed) => Ok((parsed, request)),
-        Err(e) => Err((format!("Invalid JSON: {}", e), request)),
+    let method = parts[0];
+    let url = parts[1];
+
+    // Read headers
+    let mut content_length: usize = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line.trim().is_empty() {
+            break;
+        }
+        if line.to_ascii_lowercase().starts_with("content-length:") {
+            if let Some(val) = line.split(':').nth(1) {
+                content_length = val.trim().parse().unwrap_or(0);
+            }
+        }
     }
+
+    // Read body
+    let body = if content_length > 0 {
+        let mut buf = vec![0u8; content_length];
+        reader.read_exact(&mut buf)?;
+        String::from_utf8_lossy(&buf).to_string()
+    } else {
+        String::new()
+    };
+
+    match (method, url) {
+        ("GET", "/health") => {
+            respond_ok(stream)?;
+        }
+        ("POST", "/session/start") => match serde_json::from_str::<SessionStartRequest>(&body) {
+            Ok(req) => {
+                println!(
+                    "{}[session:{}]{} Started: {} (PID {})",
+                    YELLOW,
+                    &req.session_id[..8.min(req.session_id.len())],
+                    RESET,
+                    req.command.join(" "),
+                    req.pid
+                );
+                respond_ok(stream)?;
+            }
+            Err(e) => {
+                respond_error(stream, &format!("Invalid JSON: {}", e))?;
+            }
+        },
+        ("POST", "/event") => match serde_json::from_str::<EventRequest>(&body) {
+            Ok(req) => {
+                print_trace_event(&req.event, show_stack, Some(req.session_id.as_str()));
+                respond_ok(stream)?;
+            }
+            Err(e) => {
+                respond_error(stream, &format!("Invalid JSON: {}", e))?;
+            }
+        },
+        ("POST", "/session/end") => match serde_json::from_str::<SessionEndRequest>(&body) {
+            Ok(req) => {
+                println!(
+                    "{}[session:{}]{} Ended (exit code: {:?})",
+                    YELLOW,
+                    &req.session_id[..8.min(req.session_id.len())],
+                    RESET,
+                    req.exit_code
+                );
+                respond_ok(stream)?;
+            }
+            Err(e) => {
+                respond_error(stream, &format!("Invalid JSON: {}", e))?;
+            }
+        },
+        _ => {
+            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found";
+            stream.write_all(response.as_bytes())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn respond_ok(stream: &mut TcpStream) -> Result<()> {
+    let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+    stream.write_all(response.as_bytes())?;
+    Ok(())
+}
+
+fn respond_error(stream: &mut TcpStream, msg: &str) -> Result<()> {
+    let response = format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{}",
+        msg.len(),
+        msg
+    );
+    stream.write_all(response.as_bytes())?;
+    Ok(())
 }
 
 /// Print a trace event to stdout.

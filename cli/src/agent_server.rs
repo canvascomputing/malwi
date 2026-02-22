@@ -1,25 +1,29 @@
-//! HTTP server for agent communication.
+//! WebSocket server for agent communication.
 //!
-//! Receives agent requests via an HTTP server using `tiny_http`.
-//! Each agent endpoint maps to a specific URL path.
+//! Receives agent messages via WebSocket using `malwi-websocket`.
+//! Each agent connection is a persistent WebSocket on its own thread.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::Result;
 use log::debug;
-use tiny_http::{Response, Server};
 
 use malwi_protocol::{
-    Argument, ChildOperation, ChildReconnectRequest, CommandResponse, ConfigureRequest,
-    ConfigureResponse, EventType, HookConfig, HookType, HostChildInfo, ReadyRequest,
-    ReviewDecision, ReviewRequest, ReviewResponse, RuntimeInfoRequest, ShutdownRequest, TraceEvent,
+    AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookConfig,
+    HookType, HostChildInfo, ReviewDecision, TraceEvent,
+};
+use malwi_websocket::{
+    build_server_handshake_response, parse_client_handshake_with_len, Connection, ConnectionConfig,
+    Event, HandshakeParseConfig, Message, PeerRole,
 };
 
-/// Events sent from the HTTP server to the main event loop.
+/// Events sent from the WebSocket server to the main event loop.
 pub enum AgentEvent {
     /// Agent connected and ready
     Ready {
@@ -36,32 +40,31 @@ pub enum AgentEvent {
     RuntimeInfo { runtime: String, version: String },
     /// Agent disconnected
     Disconnected { pid: u32 },
-    /// Review mode decision request (agent blocks on HTTP response)
+    /// Review mode decision request (agent blocks on WS response)
     ReviewRequest {
         event: TraceEvent,
         response_tx: Sender<ReviewDecision>,
     },
 }
 
-/// Shared state for the HTTP server threads.
+/// Shared state for the WebSocket server threads.
 struct SharedState {
     hook_configs: Vec<HookConfig>,
     review_mode: bool,
     event_tx: SyncSender<AgentEvent>,
     active_agents: Arc<AtomicU32>,
-    shutdown_command: AtomicBool,
     /// Suppresses duplicate exec events caused by libc PATH iteration.
     /// Key: (child_pid, command_basename).
     seen_events: Mutex<HashSet<(u32, String)>>,
-    /// PIDs that connected via /child/reconnect. Used to avoid double-counting
+    /// PIDs that connected via reconnect. Used to avoid double-counting
     /// active_agents when a reconnected child does exec (which triggers a second
-    /// /configure for the same PID from the fresh agent).
+    /// configure for the same PID from the fresh agent).
     reconnected_pids: Mutex<HashSet<u32>>,
 }
 
-/// HTTP server for agent communication.
+/// WebSocket server for agent communication.
 pub struct AgentServer {
-    server: Server,
+    listener: std::net::TcpListener,
     url: String,
     shared: Arc<SharedState>,
 }
@@ -126,19 +129,8 @@ impl AgentServer {
         event_tx: SyncSender<AgentEvent>,
         active_agents: Arc<AtomicU32>,
     ) -> Result<Self> {
-        // Create socket with SO_REUSEADDR to avoid port reuse collisions
-        // during high-parallelism test runs where TIME_WAIT sockets accumulate.
         let listener = create_reuse_addr_listener()?;
-
-        let server = Server::from_listener(listener, None)
-            .map_err(|e| anyhow::anyhow!("Failed to create HTTP server: {}", e))?;
-
-        let port = server
-            .server_addr()
-            .to_ip()
-            .map(|a| a.port())
-            .ok_or_else(|| anyhow::anyhow!("Failed to get server port"))?;
-
+        let port = listener.local_addr()?.port();
         let url = format!("http://127.0.0.1:{}", port);
 
         let shared = Arc::new(SharedState {
@@ -146,13 +138,12 @@ impl AgentServer {
             review_mode,
             event_tx,
             active_agents,
-            shutdown_command: AtomicBool::new(false),
             seen_events: Mutex::new(HashSet::new()),
             reconnected_pids: Mutex::new(HashSet::new()),
         });
 
         Ok(Self {
-            server,
+            listener,
             url,
             shared,
         })
@@ -163,232 +154,257 @@ impl AgentServer {
         &self.url
     }
 
-    /// Run the HTTP server, processing requests until shutdown.
-    ///
-    /// Requests are handled inline on the listener thread for speed.
-    /// Only `/review` is spawned on a separate thread because it blocks
-    /// waiting for user input.
+    /// Run the WebSocket server, accepting connections until all agents disconnect.
     pub fn run(self) {
-        for request in self.server.incoming_requests() {
-            if self.shared.shutdown_command.load(Ordering::SeqCst) {
-                let _ =
-                    request.respond(Response::from_string("shutting down").with_status_code(503));
-                break;
-            }
-
-            if request.url() == "/review" && request.method().as_str() == "POST" {
-                let shared = self.shared.clone();
-                thread::spawn(move || {
-                    handle_request(request, &shared);
-                });
-            } else {
-                handle_request(request, &self.shared);
-            }
-
-            // Check after handling — shutdown handler sets the flag,
-            // and we need to exit before blocking on the next accept().
-            if self.shared.shutdown_command.load(Ordering::SeqCst) {
-                break;
-            }
+        for stream in self.listener.incoming() {
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!("Accept error: {}", e);
+                    continue;
+                }
+            };
+            let shared = self.shared.clone();
+            thread::spawn(move || {
+                if let Err(e) = handle_agent_connection(stream, &shared) {
+                    debug!("Agent connection error: {}", e);
+                }
+            });
         }
     }
 }
 
-fn handle_request(request: tiny_http::Request, shared: &SharedState) {
-    let url = request.url().to_string();
-    let method = request.method().to_string();
+/// Handle a single agent WebSocket connection.
+fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Result<()> {
+    stream.set_nodelay(true)?;
 
-    match (method.as_str(), url.as_str()) {
-        ("POST", "/configure") => handle_configure(request, shared),
-        ("POST", "/ready") => handle_ready(request, shared),
-        ("POST", "/runtime") => handle_runtime_info(request, shared),
-        ("POST", "/event") => handle_event(request, shared),
-        ("POST", "/events") => handle_events(request, shared),
-        ("POST", "/child") => handle_child(request, shared),
-        ("POST", "/child/reconnect") => handle_child_reconnect(request, shared),
-        ("POST", "/review") => handle_review(request, shared),
-        ("POST", "/shutdown") => handle_shutdown(request, shared),
-        ("GET", "/command") => handle_command(request, shared),
-        _ => {
-            let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
-        }
+    // 1. Read WebSocket upgrade request
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf)?;
+    if n == 0 {
+        anyhow::bail!("empty handshake");
     }
+    let (request, _consumed) =
+        parse_client_handshake_with_len(&buf[..n], HandshakeParseConfig::default())
+            .map_err(|e| anyhow::anyhow!("WS handshake parse failed: {}", e))?;
+
+    // 2. Send 101 upgrade response
+    let response = build_server_handshake_response(&request, None, &[])
+        .map_err(|e| anyhow::anyhow!("WS handshake response failed: {}", e))?;
+    stream.write_all(&response)?;
+
+    // 3. Create WebSocket connection state machine
+    let mut conn = Connection::new(ConnectionConfig {
+        role: PeerRole::Server,
+        ..ConnectionConfig::default()
+    });
+
+    // Track the PID for this connection (set on first Configure or Reconnect)
+    let mut agent_pid: Option<u32> = None;
+
+    // 4. Message loop
+    let mut read_buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match stream.read(&mut read_buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                debug!("Agent read error: {}", e);
+                break;
+            }
+        };
+
+        let events = match conn.ingest(&read_buf[..n], None) {
+            Ok(events) => events,
+            Err(e) => {
+                debug!("WS protocol error: {}", e);
+                break;
+            }
+        };
+
+        for event in events {
+            match event {
+                Event::Message(Message::Text(text)) => {
+                    let msg: AgentMessage = match serde_json::from_str(&text) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            debug!("Invalid agent message: {}", e);
+                            continue;
+                        }
+                    };
+                    handle_message(msg, &mut conn, &mut stream, shared, &mut agent_pid)?;
+                }
+                Event::CloseReceived(_) | Event::Closed => {
+                    return Ok(());
+                }
+                _ => {} // Ping/pong handled by Connection
+            }
+        }
+
+        // Flush any outbound frames (pongs, responses)
+        flush_outbox(&mut conn, &mut stream)?;
+    }
+
+    Ok(())
 }
 
-fn read_json<T: for<'de> serde::Deserialize<'de>>(request: &mut tiny_http::Request) -> Result<T> {
-    let mut body = String::new();
-    request.as_reader().read_to_string(&mut body)?;
-    Ok(serde_json::from_str(&body)?)
+/// Flush all queued outbound WebSocket frames to the stream.
+fn flush_outbox(conn: &mut Connection, stream: &mut TcpStream) -> Result<()> {
+    while let Some(bytes) = conn.poll_outbound() {
+        stream.write_all(&bytes)?;
+    }
+    Ok(())
 }
 
-fn respond_json<T: serde::Serialize>(request: tiny_http::Request, data: &T) {
-    match serde_json::to_string(data) {
-        Ok(json) => {
-            let response = Response::from_string(json).with_header(
-                "Content-Type: application/json"
-                    .parse::<tiny_http::Header>()
-                    .unwrap(),
+/// Handle a single agent message.
+fn handle_message(
+    msg: AgentMessage,
+    conn: &mut Connection,
+    stream: &mut TcpStream,
+    shared: &SharedState,
+    agent_pid: &mut Option<u32>,
+) -> Result<()> {
+    match msg {
+        AgentMessage::Configure(req) => {
+            debug!(
+                "Agent PID {} requesting configuration (nodejs_version: {:?})",
+                req.pid, req.nodejs_version
             );
-            let _ = request.respond(response);
+
+            *agent_pid = Some(req.pid);
+
+            let already_counted = shared
+                .reconnected_pids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&req.pid);
+            if !already_counted {
+                shared.active_agents.fetch_add(1, Ordering::SeqCst);
+            }
+
+            let resp = CliMessage::ConfigureResponse(ConfigureResponse {
+                hooks: shared.hook_configs.clone(),
+                review_mode: shared.review_mode,
+            });
+            let json = serde_json::to_string(&resp)?;
+            conn.send_message(Message::Text(json), None)
+                .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
+            flush_outbox(conn, stream)?;
         }
-        Err(e) => {
-            log::error!("Failed to serialize response: {}", e);
-            let _ = request
-                .respond(Response::from_string("Internal Server Error").with_status_code(500));
+        AgentMessage::Ready(req) => {
+            debug!(
+                "Agent PID {} ready with {} hooks",
+                req.pid,
+                req.hooks_installed.len()
+            );
+
+            let _ = shared.event_tx.send(AgentEvent::Ready {
+                pid: req.pid,
+                hooks: req.hooks_installed,
+                nodejs_version: req.nodejs_version,
+                python_version: req.python_version,
+                bash_version: req.bash_version,
+                modules: req.modules,
+            });
         }
-    }
-}
+        AgentMessage::Runtime(req) => {
+            debug!(
+                "Agent PID {} runtime info: {}={}",
+                req.pid, req.runtime, req.version
+            );
 
-fn respond_ok(request: tiny_http::Request) {
-    let _ = request.respond(Response::from_string("OK"));
-}
-
-fn respond_error(request: tiny_http::Request, msg: &str) {
-    let _ = request.respond(Response::from_string(msg).with_status_code(400));
-}
-
-fn handle_configure(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: ConfigureRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid request: {}", e));
-            return;
+            let _ = shared.event_tx.send(AgentEvent::RuntimeInfo {
+                runtime: req.runtime,
+                version: req.version,
+            });
         }
-    };
-
-    debug!(
-        "Agent PID {} requesting configuration (nodejs_version: {:?})",
-        req.pid, req.nodejs_version
-    );
-
-    // If this PID already has an active_agents increment from /child/reconnect,
-    // skip the second increment. This handles fork+exec where the forked child
-    // reconnects (incrementing once), then exec replaces the process image and
-    // the fresh agent sends /configure (which would otherwise increment again).
-    let already_counted = shared
-        .reconnected_pids
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&req.pid);
-    if !already_counted {
-        shared.active_agents.fetch_add(1, Ordering::SeqCst);
-    }
-
-    let resp = ConfigureResponse {
-        hooks: shared.hook_configs.clone(),
-        review_mode: shared.review_mode,
-    };
-
-    respond_json(request, &resp);
-}
-
-fn handle_ready(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: ReadyRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid request: {}", e));
-            return;
+        AgentMessage::Event(event) => {
+            let _ = shared.event_tx.send(AgentEvent::Trace(event));
         }
-    };
-
-    debug!(
-        "Agent PID {} ready with {} hooks",
-        req.pid,
-        req.hooks_installed.len()
-    );
-
-    let _ = shared.event_tx.send(AgentEvent::Ready {
-        pid: req.pid,
-        hooks: req.hooks_installed,
-        nodejs_version: req.nodejs_version,
-        python_version: req.python_version,
-        bash_version: req.bash_version,
-        modules: req.modules,
-    });
-
-    respond_ok(request);
-}
-
-fn handle_runtime_info(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: RuntimeInfoRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid request: {}", e));
-            return;
+        AgentMessage::Events(events) => {
+            for event in events {
+                let _ = shared.event_tx.send(AgentEvent::Trace(event));
+            }
         }
-    };
+        AgentMessage::Child(info) => {
+            // Bare fork events (no path, no argv) are process duplication, not command execution.
+            if info.operation == ChildOperation::Fork && info.argv.is_none() && info.path.is_none()
+            {
+                return Ok(());
+            }
 
-    debug!(
-        "Agent PID {} runtime info: {}={}",
-        req.pid, req.runtime, req.version
-    );
+            // Suppress duplicates from libc PATH iteration
+            let cmd_name = extract_cmd_name(&info);
+            {
+                let mut seen = shared.seen_events.lock().unwrap_or_else(|e| e.into_inner());
+                if !seen.insert((info.child_pid, cmd_name.clone())) {
+                    return Ok(());
+                }
+            }
 
-    let _ = shared.event_tx.send(AgentEvent::RuntimeInfo {
-        runtime: req.runtime,
-        version: req.version,
-    });
-
-    respond_ok(request);
-}
-
-fn handle_event(mut request: tiny_http::Request, shared: &SharedState) {
-    let event: TraceEvent = match read_json(&mut request) {
-        Ok(e) => e,
-        Err(e) => {
-            respond_error(request, &format!("Invalid event: {}", e));
-            return;
+            let event = child_info_to_trace_event(info, cmd_name);
+            let _ = shared.event_tx.send(AgentEvent::Trace(event));
         }
-    };
+        AgentMessage::Reconnect(req) => {
+            debug!(
+                "Child PID {} reconnected (parent {})",
+                req.child_pid, req.parent_pid
+            );
 
-    let _ = shared.event_tx.send(AgentEvent::Trace(event));
-    respond_ok(request);
-}
+            *agent_pid = Some(req.child_pid);
 
-fn handle_events(mut request: tiny_http::Request, shared: &SharedState) {
-    let events: Vec<TraceEvent> = match read_json(&mut request) {
-        Ok(e) => e,
-        Err(e) => {
-            respond_error(request, &format!("Invalid events: {}", e));
-            return;
+            shared.active_agents.fetch_add(1, Ordering::SeqCst);
+            shared
+                .reconnected_pids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(req.child_pid);
+
+            // Send Ready event for the child (it inherits hooks from parent)
+            let _ = shared.event_tx.send(AgentEvent::Ready {
+                pid: req.child_pid,
+                hooks: vec![],
+                nodejs_version: None,
+                python_version: None,
+                bash_version: None,
+                modules: vec![],
+            });
         }
-    };
+        AgentMessage::Review { request_id, event } => {
+            // Create oneshot channel, send to main loop, block for response
+            let (response_tx, response_rx) = std::sync::mpsc::channel::<ReviewDecision>();
+            let _ = shared
+                .event_tx
+                .send(AgentEvent::ReviewRequest { event, response_tx });
 
-    for event in events {
-        let _ = shared.event_tx.send(AgentEvent::Trace(event));
-    }
-    respond_ok(request);
-}
+            // Block until main thread decides
+            let decision = response_rx.recv().unwrap_or(ReviewDecision::Allow);
 
-fn handle_child(mut request: tiny_http::Request, shared: &SharedState) {
-    let info: HostChildInfo = match read_json(&mut request) {
-        Ok(i) => i,
-        Err(e) => {
-            respond_error(request, &format!("Invalid child info: {}", e));
-            return;
+            let resp = CliMessage::ReviewResponse {
+                request_id,
+                decision,
+            };
+            let json = serde_json::to_string(&resp)?;
+            conn.send_message(Message::Text(json), None)
+                .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
+            flush_outbox(conn, stream)?;
         }
-    };
+        AgentMessage::Shutdown(req) => {
+            debug!("Agent PID {} shutting down", req.pid);
 
-    // Bare fork events (no path, no argv) are process duplication, not command
-    // execution.  The actual command arrives in a subsequent Exec event.
-    if info.operation == ChildOperation::Fork && info.argv.is_none() && info.path.is_none() {
-        respond_ok(request);
-        return;
-    }
+            if let Ok(mut seen) = shared.seen_events.lock() {
+                seen.retain(|(pid, _)| *pid != req.pid);
+            }
+            if let Ok(mut pids) = shared.reconnected_pids.lock() {
+                pids.remove(&req.pid);
+            }
 
-    // Suppress duplicates from libc PATH iteration (one logical command
-    // triggers multiple execve attempts with the same child PID).
-    let cmd_name = extract_cmd_name(&info);
-    {
-        let mut seen = shared.seen_events.lock().unwrap_or_else(|e| e.into_inner());
-        if !seen.insert((info.child_pid, cmd_name.clone())) {
-            respond_ok(request);
-            return;
+            let _ = shared
+                .event_tx
+                .send(AgentEvent::Disconnected { pid: req.pid });
         }
     }
-
-    let event = child_info_to_trace_event(info, cmd_name);
-    let _ = shared.event_tx.send(AgentEvent::Trace(event));
-    respond_ok(request);
+    Ok(())
 }
 
 /// Extract the command basename from a HostChildInfo.
@@ -401,11 +417,7 @@ fn extract_cmd_name(info: &HostChildInfo) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
-/// Convert a HostChildInfo into a TraceEvent at the HTTP boundary.
-///
-/// The function name is set to basename(argv[0]) and arguments are the raw argv.
-/// Shell unwrapping (e.g., `sh -c "curl ..."` → `curl`) is handled separately
-/// in policy evaluation so that display and manual filters see the raw command.
+/// Convert a HostChildInfo into a TraceEvent at the server boundary.
 fn child_info_to_trace_event(info: HostChildInfo, cmd_name: String) -> TraceEvent {
     let arguments: Vec<Argument> = info
         .argv
@@ -426,10 +438,9 @@ fn child_info_to_trace_event(info: HostChildInfo, cmd_name: String) -> TraceEven
         function: cmd_name,
         arguments,
         native_stack: info.native_stack,
-        runtime_stack: None,
-        network_info: None,
         source_file: info.source_file,
         source_line: info.source_line,
+        ..Default::default()
     }
 }
 
@@ -439,100 +450,4 @@ fn basename(path: &str) -> &str {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(path)
-}
-
-fn handle_child_reconnect(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: ChildReconnectRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid request: {}", e));
-            return;
-        }
-    };
-
-    debug!(
-        "Child PID {} reconnected (parent {})",
-        req.child_pid, req.parent_pid
-    );
-
-    shared.active_agents.fetch_add(1, Ordering::SeqCst);
-    shared
-        .reconnected_pids
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(req.child_pid);
-
-    // Send Ready event for the child (it inherits hooks from parent)
-    let _ = shared.event_tx.send(AgentEvent::Ready {
-        pid: req.child_pid,
-        hooks: vec![],
-        nodejs_version: None,
-        python_version: None,
-        bash_version: None,
-        modules: vec![],
-    });
-
-    respond_ok(request);
-}
-
-fn handle_review(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: ReviewRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid review request: {}", e));
-            return;
-        }
-    };
-
-    // Create channel for main thread to send back the decision
-    let (response_tx, response_rx) = std::sync::mpsc::channel::<ReviewDecision>();
-
-    // Send to main thread for policy evaluation / user prompt
-    let _ = shared.event_tx.send(AgentEvent::ReviewRequest {
-        event: req.event,
-        response_tx,
-    });
-
-    // Block until main thread decides
-    let decision = response_rx.recv().unwrap_or(ReviewDecision::Allow);
-
-    respond_json(request, &ReviewResponse { decision });
-}
-
-fn handle_shutdown(mut request: tiny_http::Request, shared: &SharedState) {
-    let req: ShutdownRequest = match read_json(&mut request) {
-        Ok(r) => r,
-        Err(e) => {
-            respond_error(request, &format!("Invalid request: {}", e));
-            return;
-        }
-    };
-
-    debug!("Agent PID {} shutting down", req.pid);
-
-    if let Ok(mut seen) = shared.seen_events.lock() {
-        seen.retain(|(pid, _)| *pid != req.pid);
-    }
-    if let Ok(mut pids) = shared.reconnected_pids.lock() {
-        pids.remove(&req.pid);
-    }
-
-    // NOTE: active_agents is decremented in the main event loop when
-    // Disconnected is processed, not here. This guarantees all preceding
-    // events in the channel have been handled before the count drops.
-    let _ = shared
-        .event_tx
-        .send(AgentEvent::Disconnected { pid: req.pid });
-
-    respond_ok(request);
-}
-
-fn handle_command(request: tiny_http::Request, shared: &SharedState) {
-    let command = if shared.shutdown_command.load(Ordering::SeqCst) {
-        Some("shutdown".to_string())
-    } else {
-        None
-    };
-
-    respond_json(request, &CommandResponse { command });
 }

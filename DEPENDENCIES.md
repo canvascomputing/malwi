@@ -16,7 +16,6 @@ object v0.36.7
 regex v1.12.2
 serde v1.0.228
 serde_json v1.0.149
-tiny_http v0.12.0
 ```
 
-Updated: 2026-02-21T12:37:21Z
+Updated: 2026-02-22T16:05:32Z
