@@ -59,13 +59,24 @@ network:
 # Commands — block reverse shells, prompt on privilege escalation
 commands:
   allow: [node, git, npm]
-  deny: [curl, wget, nc, ncat, ssh, crontab, base64]
+  deny:
+    - curl
+    - wget
+    - nc
+    - ncat
+    - ssh
+    - crontab
+    - base64
   warn: [docker, pip]
   review: [sudo]
 
 # Files — protect credentials
 files:
-  deny: ["~/.ssh/**", "~/.aws/**", "*.pem", "*.key"]
+  deny:
+    - "~/.ssh/**"
+    - "~/.aws/**"
+    - "*.pem"
+    - "*.key"
 
 # Environment variables — block secret exfiltration
 envvars:

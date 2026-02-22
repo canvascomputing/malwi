@@ -51,7 +51,6 @@ pub enum ValidationError {
     MissingVersion,
     DeprecatedAtSyntax(String),
     UnknownSection(String),
-    InvalidOperation(String),
     InvalidProtocol(String),
     InvalidRegex { pattern: String, reason: String },
     InvalidConstraint(String),
@@ -71,7 +70,6 @@ impl fmt::Display for ValidationError {
                 s
             ),
             ValidationError::UnknownSection(s) => write!(f, "unknown section: {}", s),
-            ValidationError::InvalidOperation(s) => write!(f, "invalid operation: {}", s),
             ValidationError::InvalidProtocol(s) => write!(f, "invalid protocol: {}", s),
             ValidationError::InvalidRegex { pattern, reason } => {
                 write!(f, "invalid regex pattern '{}': {}", pattern, reason)

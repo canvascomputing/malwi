@@ -43,7 +43,7 @@ mod tests;
 // Re-export public types
 pub use compiled::{
     Category, CompiledPolicy, CompiledRule, CompiledSection, Constraint, ConstraintKind,
-    EnforcementMode, Operation, Runtime, SectionKey,
+    EnforcementMode, Runtime, SectionKey,
 };
 pub use compiler::{
     compile_policy, compile_policy_yaml, compile_policy_yaml_with_includes, resolve_includes,

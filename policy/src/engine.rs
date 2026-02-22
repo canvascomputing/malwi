@@ -1,6 +1,6 @@
 use crate::compiled::{
-    Category, CompiledPolicy, CompiledRule, Constraint, ConstraintKind, EnforcementMode, Operation,
-    Runtime, SectionKey,
+    Category, CompiledPolicy, CompiledRule, Constraint, ConstraintKind, EnforcementMode, Runtime,
+    SectionKey,
 };
 use crate::compiler::compile_policy_yaml;
 use crate::error::Result;
@@ -55,7 +55,6 @@ pub struct EvalContext<'a> {
     pub runtime: Option<Runtime>,
     pub name: &'a str,
     pub arguments: &'a [&'a str],
-    pub operation: Option<Operation>,
 }
 
 impl PolicyEngine {
@@ -94,26 +93,26 @@ impl PolicyEngine {
         arguments: &[&str],
     ) -> PolicyDecision {
         let key = SectionKey::for_runtime(runtime, Category::Functions);
-        self.evaluate_with_key(&key, name, arguments, None)
+        self.evaluate_with_key(&key, name, arguments)
     }
 
-    /// Evaluate a file operation (global `files` section).
-    pub fn evaluate_file(&self, path: &str, operation: Operation) -> PolicyDecision {
+    /// Evaluate a file access (global `files` section).
+    pub fn evaluate_file(&self, path: &str) -> PolicyDecision {
         let key = SectionKey::global(Category::Files);
-        self.evaluate_with_key(&key, path, &[], Some(operation))
+        self.evaluate_with_key(&key, path, &[])
     }
 
     /// Evaluate a domain name.
     pub fn evaluate_domain(&self, domain: &str) -> PolicyDecision {
         let key = SectionKey::global(Category::Domains);
-        self.evaluate_with_key(&key, domain, &[], None)
+        self.evaluate_with_key(&key, domain, &[])
     }
 
     /// Evaluate a network endpoint (host:port format).
     pub fn evaluate_endpoint(&self, host: &str, port: u16) -> PolicyDecision {
         let key = SectionKey::global(Category::Endpoints);
         let endpoint = format!("{}:{}", host, port);
-        self.evaluate_with_key(&key, &endpoint, &[], None)
+        self.evaluate_with_key(&key, &endpoint, &[])
     }
 
     /// Evaluate a protocol.
@@ -278,7 +277,7 @@ impl PolicyEngine {
     /// Uses the global `symbols:` section (SectionKey { runtime: None, category: Functions }).
     pub fn evaluate_native_function(&self, name: &str, arguments: &[&str]) -> PolicyDecision {
         let key = SectionKey::global(Category::Functions);
-        self.evaluate_with_key(&key, name, arguments, None)
+        self.evaluate_with_key(&key, name, arguments)
     }
 
     /// Evaluate command execution with two-pass matching.
@@ -290,7 +289,7 @@ impl PolicyEngine {
         let key = SectionKey::global(Category::Execution);
 
         // Pass 1: match against full command string
-        let full_result = self.evaluate_with_key(&key, command, &[], None);
+        let full_result = self.evaluate_with_key(&key, command, &[]);
         if full_result.matched_rule.is_some() {
             return full_result;
         }
@@ -298,7 +297,7 @@ impl PolicyEngine {
         // Pass 2: match against command name only (first word)
         let cmd_name = command.split_whitespace().next().unwrap_or(command);
         if cmd_name != command {
-            let name_result = self.evaluate_with_key(&key, cmd_name, &[], None);
+            let name_result = self.evaluate_with_key(&key, cmd_name, &[]);
             if name_result.matched_rule.is_some() {
                 return name_result;
             }
@@ -311,13 +310,13 @@ impl PolicyEngine {
     /// Evaluate environment variable access (global `envvars` section).
     pub fn evaluate_envvar(&self, name: &str) -> PolicyDecision {
         let key = SectionKey::global(Category::EnvVars);
-        self.evaluate_with_key(&key, name, &[], None)
+        self.evaluate_with_key(&key, name, &[])
     }
 
     /// Evaluate a direct syscall name (global `syscalls` section).
     pub fn evaluate_syscall(&self, name: &str) -> PolicyDecision {
         let key = SectionKey::global(Category::Syscalls);
-        self.evaluate_with_key(&key, name, &[], None)
+        self.evaluate_with_key(&key, name, &[])
     }
 
     /// Check if the policy has a non-noop `syscalls` section.
@@ -336,7 +335,6 @@ impl PolicyEngine {
         key: &SectionKey,
         name: &str,
         arguments: &[&str],
-        operation: Option<Operation>,
     ) -> PolicyDecision {
         let section_name = format_section_name(key);
 
@@ -374,8 +372,8 @@ impl PolicyEngine {
         }
 
         // Find the most specific matching rule from each side
-        let best_deny = find_best_match(&section.deny_rules, name, arguments, operation);
-        let best_allow = find_best_match(&section.allow_rules, name, arguments, operation);
+        let best_deny = find_best_match(&section.deny_rules, name, arguments);
+        let best_allow = find_best_match(&section.allow_rules, name, arguments);
 
         match (best_allow, best_deny) {
             (Some(allow), Some(deny)) => {
@@ -590,12 +588,11 @@ fn find_best_match<'a>(
     rules: &'a [CompiledRule],
     name: &str,
     arguments: &[&str],
-    operation: Option<Operation>,
 ) -> Option<&'a CompiledRule> {
     let mut best: Option<&CompiledRule> = None;
     let mut best_spec = 0;
     for rule in rules {
-        if rule_matches(rule, name, arguments, operation) {
+        if rule_matches(rule, name, arguments) {
             let spec = pattern_specificity(&rule.pattern);
             if best.is_none() || spec > best_spec {
                 best = Some(rule);
@@ -627,12 +624,7 @@ fn find_best_url_match<'a>(
 }
 
 /// Check if a rule matches the given context.
-fn rule_matches(
-    rule: &CompiledRule,
-    name: &str,
-    arguments: &[&str],
-    operation: Option<Operation>,
-) -> bool {
+fn rule_matches(rule: &CompiledRule, name: &str, arguments: &[&str]) -> bool {
     // First check if the pattern matches the name
     if !rule.pattern.matches(name) {
         return false;
@@ -644,15 +636,11 @@ fn rule_matches(
     }
 
     // Check constraints
-    check_constraints(&rule.constraints, arguments, operation)
+    check_constraints(&rule.constraints, arguments)
 }
 
 /// Check if any constraint is satisfied.
-fn check_constraints(
-    constraints: &[Constraint],
-    arguments: &[&str],
-    operation: Option<Operation>,
-) -> bool {
+fn check_constraints(constraints: &[Constraint], arguments: &[&str]) -> bool {
     // If there are constraints, at least one must match
     for constraint in constraints {
         match &constraint.kind {
@@ -666,14 +654,6 @@ fn check_constraints(
                 // Check if the specific argument matches
                 if let Some(arg) = arguments.get(*idx) {
                     if constraint.pattern.matches(arg) {
-                        return true;
-                    }
-                }
-            }
-            ConstraintKind::Operation(allowed_ops) => {
-                // Check if the operation is in the allowed list
-                if let Some(op) = operation {
-                    if allowed_ops.contains(&op) {
                         return true;
                     }
                 }
@@ -880,28 +860,30 @@ python:
     }
 
     #[test]
-    fn test_file_operation_constraint() {
+    fn test_file_allow_deny() {
         let engine = engine_from_yaml(
             r#"
 version: 1
 files:
   allow:
-    - "/tmp/*": [read]
-    - "/app/data/*": [read, edit]
+    - "/tmp/*"
+    - "/app/data/*"
+  deny:
+    - "/etc/*"
 "#,
         );
 
-        // Read /tmp - allowed
-        let decision = engine.evaluate_file("/tmp/test.txt", Operation::Read);
+        // /tmp allowed
+        let decision = engine.evaluate_file("/tmp/test.txt");
         assert_eq!(decision.action, PolicyAction::Allow);
 
-        // Write /tmp - denied
-        let decision = engine.evaluate_file("/tmp/test.txt", Operation::Edit);
+        // /app/data allowed
+        let decision = engine.evaluate_file("/app/data/file.json");
+        assert_eq!(decision.action, PolicyAction::Allow);
+
+        // /etc denied
+        let decision = engine.evaluate_file("/etc/passwd");
         assert_eq!(decision.action, PolicyAction::Deny);
-
-        // Edit /app/data - allowed
-        let decision = engine.evaluate_file("/app/data/file.json", Operation::Edit);
-        assert_eq!(decision.action, PolicyAction::Allow);
     }
 
     #[test]
@@ -930,7 +912,7 @@ files:
 "#,
         );
 
-        let decision = engine.evaluate_file("/etc/passwd", Operation::Read);
+        let decision = engine.evaluate_file("/etc/passwd");
         assert_eq!(decision.action, PolicyAction::Deny);
         assert_eq!(decision.section_mode(), EnforcementMode::Log);
     }

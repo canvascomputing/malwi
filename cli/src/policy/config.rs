@@ -125,3 +125,88 @@ pub(crate) fn write_policy(name: &str) -> Result<()> {
     println!("{}", path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serialize all config tests since they mutate process-global env vars.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> (MutexGuard<'static, ()>, PathBuf) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join("malwi_test_config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        (guard, tmp)
+    }
+
+    fn unlock_env(_guard: MutexGuard<'static, ()>, tmp: &Path) {
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn test_policies_dir_creates_missing() {
+        let (guard, tmp) = lock_env();
+        let dir = policies_dir().unwrap();
+        assert!(dir.exists());
+        assert!(dir.ends_with("malwi/policies"));
+        unlock_env(guard, &tmp);
+    }
+
+    #[test]
+    fn test_list_policies() {
+        let (guard, tmp) = lock_env();
+        let dir = policies_dir().unwrap();
+        fs::write(dir.join("a.yaml"), "version: 1\n").unwrap();
+        fs::write(dir.join("b.yaml"), "version: 1\n").unwrap();
+        list_policies().unwrap();
+        unlock_env(guard, &tmp);
+    }
+
+    #[test]
+    fn test_write_single_policy() {
+        let (guard, tmp) = lock_env();
+        write_policy("npm-install").unwrap();
+        let dir = policies_dir().unwrap();
+        let path = dir.join("npm-install.yaml");
+        assert!(path.exists());
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("version: 1"));
+        unlock_env(guard, &tmp);
+    }
+
+    #[test]
+    fn test_write_unknown_policy() {
+        let (guard, tmp) = lock_env();
+        let result = write_policy("nonexistent");
+        assert!(result.is_err());
+        unlock_env(guard, &tmp);
+    }
+
+    #[test]
+    fn test_reset_policies() {
+        let (guard, tmp) = lock_env();
+        reset_policies().unwrap();
+        let dir = policies_dir().unwrap();
+        let expected = [
+            "default",
+            "npm-install",
+            "pip-install",
+            "comfyui",
+            "openclaw",
+            "bash-install",
+            "air-gap",
+            "base",
+        ];
+        for name in &expected {
+            let path = dir.join(format!("{}.yaml", name));
+            assert!(path.exists(), "missing policy: {}", name);
+        }
+        unlock_env(guard, &tmp);
+    }
+}

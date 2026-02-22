@@ -1,7 +1,7 @@
 //! File access policy evaluation — checks file paths against the `files:` policy section.
 
 use super::active::{decision_to_disposition, pick_stricter, ActivePolicy, EventDisposition};
-use malwi_policy::{Category, Operation, SectionKey};
+use malwi_policy::{Category, SectionKey};
 use malwi_protocol::{HookType, TraceEvent};
 
 impl ActivePolicy {
@@ -41,7 +41,7 @@ impl ActivePolicy {
                 continue;
             }
             let normalized = normalize_path(arg);
-            let decision = self.engine.evaluate_file(&normalized, Operation::Read);
+            let decision = self.engine.evaluate_file(&normalized);
             let file_disp = decision_to_disposition(decision);
             if file_disp.should_display() {
                 strictest = pick_stricter(strictest, file_disp);
@@ -75,8 +75,7 @@ impl ActivePolicy {
 
         if let Some(path) = path_str {
             let normalized = normalize_path(path);
-            let operation = detect_operation_from_flags(&args, func);
-            let decision = self.engine.evaluate_file(&normalized, operation);
+            let decision = self.engine.evaluate_file(&normalized);
             let file_disp = decision_to_disposition(decision);
             if file_disp.should_display() {
                 return pick_stricter(disp, file_disp);
@@ -122,21 +121,6 @@ fn strip_quotes(s: &str) -> Option<&str> {
     s.strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .or(Some(s))
-}
-
-/// Determine Read vs Write operation from open() flags argument.
-fn detect_operation_from_flags(args: &[&str], func: &str) -> Operation {
-    let flags_str = match func {
-        "open" | "_open" => args.get(1),
-        "openat" | "_openat" => args.get(2),
-        _ => None,
-    };
-    if let Some(flags) = flags_str {
-        if flags.contains("O_WRONLY") || flags.contains("O_RDWR") || flags.contains("O_CREAT") {
-            return Operation::Write;
-        }
-    }
-    Operation::Read
 }
 
 #[cfg(test)]
@@ -251,24 +235,6 @@ mod tests {
     #[test]
     fn test_normalize_path_relative() {
         assert_eq!(normalize_path("foo/./bar/../baz"), "foo/baz");
-    }
-
-    #[test]
-    fn test_detect_operation_write() {
-        let args = vec!["\"/tmp/out\"", "O_WRONLY|O_CREAT"];
-        assert!(matches!(
-            detect_operation_from_flags(&args, "open"),
-            Operation::Write
-        ));
-    }
-
-    #[test]
-    fn test_detect_operation_read() {
-        let args = vec!["\"/tmp/in\"", "O_RDONLY"];
-        assert!(matches!(
-            detect_operation_from_flags(&args, "open"),
-            Operation::Read
-        ));
     }
 
     #[test]

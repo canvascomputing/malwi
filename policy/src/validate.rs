@@ -1,6 +1,6 @@
 use regex::Regex;
 
-use crate::compiled::{Category, Operation, Runtime};
+use crate::compiled::{Category, Runtime};
 use crate::error::ValidationError;
 use crate::parser::{parse_section_name, PolicyFile, Rule, SectionValue};
 
@@ -103,7 +103,7 @@ fn validate_section(name: &str, value: &SectionValue) -> Result<(), ValidationEr
     Ok(())
 }
 
-fn validate_rule(rule: &Rule, category: &str) -> Result<(), ValidationError> {
+fn validate_rule(rule: &Rule, _category: &str) -> Result<(), ValidationError> {
     match rule {
         Rule::Simple(pattern) => {
             validate_pattern(pattern)?;
@@ -114,19 +114,9 @@ fn validate_rule(rule: &Rule, category: &str) -> Result<(), ValidationError> {
         } => {
             validate_pattern(pattern)?;
 
-            // For files and envvars categories, constraints can be operations
-            if category == "files" || category == "envvars" {
-                for constraint in constraints {
-                    // Could be an operation or a pattern
-                    if Operation::parse(constraint).is_none() && !looks_like_pattern(constraint) {
-                        return Err(ValidationError::InvalidOperation(constraint.clone()));
-                    }
-                }
-            } else {
-                // Other categories: constraints are patterns
-                for constraint in constraints {
-                    validate_pattern(constraint)?;
-                }
+            // Constraints are patterns (argument matchers)
+            for constraint in constraints {
+                validate_pattern(constraint)?;
             }
         }
     }
@@ -145,10 +135,6 @@ fn validate_pattern(pattern: &str) -> Result<(), ValidationError> {
     }
     // Glob patterns and exact patterns are always valid syntax-wise
     Ok(())
-}
-
-fn looks_like_pattern(s: &str) -> bool {
-    s.contains('*') || s.contains('?') || s.starts_with("regex:") || s.contains('/')
 }
 
 #[cfg(test)]

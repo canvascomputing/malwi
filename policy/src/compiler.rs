@@ -2,13 +2,11 @@ use std::collections::HashMap;
 
 use crate::compiled::{
     Category, CompiledPolicy, CompiledRule, CompiledSection, Constraint, ConstraintKind,
-    EnforcementMode, Operation, Runtime, SectionKey,
+    EnforcementMode, Runtime, SectionKey,
 };
 use crate::error::{PolicyError, Result};
 use crate::parser::{parse_section_name, AllowDenySection, PolicyFile, Rule, SectionValue};
-use crate::pattern::{
-    compile_pattern, compile_pattern_case_insensitive, compile_url_pattern, CompiledPattern,
-};
+use crate::pattern::{compile_pattern, compile_pattern_case_insensitive, compile_url_pattern};
 
 /// Compile a parsed policy into an efficient runtime representation.
 ///
@@ -428,28 +426,10 @@ fn compile_rule(
     }
 }
 
-fn compile_constraints(constraints: &[String], category: Category) -> Result<Vec<Constraint>> {
+fn compile_constraints(constraints: &[String], _category: Category) -> Result<Vec<Constraint>> {
     let mut result = Vec::new();
 
-    // For files and envvars categories, check if constraints are operations
-    if category == Category::Files || category == Category::EnvVars {
-        let operations: Vec<Operation> = constraints
-            .iter()
-            .filter_map(|c| Operation::parse(c))
-            .collect();
-
-        if !operations.is_empty() {
-            // Create a dummy pattern that always matches for operation constraints
-            let dummy_pattern = CompiledPattern::Exact(String::new());
-            result.push(Constraint {
-                kind: ConstraintKind::Operation(operations),
-                pattern: dummy_pattern,
-            });
-            return Ok(result);
-        }
-    }
-
-    // Otherwise, constraints are argument patterns
+    // Constraints are argument patterns
     for constraint_str in constraints {
         let pattern = compile_pattern(constraint_str)?;
         result.push(Constraint {
@@ -656,7 +636,7 @@ python:
     }
 
     #[test]
-    fn test_compile_file_operations() {
+    fn test_compile_file_constraints_as_argument_patterns() {
         let yaml = r#"
 version: 1
 files:
@@ -668,13 +648,12 @@ files:
         let section = policy.get_section(&key).unwrap();
 
         let rule = &section.allow_rules[0];
-        assert_eq!(rule.constraints.len(), 1);
-        if let ConstraintKind::Operation(ops) = &rule.constraints[0].kind {
-            assert!(ops.contains(&Operation::Read));
-            assert!(ops.contains(&Operation::Edit));
-        } else {
-            panic!("Expected Operation constraint");
-        }
+        // Constraints are now compiled as AnyArgument patterns
+        assert_eq!(rule.constraints.len(), 2);
+        assert!(matches!(
+            rule.constraints[0].kind,
+            ConstraintKind::AnyArgument
+        ));
     }
 
     #[test]

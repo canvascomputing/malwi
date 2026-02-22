@@ -1,6 +1,6 @@
 //! Tests for policy compilation.
 
-use crate::compiled::{Category, ConstraintKind, EnforcementMode, Operation, Runtime, SectionKey};
+use crate::compiled::{Category, ConstraintKind, EnforcementMode, Runtime, SectionKey};
 use crate::compiler::compile_policy_yaml;
 use crate::pattern::compile_pattern;
 
@@ -129,7 +129,9 @@ python:
 }
 
 #[test]
-fn test_compile_file_operation_constraints() {
+fn test_compile_file_constraints_are_argument_patterns() {
+    // After removing operation constraints, [read, edit] on files are
+    // compiled as AnyArgument constraint patterns (same as other categories).
     let policy = compile_policy_yaml(
         r#"
 version: 1
@@ -144,14 +146,15 @@ files:
     let section = policy.get_section(&key).unwrap();
     let rule = &section.allow_rules[0];
 
-    assert_eq!(rule.constraints.len(), 1);
-    if let ConstraintKind::Operation(ops) = &rule.constraints[0].kind {
-        assert!(ops.contains(&Operation::Read));
-        assert!(ops.contains(&Operation::Edit));
-        assert!(!ops.contains(&Operation::Delete));
-    } else {
-        panic!("Expected Operation constraint");
-    }
+    assert_eq!(rule.constraints.len(), 2);
+    assert!(matches!(
+        rule.constraints[0].kind,
+        ConstraintKind::AnyArgument
+    ));
+    assert!(matches!(
+        rule.constraints[1].kind,
+        ConstraintKind::AnyArgument
+    ));
 }
 
 #[test]

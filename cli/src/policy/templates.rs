@@ -36,7 +36,7 @@ pub fn embedded_policy(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use malwi_policy::{EnforcementMode, Operation, PolicyAction, PolicyEngine, Runtime};
+    use malwi_policy::{EnforcementMode, PolicyAction, PolicyEngine, Runtime};
 
     // =====================================================================
     // ComfyUI auto-policy: attack scenario tests
@@ -233,22 +233,22 @@ mod tests {
     fn test_comfyui_sensitive_files_denied() {
         let engine = comfyui_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/server.pem", Operation::Read);
+        let d = engine.evaluate_file("/tmp/server.pem");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/home/user/.ssh/id_ed25519", Operation::Read);
+        let d = engine.evaluate_file("/home/user/.ssh/id_ed25519");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.config/gh/hosts.yml", Operation::Read);
+        let d = engine.evaluate_file("~/.config/gh/hosts.yml");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/model.safetensors", Operation::Read);
+        let d = engine.evaluate_file("/tmp/model.safetensors");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -450,10 +450,10 @@ mod tests {
     fn test_bash_install_blocks_credential_files() {
         let engine = bash_install_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -461,13 +461,13 @@ mod tests {
     fn test_bash_install_blocks_shell_profile_writes() {
         let engine = bash_install_engine();
 
-        let d = engine.evaluate_file("~/.bashrc", Operation::Write);
+        let d = engine.evaluate_file("~/.bashrc");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.zshrc", Operation::Write);
+        let d = engine.evaluate_file("~/.zshrc");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.profile", Operation::Write);
+        let d = engine.evaluate_file("~/.profile");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -475,13 +475,10 @@ mod tests {
     fn test_bash_install_blocks_git_hooks() {
         let engine = bash_install_engine();
 
-        let d = engine.evaluate_file(".git/hooks/pre-commit", Operation::Write);
+        let d = engine.evaluate_file(".git/hooks/pre-commit");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file(
-            "/home/user/project/.git/hooks/post-checkout",
-            Operation::Write,
-        );
+        let d = engine.evaluate_file("/home/user/project/.git/hooks/post-checkout");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -631,7 +628,7 @@ mod tests {
     fn test_bash_install_blocks_shared_memory() {
         let engine = bash_install_engine();
 
-        let d = engine.evaluate_file("/dev/shm/exfil", Operation::Write);
+        let d = engine.evaluate_file("/dev/shm/exfil");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -655,16 +652,16 @@ mod tests {
     fn test_npm_install_blocks_credential_files() {
         let engine = npm_install_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("*/.kube/config", Operation::Read);
+        let d = engine.evaluate_file("*/.kube/config");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/server.pem", Operation::Read);
+        let d = engine.evaluate_file("/tmp/server.pem");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -765,13 +762,13 @@ mod tests {
     fn test_pip_install_blocks_credential_files() {
         let engine = pip_install_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/server.pem", Operation::Read);
+        let d = engine.evaluate_file("/tmp/server.pem");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -865,7 +862,7 @@ mod tests {
     fn test_comfyui_blocks_kube_config() {
         let engine = comfyui_engine();
 
-        let d = engine.evaluate_file("*/.kube/config", Operation::Read);
+        let d = engine.evaluate_file("*/.kube/config");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -1045,13 +1042,13 @@ mod tests {
     fn test_air_gap_base_files_present() {
         let engine = air_gap_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/server.pem", Operation::Read);
+        let d = engine.evaluate_file("/tmp/server.pem");
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -1314,19 +1311,19 @@ mod tests {
     fn test_openclaw_credential_files_blocked() {
         let engine = openclaw_engine();
 
-        let d = engine.evaluate_file("~/.ssh/id_rsa", Operation::Read);
+        let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("~/.aws/credentials", Operation::Read);
+        let d = engine.evaluate_file("~/.aws/credentials");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/server.pem", Operation::Read);
+        let d = engine.evaluate_file("/tmp/server.pem");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/home/user/.ssh/id_ed25519", Operation::Read);
+        let d = engine.evaluate_file("/home/user/.ssh/id_ed25519");
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_file("/tmp/config.json", Operation::Read);
+        let d = engine.evaluate_file("/tmp/config.json");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 

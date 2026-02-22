@@ -119,7 +119,7 @@ impl CompiledRule {
     }
 }
 
-/// A constraint on a rule (e.g., argument patterns, file operations).
+/// A constraint on a rule (e.g., argument patterns).
 #[derive(Debug)]
 pub struct Constraint {
     pub kind: ConstraintKind,
@@ -133,8 +133,6 @@ pub enum ConstraintKind {
     AnyArgument,
     /// Match a specific argument by index (0-based).
     ArgumentIndex(usize),
-    /// Match allowed operations.
-    Operation(Vec<Operation>),
 }
 
 /// Enforcement mode for a section.
@@ -233,31 +231,5 @@ impl Category {
     /// Check if this category uses case-insensitive matching.
     pub fn is_case_insensitive(&self) -> bool {
         matches!(self, Self::Domains | Self::Protocols)
-    }
-}
-
-/// File/resource operation types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
-    Read,
-    Write,
-    Edit,
-    Delete,
-    Create,
-    Execute,
-}
-
-impl Operation {
-    /// Parse an operation string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "read" | "r" => Some(Self::Read),
-            "write" | "w" => Some(Self::Write),
-            "edit" | "modify" | "update" => Some(Self::Edit),
-            "delete" | "remove" | "rm" | "d" => Some(Self::Delete),
-            "create" | "new" | "c" => Some(Self::Create),
-            "execute" | "exec" | "x" => Some(Self::Execute),
-            _ => None,
-        }
     }
 }
