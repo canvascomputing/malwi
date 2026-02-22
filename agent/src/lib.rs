@@ -48,6 +48,17 @@ static SHUTDOWN_SENT: AtomicBool = AtomicBool::new(false);
 // are flushed before the CLI's active_agents counter is decremented.
 static FLUSH_COMPLETE: AtomicBool = AtomicBool::new(false);
 
+/// Maximum time to wait for the flush thread to drain pending events during
+/// shutdown. Must be generous enough for localhost HTTP round-trips on loaded
+/// CI runners. The flush thread typically completes in <50ms; this timeout is
+/// a safety net for pathological scheduling delays.
+const FLUSH_DRAIN_TIMEOUT_MS: u64 = 2000;
+
+/// Idle timeout for the flush loop's `recv_timeout`. Controls how quickly the
+/// flush thread notices `SHUTDOWN_REQUESTED` when no events are arriving.
+/// At 10ms the thread wakes 100 times/second — negligible CPU impact.
+const FLUSH_RECV_TIMEOUT_MS: u64 = 10;
+
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use malwi_protocol::{ChildOperation, HookConfig, HookType, HostChildInfo};
@@ -122,7 +133,8 @@ impl Agent {
             if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
                 // Wait for flush thread to drain pending events before sending
                 // /shutdown, otherwise the CLI may exit before displaying them.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
                 while !FLUSH_COMPLETE.load(Ordering::Acquire) {
                     if std::time::Instant::now() >= deadline {
                         break;
@@ -522,12 +534,12 @@ impl Agent {
 ///
 /// Collects events from the channel and sends them in batches of up to 64.
 /// Uses `recv_timeout` to coalesce events that arrive close together,
-/// flushing either when the batch is full or after a 50ms idle period.
+/// flushing either when the batch is full or after a `FLUSH_RECV_TIMEOUT_MS` idle period.
 fn event_flush_loop(http: HttpClient, rx: mpsc::Receiver<malwi_protocol::TraceEvent>) {
     hooks::suppress_hooks_on_current_thread();
     let mut batch = Vec::with_capacity(64);
     loop {
-        match rx.recv_timeout(Duration::from_millis(50)) {
+        match rx.recv_timeout(Duration::from_millis(FLUSH_RECV_TIMEOUT_MS)) {
             Ok(event) => {
                 batch.push(event);
                 // Drain up to 64 without blocking
@@ -782,7 +794,8 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 // decrement the CLI's active_agents counter via /shutdown.
                 // Bounded timeout in case flush thread is dead (e.g., in
                 // forked children where threads don't survive fork).
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
                 while !FLUSH_COMPLETE.load(Ordering::Acquire) {
                     if std::time::Instant::now() >= deadline {
                         break;
