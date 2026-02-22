@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(
             detect_policy(&[
                 String::from("node"),
-                String::from("/usr/local/lib/node_modules/openclaw/dist/openclaw.mjs"),
+                String::from("/usr/local/lib/node_modules/openclaw/openclaw.mjs"),
             ]),
             Some("openclaw"),
         );

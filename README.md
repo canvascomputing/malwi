@@ -86,8 +86,7 @@ When `malwi` detects a known command, it automatically applies a tailored [polic
 
 ```bash
 malwi x openclaw gateway
-malwi x node /usr/local/lib/node_modules/openclaw/dist/openclaw.mjs doctor
-malwi x openclaw.mjs gateway
+malwi x openclaw doctor
 ```
 
 #### <a id="comfyui"></a><img src="images/comfyui.png" alt="ComfyUI" height="20"> [ComfyUI](https://docs.comfy.org/)
