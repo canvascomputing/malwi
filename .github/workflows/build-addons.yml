@@ -13,7 +13,6 @@ jobs:
         node: ['21', '22', '23', '24', '25']
         platform:
           - { name: darwin-arm64, runner: macos-14 }
-          - { name: darwin-x64, runner: macos-15-large }
           - { name: linux-x64, runner: ubuntu-latest }
           - { name: linux-arm64, runner: ubuntu-24.04-arm }
 
@@ -29,13 +28,8 @@ jobs:
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
         run: |
           LLVM_VERSION=19.1.7
-          if [ "$(uname -m)" = "arm64" ]; then
-            PLATFORM="macOS-ARM64"
-          else
-            PLATFORM="macOS-X64"
-          fi
-          curl -sSfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-${PLATFORM}.tar.xz" | tar xJ
-          echo "LLVM_PATH=$PWD/LLVM-${LLVM_VERSION}-${PLATFORM}" >> $GITHUB_ENV
+          curl -sSfL "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-macOS-ARM64.tar.xz" | tar xJ
+          echo "LLVM_PATH=$PWD/LLVM-${LLVM_VERSION}-macOS-ARM64" >> $GITHUB_ENV
 
       - name: Build addon (Node 25+ macOS)
         if: matrix.node >= 25 && startsWith(matrix.platform.name, 'darwin')
