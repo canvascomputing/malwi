@@ -13,7 +13,7 @@ jobs:
         node: ['21', '22', '23', '24', '25']
         platform:
           - { name: darwin-arm64, runner: macos-14 }
-          - { name: darwin-x64, runner: macos-13 }
+          - { name: darwin-x64, runner: macos-15-large }
           - { name: linux-x64, runner: ubuntu-latest }
           - { name: linux-arm64, runner: ubuntu-24.04-arm }
 
