@@ -201,6 +201,8 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
 
     // Track the PID for this connection (set on first Configure or Reconnect)
     let mut agent_pid: Option<u32> = None;
+    // Track whether the agent sent a clean Shutdown message
+    let mut shutdown_received = false;
 
     // 4. Message loop
     let mut read_buf = vec![0u8; 64 * 1024];
@@ -232,9 +234,22 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
                             continue;
                         }
                     };
-                    handle_message(msg, &mut conn, &mut stream, shared, &mut agent_pid)?;
+                    handle_message(
+                        msg,
+                        &mut conn,
+                        &mut stream,
+                        shared,
+                        &mut agent_pid,
+                        &mut shutdown_received,
+                    )?;
                 }
                 Event::CloseReceived(_) | Event::Closed => {
+                    // Send Disconnected if we had a PID but no clean Shutdown
+                    if let Some(pid) = agent_pid {
+                        if !shutdown_received {
+                            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
+                        }
+                    }
                     return Ok(());
                 }
                 _ => {} // Ping/pong handled by Connection
@@ -243,6 +258,13 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
 
         // Flush any outbound frames (pongs, responses)
         flush_outbox(&mut conn, &mut stream)?;
+    }
+
+    // Connection dropped (EOF or error) — send Disconnected if no clean Shutdown
+    if let Some(pid) = agent_pid {
+        if !shutdown_received {
+            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
+        }
     }
 
     Ok(())
@@ -263,6 +285,7 @@ fn handle_message(
     stream: &mut TcpStream,
     shared: &SharedState,
     agent_pid: &mut Option<u32>,
+    shutdown_received: &mut bool,
 ) -> Result<()> {
     match msg {
         AgentMessage::Configure(req) => {
@@ -391,6 +414,7 @@ fn handle_message(
         }
         AgentMessage::Shutdown(req) => {
             debug!("Agent PID {} shutting down", req.pid);
+            *shutdown_received = true;
 
             if let Ok(mut seen) = shared.seen_events.lock() {
                 seen.retain(|(pid, _)| *pid != req.pid);

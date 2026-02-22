@@ -950,7 +950,7 @@ fn run_main_event_loop(
         }
 
         // Wait for events
-        match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        match event_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(event) => {
                 let is_disconnect = matches!(&event, AgentEvent::Disconnected { .. });
                 process_event(event, config, state)?;
@@ -984,14 +984,15 @@ fn run_main_event_loop(
                     anyhow::bail!("Target process exited before agent could connect (program may not exist or crashed immediately)");
                 }
                 // Fallback: if root process has exited but some agents haven't
-                // sent /shutdown (e.g., forked children that died without cleanup),
-                // wait up to 2 seconds then exit gracefully.
+                // sent Disconnected (e.g., forked children that died without cleanup),
+                // wait up to 500ms then exit gracefully. With WebSocket EOF detection
+                // (Change 1), this path is rarely needed.
                 if state.seen_root && !is_process_alive(config.root_pid) {
                     match state.root_dead_since {
                         None => {
                             state.root_dead_since = Some(std::time::Instant::now());
                         }
-                        Some(since) if since.elapsed() > std::time::Duration::from_secs(2) => {
+                        Some(since) if since.elapsed() > std::time::Duration::from_millis(500) => {
                             debug!(
                                 "Root process exited but {} agents still active, exiting after timeout",
                                 active_agents.load(Ordering::SeqCst)

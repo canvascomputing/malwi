@@ -49,10 +49,10 @@ static SHUTDOWN_SENT: AtomicBool = AtomicBool::new(false);
 static FLUSH_COMPLETE: AtomicBool = AtomicBool::new(false);
 
 /// Maximum time to wait for the flush thread to drain pending events during
-/// shutdown. Must be generous enough for localhost HTTP round-trips on loaded
-/// CI runners. The flush thread typically completes in <50ms; this timeout is
-/// a safety net for pathological scheduling delays.
-const FLUSH_DRAIN_TIMEOUT_MS: u64 = 2000;
+/// shutdown. With WebSocket, flushes are single-frame writes on a persistent
+/// connection — no TCP setup or HTTP overhead. The flush thread typically
+/// completes in <50ms; this timeout is a safety net for pathological delays.
+const FLUSH_DRAIN_TIMEOUT_MS: u64 = 500;
 
 /// Idle timeout for the flush loop's `recv_timeout`. Controls how quickly the
 /// flush thread notices `SHUTDOWN_REQUESTED` when no events are arriving.
@@ -181,7 +181,7 @@ impl Agent {
                 }
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         info!("Agent shutting down");
