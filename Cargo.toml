@@ -4,6 +4,7 @@ members = [
     "cli",
     "agent",
     "protocol",
+    "websocket",
     "intercept",
     "policy",
 ]
@@ -34,6 +35,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Internal crates
 malwi-protocol = { path = "protocol" }
+malwi-websocket = { path = "websocket" }
 malwi-agent = { path = "agent" }
 malwi-policy = { path = "policy" }
 malwi-intercept = { path = "intercept" }
