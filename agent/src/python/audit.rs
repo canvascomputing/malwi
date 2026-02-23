@@ -202,10 +202,14 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
 
     // Exec filter integration for Python: treat subprocess.Popen as an exec event.
     // This avoids relying on low-level fork/exec interception for Python runtimes.
-    if crate::exec::filter::has_filters() && event_str == "subprocess.Popen" {
+    if crate::exec::filter::has_filters()
+        && (event_str == "subprocess.Popen"
+            || event_str == "os.posix_spawn"
+            || event_str == "os.posix_spawnp")
+    {
         let arguments = extract_tuple_arguments(args);
         if arguments.is_empty() {
-            debug!("subprocess.Popen audit: no arguments extracted");
+            debug!("{} audit: no arguments extracted", event_str);
         }
         // Python audit args for subprocess.Popen look like:
         // ('executable', ['argv0', ...], cwd, env)
@@ -234,7 +238,7 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
             .and_then(|s| std::path::Path::new(s).file_name().and_then(|p| p.to_str()))
             .or_else(|| argv.first().map(|s| s.as_str()));
         if cmd.is_none() {
-            debug!("subprocess.Popen audit: could not extract command name");
+            debug!("{} audit: could not extract command name", event_str);
         }
         if let Some(cmd) = cmd {
             let (matches, capture_stack) = crate::exec::filter::check_filter(cmd);
