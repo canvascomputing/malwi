@@ -378,7 +378,7 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     }
 
     // Check agent-side deny filter
-    let blocked = crate::envvar_filter::should_block(&key);
+    let blocked = crate::exec::envvar::should_block(&key);
 
     // Build and send EnvVar trace event
     let event = crate::tracing::event::envvar_enter(&key).build();

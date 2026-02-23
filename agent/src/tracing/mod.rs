@@ -12,11 +12,13 @@
 pub mod event;
 pub mod filter;
 pub mod format;
+pub mod stack;
 pub mod thread;
 pub mod time;
 
 // Re-export commonly used items
 pub use event::EventBuilder;
 pub use filter::{check_filter, Filter, FilterManager};
+pub use stack::{StackCapturer, StackFrame};
 pub use thread::id as thread_id;
 pub use time::elapsed_ns;

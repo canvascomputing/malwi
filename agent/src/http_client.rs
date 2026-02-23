@@ -183,7 +183,7 @@ impl HttpClient {
 
     /// Send a fire-and-forget message.
     fn send(&self, msg: &AgentMessage) -> Result<()> {
-        let _guard = crate::hooks::HookSuppressGuard::new();
+        let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
 
         let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -207,7 +207,7 @@ impl HttpClient {
 
     /// Send a message and wait for a response.
     fn send_and_recv(&self, msg: &AgentMessage) -> Result<CliMessage> {
-        let _guard = crate::hooks::HookSuppressGuard::new();
+        let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
 
         let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());

@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::glob::{is_glob_pattern, matches_glob};
+use malwi_protocol::glob::{is_glob_pattern, matches_glob};
 
 /// Information about a loaded module.
 #[derive(Debug, Clone)]

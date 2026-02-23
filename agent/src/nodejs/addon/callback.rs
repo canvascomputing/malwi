@@ -6,7 +6,7 @@
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::envvar_filter;
+use crate::exec::envvar as envvar_filter;
 use crate::nodejs::ffi::NodejsTraceEventData;
 
 /// Set on first callback invocation to mark addon tracing as active.
@@ -146,7 +146,7 @@ pub extern "C" fn malwi_nodejs_envvar_access(key_ptr: *const u8, key_len: usize)
     }
 
     // If envvar monitoring is not enabled, allow all without tracing
-    if !crate::spawn_monitor::is_envvar_monitoring_enabled() {
+    if !crate::exec::is_envvar_monitoring_enabled() {
         return 1;
     }
 

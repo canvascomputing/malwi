@@ -12,8 +12,8 @@ use std::time::Duration;
 use log::{debug, error};
 use malwi_protocol::RuntimeStack;
 
+use crate::exec::SpawnHandler;
 use crate::native;
-use crate::spawn_monitor::SpawnHandler;
 
 use super::ffi::{init_python_api, PyAuditHookFunction, PySys_AddAuditHookFn, PYTHON_API};
 use super::filters::{has_any_filters, matches_filter};
@@ -54,7 +54,7 @@ pub fn start_audit_registration_task() {
 #[cfg(target_os = "macos")]
 #[allow(unreachable_code)]
 fn capture_native_stack_for_exec(cmd: &str) -> Vec<usize> {
-    let (_matches, capture_stack) = crate::exec_filter::check_filter(cmd);
+    let (_matches, capture_stack) = crate::exec::filter::check_filter(cmd);
     if !capture_stack {
         return Vec::new();
     }
@@ -174,7 +174,7 @@ unsafe extern "C" fn audit_hook(
 
     // Exec filter integration for Python: treat subprocess.Popen as an exec event.
     // This avoids relying on low-level fork/exec interception for Python runtimes.
-    if crate::exec_filter::has_filters() && event_str == "subprocess.Popen" {
+    if crate::exec::filter::has_filters() && event_str == "subprocess.Popen" {
         let arguments = extract_tuple_arguments(args);
         // Python audit args for subprocess.Popen look like:
         // ('executable', ['argv0', ...], cwd, env)
@@ -203,7 +203,7 @@ unsafe extern "C" fn audit_hook(
             .and_then(|s| std::path::Path::new(s).file_name().and_then(|p| p.to_str()))
             .or_else(|| argv.first().map(|s| s.as_str()));
         if let Some(cmd) = cmd {
-            let (matches, _capture_stack) = crate::exec_filter::check_filter(cmd);
+            let (matches, _capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
                     let native_stack = {
@@ -216,7 +216,7 @@ unsafe extern "C" fn audit_hook(
                             Vec::new()
                         }
                     };
-                    agent.on_spawn_created(crate::spawn_monitor::SpawnInfo {
+                    agent.on_spawn_created(crate::exec::SpawnInfo {
                         child_pid: 0,
                         path: None,
                         argv: Some(argv),

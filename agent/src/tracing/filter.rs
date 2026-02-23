@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use log::{debug, error};
 
-use crate::glob::matches_glob;
+use malwi_protocol::glob::matches_glob;
 
 /// A filter entry with pattern and capture settings.
 ///

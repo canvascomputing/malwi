@@ -94,7 +94,7 @@ pub fn is_envvar_monitoring_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::glob::matches_glob;
+    use malwi_protocol::glob::matches_glob;
 
     #[test]
     fn test_matches_glob_exact() {

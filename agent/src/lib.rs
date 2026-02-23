@@ -3,25 +3,19 @@
 //! This library is compiled as a cdylib and loaded into the target process
 //! via LD_PRELOAD (Linux), DYLD_INSERT_LIBRARIES (macOS), or injection.
 
-pub mod cpython;
-pub mod envvar_filter; // Envvar deny patterns for agent-side blocking
-pub mod exec_filter; // Exec command filtering for child processes
-#[cfg(unix)]
-pub mod fork_monitor;
-pub mod glob;
-pub mod hooks;
-pub mod http_client;
-pub mod native; // Native symbol resolution and argument formatting
+pub mod bash; // Bash tracing (shell hooks, builtins)
+pub mod exec; // Child process monitoring (spawn/fork/exec)
+pub mod http_client; // WebSocket communication with CLI
+pub mod native; // Native function tracing (intercept hooks)
 pub mod nodejs; // Node.js tracing (addon, bytecode hooks, filters)
-pub mod spawn_monitor;
-pub mod stack;
-pub mod syscall_monitor;
-pub mod tracing; // Shared tracing utilities (thread, time, filter, event)
+pub mod python; // Python tracing (sys.setprofile, audit hooks)
+pub mod syscall; // Direct syscall detection
+pub mod tracing; // Shared infrastructure (thread, time, filter, event)
 
 #[cfg(test)]
 mod test_utils;
 
-pub use stack::{StackCapturer, StackFrame};
+pub use tracing::{StackCapturer, StackFrame};
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,10 +58,10 @@ use log::{debug, error, info, warn};
 use malwi_protocol::{ChildOperation, HookConfig, HookType, HostChildInfo};
 
 #[cfg(unix)]
-use crate::fork_monitor::{ForkHandler, ForkMonitor};
-use crate::hooks::HookManager;
+use crate::exec::{ForkHandler, ForkMonitor};
+use crate::exec::{SpawnHandler, SpawnInfo, SpawnMonitor};
 use crate::http_client::HttpClient;
-use crate::spawn_monitor::{SpawnHandler, SpawnInfo, SpawnMonitor};
+use crate::native::HookManager;
 
 /// Global agent state.
 static AGENT: OnceLock<Agent> = OnceLock::new();
@@ -87,7 +81,7 @@ pub struct Agent {
     fork_monitor: Mutex<Option<ForkMonitor>>,
     spawn_monitor: Mutex<Option<SpawnMonitor>>,
     /// Syscall monitor for direct syscall detection (opt-in).
-    syscall_monitor: Mutex<Option<syscall_monitor::SyscallMonitor>>,
+    syscall_monitor: Mutex<Option<syscall::SyscallMonitor>>,
 }
 
 impl Agent {
@@ -202,7 +196,7 @@ impl Agent {
                 }
             },
             HookType::Python => {
-                cpython::add_python_filter(&config.symbol, config.capture_stack);
+                python::add_python_filter(&config.symbol, config.capture_stack);
                 debug!("Added Python filter: {}", config.symbol);
             }
             HookType::Nodejs => {
@@ -210,11 +204,11 @@ impl Agent {
                 debug!("Added Node.js filter: {}", config.symbol);
             }
             HookType::Exec => {
-                exec_filter::add_filter(&config.symbol, config.capture_stack);
+                exec::filter::add_filter(&config.symbol, config.capture_stack);
                 self.ensure_monitors_installed();
                 // CPython subprocess exec events are best-effort via audit hooks.
                 // We may be loaded before Python's exported symbols are visible, so retry.
-                cpython::start_audit_registration_task();
+                python::start_audit_registration_task();
                 debug!("Added exec filter: {}", config.symbol);
             }
             HookType::DirectSyscall => {
@@ -225,10 +219,10 @@ impl Agent {
                 // EnvVar monitoring: hook bash's find_variable if this is a bash process.
                 // Set the flag so setup_bash_hooks() will install the hook if the spawn
                 // monitor hasn't been created yet.
-                spawn_monitor::enable_envvar_monitoring();
+                exec::spawn::enable_envvar_monitoring();
                 // Individual deny patterns (non-wildcard) are for agent-side blocking.
                 if config.symbol != "*" {
-                    envvar_filter::add_deny_pattern(&config.symbol);
+                    exec::envvar::add_deny_pattern(&config.symbol);
                     debug!("Added envvar deny pattern: {}", config.symbol);
                 }
                 // If the spawn monitor already exists, install the hooks now.
@@ -243,8 +237,8 @@ impl Agent {
                     }
                 }
                 // Python envvar monitoring
-                if cpython::is_python_loaded() {
-                    cpython::enable_envvar_monitoring();
+                if python::is_python_loaded() {
+                    python::enable_envvar_monitoring();
                 }
                 // Node.js envvar monitoring
                 if nodejs::is_loaded() {
@@ -360,12 +354,12 @@ impl Agent {
             .collect();
 
         // Gather runtime versions for CLI display
-        let python_version = if cpython::is_python_loaded() {
-            cpython::version::get().map(|v| v.to_string())
+        let python_version = if python::is_python_loaded() {
+            python::version::get().map(|v| v.to_string())
         } else {
             None
         };
-        let bash_version = spawn_monitor::detected_bash_version().map(|s| s.to_string());
+        let bash_version = exec::spawn::detected_bash_version().map(|s| s.to_string());
 
         // Report ready
         let hooks = self.hook_manager.list_hooks();
@@ -395,7 +389,7 @@ impl Agent {
         if guard.is_some() {
             return;
         }
-        match unsafe { syscall_monitor::SyscallMonitor::new() } {
+        match unsafe { syscall::SyscallMonitor::new() } {
             Some(monitor) => {
                 info!("Direct syscall detection enabled (scan+patch)");
                 *guard = Some(monitor);
@@ -453,7 +447,7 @@ impl Agent {
                 // If envvar monitoring was requested before the spawn monitor was created,
                 // install the find_variable and getenv hooks now.
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
-                if spawn_monitor::is_envvar_monitoring_enabled() {
+                if exec::spawn::is_envvar_monitoring_enabled() {
                     unsafe {
                         monitor.enable_envvar_hook();
                         monitor.enable_getenv_hook();
@@ -470,7 +464,7 @@ impl Agent {
         // because the override makes dlsym("posix_spawn") return our wrapper addresses.
         #[cfg(target_os = "macos")]
         unsafe {
-            spawn_monitor::install_dlsym_override();
+            exec::spawn::install_dlsym_override();
         }
     }
 
@@ -482,7 +476,7 @@ impl Agent {
         );
 
         // Only show child events if exec filters are configured
-        if !exec_filter::has_filters() {
+        if !exec::filter::has_filters() {
             debug!("No exec filters configured, hiding child event");
             return;
         }
@@ -503,9 +497,9 @@ impl Agent {
             .and_then(|argv| malwi_protocol::exec::unwrap_shell_command(argv));
 
         if let Some(cmd) = raw_command {
-            let (matches, _) = exec_filter::check_filter(cmd);
+            let (matches, _) = exec::filter::check_filter(cmd);
             let unwrap_matches = unwrapped
-                .map(|u| exec_filter::check_filter(u).0)
+                .map(|u| exec::filter::check_filter(u).0)
                 .unwrap_or(false);
             if !matches && !unwrap_matches {
                 debug!("Command '{}' does not match exec filter, hiding", cmd);
@@ -529,7 +523,7 @@ impl Agent {
 /// Uses `recv_timeout` to coalesce events that arrive close together,
 /// flushing either when the batch is full or after a `FLUSH_RECV_TIMEOUT_MS` idle period.
 fn event_flush_loop(http: HttpClient, rx: mpsc::Receiver<malwi_protocol::TraceEvent>) {
-    hooks::suppress_hooks_on_current_thread();
+    native::suppress_hooks_on_current_thread();
     let mut batch = Vec::with_capacity(64);
     loop {
         match rx.recv_timeout(Duration::from_millis(FLUSH_RECV_TIMEOUT_MS)) {
@@ -720,7 +714,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     #[cfg(target_os = "macos")]
     {
         if let Ok(dyld_path) = std::env::var("DYLD_INSERT_LIBRARIES") {
-            spawn_monitor::set_agent_dyld_path(dyld_path);
+            exec::spawn::set_agent_dyld_path(dyld_path);
         }
         std::env::remove_var("DYLD_INSERT_LIBRARIES");
         std::env::remove_var("DYLD_FORCE_FLAT_NAMESPACE");
@@ -731,14 +725,14 @@ pub extern "C" fn malwi_agent_init() -> i32 {
 
     // Initialize hook subsystems early.
     malwi_intercept::init();
-    // NOTE: dlsym override (spawn_monitor::install_dlsym_override) is installed
+    // NOTE: dlsym override (exec::spawn::install_dlsym_override) is installed
     // AFTER the spawn monitor hooks are set up, not here. Installing it early
     // would poison dlsym("posix_spawn") to return our wrapper address instead
     // of the real libc function, breaking find_global_export_by_name().
     // Register CPython audit hook if CPython is loaded
-    if cpython::is_python_loaded() {
+    if python::is_python_loaded() {
         info!("CPython detected, registering audit hook");
-        cpython::register_audit_hook();
+        python::register_audit_hook();
     }
 
     // Detect Node.js runtime and enable tracing.
@@ -781,7 +775,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 // Suppress hooks on the main thread during shutdown.
                 // After main() returns, all remaining mallocs are agent
                 // bookkeeping (HTTP, cleanup) — not meaningful to the user.
-                hooks::suppress_hooks_on_current_thread();
+                native::suppress_hooks_on_current_thread();
                 SHUTDOWN_REQUESTED.store(true, Ordering::Release);
                 // Wait for flush thread to drain pending events BEFORE we
                 // decrement the CLI's active_agents counter via /shutdown.
@@ -808,7 +802,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
 
             // Spawn background thread for command polling
             std::thread::spawn(|| {
-                hooks::suppress_hooks_on_current_thread();
+                native::suppress_hooks_on_current_thread();
                 if let Some(agent) = Agent::get() {
                     if let Err(e) = agent.run() {
                         error!("Agent error: {}", e);
