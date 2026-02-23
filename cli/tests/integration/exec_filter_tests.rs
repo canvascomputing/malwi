@@ -3,6 +3,7 @@
 //! Tests for command execution filtering with the ex: prefix.
 
 use crate::common::*;
+use crate::skip_if_no_python;
 
 fn setup() {
     build_fixtures();
@@ -261,84 +262,111 @@ fn test_exec_output_shows_command_name_and_full_args() {
 fn test_python_subprocess_fork_exec_captures_exec_event() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: test: python3 not found");
-            return;
-        }
-    };
+    skip_if_no_python!(python => {
+        // Python subprocess uses fork+exec internally
+        // Use timeout because tracer may hang after fork+exec
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c",
+                "echo",
+                "--",
+                python.to_str().unwrap(),
+                "-c",
+                "import subprocess; subprocess.run(['echo', 'FORKEXEC_TEST'])",
+            ],
+            std::time::Duration::from_secs(10),
+        );
 
-    // Python subprocess uses fork+exec internally
-    // Use timeout because tracer may hang after fork+exec
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-c",
-            "echo",
-            "--",
-            python.to_str().unwrap(),
-            "-c",
-            "import subprocess; subprocess.run(['echo', 'FORKEXEC_TEST'])",
-        ],
-        std::time::Duration::from_secs(10),
-    );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
-
-    // Should capture the exec event from the forked child process
-    // Note: We don't check exit status because we may have killed the process
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo_trace,
-        "Expected echo trace from Python subprocess (fork+exec). stdout: {}, stderr: {}",
-        stdout, stderr
-    );
+        // Should capture the exec event from the forked child process
+        // Note: We don't check exit status because we may have killed the process
+        let has_echo_trace = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("echo"));
+        assert!(
+            has_echo_trace,
+            "Expected echo trace from Python subprocess (fork+exec). stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
 }
 
 #[test]
 fn test_python_subprocess_wildcard_captures_all_exec_events() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: test: python3 not found");
-            return;
-        }
-    };
+    skip_if_no_python!(python => {
+        // Run multiple commands via subprocess
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c", "*",
+                "--",
+                python.to_str().unwrap(),
+                "-c", "import subprocess; subprocess.run(['echo', 'first']); subprocess.run(['echo', 'second'])",
+            ],
+            std::time::Duration::from_secs(10),
+        );
 
-    // Run multiple commands via subprocess
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-c", "*",
-            "--",
-            python.to_str().unwrap(),
-            "-c", "import subprocess; subprocess.run(['echo', 'first']); subprocess.run(['echo', 'second'])",
-        ],
-        std::time::Duration::from_secs(10),
-    );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
+        // Should capture echo events (may appear multiple times due to PATH search)
+        let has_echo_trace = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("echo"));
+        assert!(
+            has_echo_trace,
+            "Expected echo traces with wildcard filter. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
 
-    // Should capture echo events (may appear multiple times due to PATH search)
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo_trace,
-        "Expected echo traces with wildcard filter. stdout: {}, stderr: {}",
-        stdout, stderr
-    );
+#[test]
+fn test_python_os_posix_spawn_detected() {
+    setup();
+
+    skip_if_no_python!(python => {
+        // os.posix_spawn fires a separate audit event ("os.posix_spawn")
+        // that must be handled alongside "subprocess.Popen".
+        // Skip if os.posix_spawn is not available on this platform.
+        let script = r#"
+import os, sys
+if not hasattr(os, 'posix_spawn'):
+    sys.exit(0)
+os.posix_spawn('/bin/echo', ['/bin/echo', 'POSIX_SPAWN_TEST'], os.environ)
+"#;
+        let output = run_tracer_with_timeout(
+            &[
+                "x", "-c", "echo", "--",
+                python.to_str().unwrap(), "-c", script,
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // If os.posix_spawn is available, we must detect the echo command
+        let has_echo_trace = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("echo"));
+        assert!(
+            has_echo_trace,
+            "Expected echo trace from os.posix_spawn. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
 }
 
 // ============================================================================
@@ -353,50 +381,44 @@ fn test_python_subprocess_wildcard_captures_all_exec_events() {
 fn test_python_script_calling_curl_detected() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: test: python3 not found");
-            return;
-        }
-    };
-
-    // Simulates a malicious setup.py or postinstall script that calls curl
-    // This is the exact pattern used in supply chain attacks
-    let malicious_script = r#"
+    skip_if_no_python!(python => {
+        // Simulates a malicious setup.py or postinstall script that calls curl
+        // This is the exact pattern used in supply chain attacks
+        let malicious_script = r#"
 import subprocess
 import sys
 print("MALICIOUS: Simulating supply chain attack", file=sys.stderr)
 subprocess.run(["curl", "--version"])
 "#;
 
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-c",
-            "curl",
-            "--",
-            python.to_str().unwrap(),
-            "-c",
-            malicious_script,
-        ],
-        std::time::Duration::from_secs(15),
-    );
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c",
+                "curl",
+                "--",
+                python.to_str().unwrap(),
+                "-c",
+                malicious_script,
+            ],
+            std::time::Duration::from_secs(15),
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
 
-    // Should detect curl being executed by the Python subprocess
-    let has_curl_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("curl"));
-    assert!(
-        has_curl_trace,
-        "Expected curl trace (supply chain detection pattern). stdout: {}, stderr: {}",
-        stdout, stderr
-    );
+        // Should detect curl being executed by the Python subprocess
+        let has_curl_trace = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("curl"));
+        assert!(
+            has_curl_trace,
+            "Expected curl trace (supply chain detection pattern). stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
 }
 
 // ============================================================================
@@ -521,59 +543,53 @@ fn test_exec_stack_trace_included_with_t_flag() {
 fn test_exec_stack_trace_from_python_subprocess() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: test: python3 not found");
+    skip_if_no_python!(python => {
+        // Run exec tracing from Python with --st flag
+        // Note: macOS can have objc fork issues with Python, so we allow partial success
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "--st",
+                "-c",
+                "echo",
+                "--",
+                python.to_str().unwrap(),
+                "-c",
+                "import subprocess; subprocess.run(['echo', 'test'])",
+            ],
+            STACK_TRACE_TIMEOUT,
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // Check for macOS objc fork crash - this is an environment issue, not our code
+        if stderr.contains("objc") && stderr.contains("fork()") {
+            println!("SKIPPED: macOS objc fork() crash - environment issue");
             return;
         }
-    };
 
-    // Run exec tracing from Python with --st flag
-    // Note: macOS can have objc fork issues with Python, so we allow partial success
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "--st",
-            "-c",
-            "echo",
-            "--",
-            python.to_str().unwrap(),
-            "-c",
-            "import subprocess; subprocess.run(['echo', 'test'])",
-        ],
-        STACK_TRACE_TIMEOUT,
-    );
+        // Should have echo trace
+        let has_echo_trace = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("echo"));
+        assert!(
+            has_echo_trace,
+            "Expected echo trace. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
-
-    // Check for macOS objc fork crash - this is an environment issue, not our code
-    if stderr.contains("objc") && stderr.contains("fork()") {
-        println!("SKIPPED: macOS objc fork() crash - environment issue");
-        return;
-    }
-
-    // Should have echo trace
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo_trace,
-        "Expected echo trace. stdout: {}, stderr: {}",
-        stdout, stderr
-    );
-
-    // Should have stack frames with --st flag.
-    // The audit hook fires BEFORE posix_spawn — while still in Python's C code
-    // in the parent process — so frame pointer walking works on all platforms.
-    assert!(
-        has_stack_trace(&stdout),
-        "Should have stack frames with --st flag. stdout: {}",
-        stdout
-    );
+        // Should have stack frames with --st flag.
+        // The audit hook fires BEFORE posix_spawn — while still in Python's C code
+        // in the parent process — so frame pointer walking works on all platforms.
+        assert!(
+            has_stack_trace(&stdout),
+            "Should have stack frames with --st flag. stdout: {}",
+            stdout
+        );
+    });
 }
 
 // ============================================================================
@@ -689,57 +705,51 @@ fn test_exec_dedup_separate_spawns_produce_separate_events() {
 fn test_exec_fork_event_suppressed_before_exec() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: test: python3 not found");
-            return;
-        }
-    };
+    skip_if_no_python!(python => {
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c",
+                "*",
+                "--",
+                python.to_str().unwrap(),
+                "-c",
+                "import subprocess; subprocess.run(['echo', 'FORK_TEST'])",
+            ],
+            std::time::Duration::from_secs(10),
+        );
 
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-c",
-            "*",
-            "--",
-            python.to_str().unwrap(),
-            "-c",
-            "import subprocess; subprocess.run(['echo', 'FORK_TEST'])",
-        ],
-        std::time::Duration::from_secs(10),
-    );
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stdout = strip_ansi_codes(&stdout_raw);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi_codes(&stdout_raw);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
+        // The wildcard exec filter should capture the echo command
+        let has_echo = stdout
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("echo"));
+        assert!(
+            has_echo,
+            "Expected echo trace from subprocess. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
 
-    // The wildcard exec filter should capture the echo command
-    let has_echo = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo,
-        "Expected echo trace from subprocess. stdout: {}, stderr: {}",
-        stdout, stderr
-    );
-
-    // There must be no "?" command trace from the bare fork event
-    let has_question_mark = stdout.lines().any(|l| {
-        l.contains("[malwi]") && {
-            if let Some(pos) = l.find("[malwi] ") {
-                let after_tag = &l[pos + 8..];
-                after_tag.starts_with('?')
-            } else {
-                false
+        // There must be no "?" command trace from the bare fork event
+        let has_question_mark = stdout.lines().any(|l| {
+            l.contains("[malwi]") && {
+                if let Some(pos) = l.find("[malwi] ") {
+                    let after_tag = &l[pos + 8..];
+                    after_tag.starts_with('?')
+                } else {
+                    false
+                }
             }
-        }
+        });
+        assert!(
+            !has_question_mark,
+            "Bare fork should NOT produce a '?' command trace. stdout: {}",
+            stdout
+        );
     });
-    assert!(
-        !has_question_mark,
-        "Bare fork should NOT produce a '?' command trace. stdout: {}",
-        stdout
-    );
 }
