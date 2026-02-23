@@ -28,12 +28,104 @@ use std::path::Path;
 use agent_server::{AgentEvent, AgentServer};
 use ws_server::BusControl;
 
-const BANNER: &str = "                    __          __\n    .--------.---.-|  .--.--.--|__|\n    |        |  _  |  |  |  |  |  |\n    |__|__|__|___._|__|________|__|\n\n  Your in-process application firewall\n  for Python, Node.js and Bash.\n  ____________________________________";
+const BANNER: &str = "                    __          __\n    .--------.---.-|  .--.--.--|__|\n    |        |  _  |  |  |  |  |  |\n    |__|__|__|___._|__|________|__|\n\n  Detect malicious code at runtime in\n  Python, Node.js and Bash.\n  ____________________________________";
+
+const HELP_OVERVIEW: &str = "\
+malwi blocks unauthorized network calls, file access, command execution, and
+environment variable reads at runtime by injecting an agent into the target
+process. It ships with curated supply-chain security policies and supports
+custom YAML policy files.
+
+Compatibility:
+  Python 3.10-3.14 · Node.js 21-25 · Bash 4.4-5.3
+  macOS arm64 · Linux arm64, x86_64
+
+Quick start:
+  malwi x python3 app.py          Run with default security policy
+  malwi x node server.js          Same for Node.js
+  malwi x npm install express     Auto-detects npm-install policy
+  malwi x bash install.sh         Auto-detects bash-install policy
+
+  curl ... | malwi x bash         Trace a piped install script
+
+  malwi x -p policy.yaml -- node app.js   Use a custom policy file
+
+See 'malwi x --help' for tracing options and policy sections.
+See 'malwi p --help' for managing policy files.";
+
+const X_AFTER_HELP: &str = "\
+EXAMPLES (policy mode — default):
+  malwi x python3 app.py              Default security policy
+  malwi x node server.js              Default security policy
+  malwi x npm install express         Auto-detects npm-install policy
+  malwi x pip install flask           Auto-detects pip-install policy
+  malwi x bash install.sh             Auto-detects bash-install policy
+
+EXAMPLES (custom policy):
+  malwi x -p policy.yaml -- node app.js       Custom policy file
+  malwi x -p air-gap -- python3 app.py        Built-in air-gap policy (no network)
+  malwi x -p npm-install -- npm install foo   Named built-in policy
+
+EXAMPLES (manual tracing — no policy, trace specific functions):
+  malwi x --py open -- python3 script.py      Trace Python open() calls
+  malwi x --js 'fs.*' -- node app.js          Trace Node.js fs module
+  malwi x -s connect -- ./binary              Trace native connect()
+  malwi x -c curl -- bash install.sh          Trace child curl commands
+  malwi x -c '*' -- npm install               Trace all child commands
+
+EXAMPLES (pipe mode):
+  curl -fsSL https://example.com/install.sh | malwi x bash
+
+POLICY SECTIONS (for YAML policy files):
+  network:    URL, domain, and endpoint allow/deny rules + protocol allowlist
+  commands:   Child process command allow/deny (e.g. curl, ssh, base64)
+  files:      File path access rules (e.g. ~/.ssh/**, *.pem)
+  envvars:    Environment variable read rules (e.g. *SECRET*, AWS_*)
+  nodejs:     Node.js function rules (e.g. eval, child_process.exec)
+  python:     Python function rules (e.g. ctypes.CDLL, os.system)
+  symbols:    Native C symbol rules (e.g. dlopen, getpass)
+
+AUTO-DETECTED POLICIES:
+  npm-install    npm install/add/ci — blocks reverse shells, exfiltration
+  pip-install    pip/pip3 install — blocks suspicious network/file access
+  bash-install   Shell scripts — blocks obfuscation, persistence, DNS exfil
+  comfyui        ComfyUI — blocks ctypes, os.system, credential theft
+  openclaw       OpenClaw — blocks eval, vm.runInContext, dangerous commands
+
+  Auto-detection triggers when the command matches a known pattern.
+  Override with -p to use a different policy.";
+
+const M_AFTER_HELP: &str = "\
+USAGE:
+  Terminal 1:  malwi m
+  Terminal 2:  malwi x -m -- node app.js
+
+The monitor receives events over HTTP and displays them. Use -m on the
+'malwi x' side to send events to the monitor instead of printing locally.";
+
+const P_AFTER_HELP: &str = "\
+EXAMPLES:
+  malwi p                     List all available policies
+  malwi p default             Write/reset the default policy to ~/.config/malwi/
+  malwi p npm-install          Write the npm-install policy
+  malwi p reset               Rewrite all cached policies from built-in templates
+
+AVAILABLE POLICIES:
+  default        Observe-mode (warn/log, nothing blocked)
+  npm-install    npm install/add/ci
+  pip-install    pip/pip3 install
+  bash-install   Shell install scripts
+  comfyui        ComfyUI applications
+  openclaw       OpenClaw gateway
+  air-gap        Total network isolation
+
+Policies are cached at ~/.config/malwi/policies/<name>.yaml and can be
+edited after writing. Use 'malwi p reset' to restore built-in defaults.";
 
 #[derive(Parser)]
 #[command(name = "malwi")]
 #[command(version, about = "", long_about = None)]
-#[command(before_help = BANNER)]
+#[command(before_help = BANNER, after_help = HELP_OVERVIEW)]
 struct Cli {
     /// Enable verbose logging
     #[arg(short, long)]
@@ -46,9 +138,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(
-        about = "Execute, trace and protect a program",
+        about = "Run a program with runtime protection against supply-chain attacks",
         before_help = BANNER,
-        help_template = "{before-help}\n{usage-heading} {usage}\n\n{all-args}",
+        after_help = X_AFTER_HELP,
+        help_template = "{before-help}\n{usage-heading} {usage}\n\n{all-args}\n\n{after-help}",
     )]
     X {
         /// Native symbols to trace
@@ -56,7 +149,10 @@ enum Commands {
             short = 's',
             long = "symbol",
             value_name = "PATTERN",
-            help_heading = "Tracing"
+            help_heading = "Tracing",
+            long_help = "Trace native C/system function calls matching PATTERN (glob syntax).\n\
+                         Hooks exported symbols in loaded shared libraries.\n\
+                         Examples: connect, malloc, dlopen, getpass"
         )]
         symbols: Vec<String>,
 
@@ -65,7 +161,10 @@ enum Commands {
             short = 'c',
             long = "command",
             value_name = "PATTERN",
-            help_heading = "Tracing"
+            help_heading = "Tracing",
+            long_help = "Trace child process commands matching PATTERN (glob syntax).\n\
+                         Monitors fork/exec/posix_spawn calls.\n\
+                         Examples: curl, ssh, *, nc"
         )]
         exec: Vec<String>,
 
@@ -74,7 +173,10 @@ enum Commands {
             long = "py",
             visible_alias = "python",
             value_name = "PATTERN",
-            help_heading = "Tracing"
+            help_heading = "Tracing",
+            long_help = "Trace Python function calls matching PATTERN (glob syntax).\n\
+                         Requires Python 3.10+. Uses sys.setprofile hooks.\n\
+                         Examples: open, os.*, subprocess.run, json.loads"
         )]
         python: Vec<String>,
 
@@ -83,7 +185,10 @@ enum Commands {
             long = "js",
             visible_alias = "javascript",
             value_name = "PATTERN",
-            help_heading = "Tracing"
+            help_heading = "Tracing",
+            long_help = "Trace Node.js function calls matching PATTERN (glob syntax).\n\
+                         Requires Node.js 21+. Uses V8 bytecode + N-API addon.\n\
+                         Examples: fs.*, http.request, child_process.exec, eval"
         )]
         javascript: Vec<String>,
 
@@ -92,12 +197,24 @@ enum Commands {
             short = 'p',
             long = "policy",
             value_name = "FILE",
-            help_heading = "Policy"
+            help_heading = "Policy",
+            long_help = "YAML policy file defining allow/deny/warn rules for network,\n\
+                         commands, files, envvars, and runtime functions.\n\
+                         Accepts a file path or a built-in policy name (e.g. air-gap).\n\
+                         Without -p: auto-detects policy from the command, or uses\n\
+                         ~/.config/malwi/policies/default.yaml"
         )]
         policy: Option<PathBuf>,
 
         /// Enable review mode (prompt on each call with Y/n/i options)
-        #[arg(short, long, help_heading = "Policy")]
+        #[arg(
+            short,
+            long,
+            help_heading = "Policy",
+            long_help = "Prompt interactively before each traced call.\n\
+                         Y = allow, n = block, i = inspect (show args + stack).\n\
+                         Auto-enabled when the policy has blocking sections."
+        )]
         review: bool,
 
         /// Capture stack traces for each function call
@@ -120,13 +237,13 @@ enum Commands {
         #[arg(long = "ws", value_name = "PORT", help_heading = "Output")]
         ws_port: Option<u16>,
 
-        /// Execute, trace and protect a program
+        /// Program and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         program: Vec<String>,
     },
 
     /// Monitor events from malwi x in a separate terminal
-    #[command(before_help = BANNER)]
+    #[command(before_help = BANNER, after_help = M_AFTER_HELP)]
     M {
         /// Port to listen on
         #[arg(short, long, default_value = "9123")]
@@ -138,7 +255,7 @@ enum Commands {
     },
 
     /// List or manage policy files
-    #[command(before_help = BANNER)]
+    #[command(before_help = BANNER, after_help = P_AFTER_HELP)]
     P {
         /// Policy name to write, or "reset" to rewrite all
         name: Option<String>,

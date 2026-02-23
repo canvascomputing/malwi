@@ -286,6 +286,15 @@ Glob patterns are used for function matching:
 - `*.readFile` - readFile in any module
 - `http.request` - Exact match
 
+### CLI Help Text (cli/src/main.rs)
+The `--help` output for `malwi`, `malwi x`, `malwi m`, and `malwi p` is defined via `const` strings (`BANNER`, `HELP_OVERVIEW`, `X_AFTER_HELP`, `M_AFTER_HELP`, `P_AFTER_HELP`) and clap attributes in `cli/src/main.rs`. These texts include compatibility versions, policy names, usage examples, and policy section references. **When any of the following change, update the CLI help text to match:**
+- Supported runtime versions (Python, Node.js, Bash)
+- Supported platforms (macOS, Linux architectures)
+- Available policy presets (added/removed/renamed in `cli/src/policy/presets/`)
+- Policy section names or semantics
+- Auto-detection rules in `cli/src/policy/detect.rs`
+- Subcommand or argument additions/removals
+
 ### FFI Alignment
 C/Rust FFI structs must use `#[repr(C)]` and match field order exactly.
 
