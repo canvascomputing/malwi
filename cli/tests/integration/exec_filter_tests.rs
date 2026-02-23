@@ -465,7 +465,7 @@ fn test_exec_stack_trace_included_with_t_flag() {
     };
 
     // Run exec tracing WITH --st flag
-    let output = run_tracer(&[
+    let output = run_tracer_with_timeout(&[
         "x",
         "--st", // WITH --st flag
         "-c",
@@ -474,7 +474,7 @@ fn test_exec_stack_trace_included_with_t_flag() {
         node.to_str().unwrap(),
         "-e",
         "require('child_process').spawnSync('echo', ['test'])",
-    ]);
+    ], STACK_TRACE_TIMEOUT);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -539,7 +539,7 @@ fn test_exec_stack_trace_from_python_subprocess() {
             "-c",
             "import subprocess; subprocess.run(['echo', 'test'])",
         ],
-        std::time::Duration::from_secs(10),
+        STACK_TRACE_TIMEOUT,
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

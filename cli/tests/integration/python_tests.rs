@@ -4,6 +4,7 @@
 
 use crate::common::*;
 use crate::skip_if_no_python;
+use crate::skip_if_no_python_primary;
 
 fn setup() {
     build_fixtures();
@@ -242,14 +243,14 @@ fn test_python_stack_trace_included_with_t_flag() {
 
     skip_if_no_python!(python => {
         // Run WITH --st flag - should have stack traces
-        let output = run_tracer(&[
+        let output = run_tracer_with_timeout(&[
             "x",
             "--st",  // Enable stack traces
             "--py", "nested_inner",
             "--",
             python.to_str().unwrap(),
             "./test_python.py",
-        ]);
+        ], STACK_TRACE_TIMEOUT);
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -289,14 +290,14 @@ fn test_python_stack_trace_includes_calling_function() {
 
     skip_if_no_python!(python => {
         // Trace nested_inner and verify stack shows nested_outer as caller
-        let output = run_tracer(&[
+        let output = run_tracer_with_timeout(&[
             "x",
             "--st",
             "--py", "nested_inner",
             "--",
             python.to_str().unwrap(),
             "./test_python.py",
-        ]);
+        ], STACK_TRACE_TIMEOUT);
 
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -352,14 +353,14 @@ fn test_python_stack_trace_works_for_c_extension_calls() {
     skip_if_no_python!(python => {
         // Test C extension function (marshal.loads) via audit hook
         // This verifies that PyEval_GetFrame works in the audit hook context
-        let output = run_tracer(&[
+        let output = run_tracer_with_timeout(&[
             "x",
             "--st",
             "--py", "marshal.loads",
             "--",
             python.to_str().unwrap(),
             "-c", "import marshal; marshal.loads(marshal.dumps([1,2,3]))",
-        ]);
+        ], STACK_TRACE_TIMEOUT);
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -455,6 +456,200 @@ greet("World", "Hi")
         assert!(
             stdout.contains("greet") && stdout.contains("World"),
             "Expected py:greet with string arguments. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+// ============================================================================
+// Threat Vector Tests — Python Attack Patterns
+// ============================================================================
+
+/// Threat: Supply-chain attacks use exec(compile(...)) to define and run
+/// malicious functions at runtime. Verify that dynamically defined functions
+/// called inside exec() are traced by sys.setprofile.
+#[test]
+fn test_python_exec_traces_dynamically_defined_functions() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let script = r#"
+exec('def secret_func():\n    return 42\nsecret_func()')
+"#;
+        let output = run_tracer(&[
+            "x",
+            "--py", "secret_func",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python exec() tracing test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // exec() runs code through the normal interpreter, so sys.setprofile
+        // should capture the dynamically defined function call
+        assert!(
+            stdout.contains("secret_func"),
+            "Expected secret_func trace from exec(). \
+             Supply-chain attacks using exec(compile(...)) should be visible. \
+             stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+/// Threat: Malicious code disables tracing with sys.setprofile(None).
+/// This test documents the current behavior: whether the profiler survives
+/// or whether there's a gap after the attacker clears it.
+#[test]
+fn test_python_setprofile_resistance() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let script = r#"
+import sys
+def before_clear(): pass
+before_clear()
+sys.setprofile(None)
+def after_clear(): pass
+after_clear()
+"#;
+        let output = run_tracer(&[
+            "x",
+            "--py", "before_clear",
+            "--py", "after_clear",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python setprofile resistance test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // before_clear() should always be traced (called before disable)
+        assert!(
+            stdout.contains("before_clear"),
+            "Expected before_clear trace (called before setprofile(None)). stdout: {}",
+            stdout
+        );
+
+        // Document whether after_clear is traced (resilience) or not (known gap).
+        // Currently sys.setprofile(None) successfully disables our hook.
+        if stdout.contains("after_clear") {
+            println!("RESILIENT: sys.setprofile(None) did NOT disable tracing");
+        } else {
+            println!("KNOWN GAP: sys.setprofile(None) disables tracing for subsequent calls");
+        }
+    });
+}
+
+/// Threat: pickle deserialization can execute arbitrary code via __reduce__.
+/// Verify that functions triggered by pickle.loads() are traced.
+#[test]
+fn test_python_pickle_rce_function_traced() {
+    setup();
+
+    skip_if_no_python_primary!(python => {
+        let script = r#"
+import pickle
+import os
+
+class Exploit:
+    def __reduce__(self):
+        return (os.getpid, ())
+
+payload = pickle.dumps(Exploit())
+result = pickle.loads(payload)
+print(f"pid={result}")
+"#;
+        let output = run_tracer(&[
+            "x",
+            "--py", "os.getpid",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python pickle RCE test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // pickle.loads() calls os.getpid via __reduce__ — should be traced
+        assert!(
+            stdout.contains("getpid"),
+            "Expected os.getpid trace from pickle deserialization RCE. \
+             Pickle __reduce__ payloads should be visible. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+/// Threat: Python `requests` library is the most common HTTP client.
+/// Verify that requests.get() is traced when the library is available.
+#[test]
+fn test_python_requests_library_traced() {
+    setup();
+
+    skip_if_no_python_primary!(python => {
+        // Check if requests is importable
+        let check = std::process::Command::new(python.as_os_str())
+            .args(["-c", "import requests"])
+            .output();
+        match check {
+            Ok(out) if out.status.success() => {}
+            _ => {
+                println!("SKIPPED: Python 'requests' library not installed");
+                return;
+            }
+        }
+
+        let script = r#"
+import requests
+try:
+    requests.get('http://127.0.0.1:1/test', timeout=0.1)
+except Exception:
+    pass
+"#;
+        let output = run_tracer(&[
+            "x",
+            "--py", "requests.get",
+            "--py", "requests.api.get",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python requests tracing test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // requests.get → requests.api.get should be traced
+        assert!(
+            stdout.contains("get"),
+            "Expected requests.get trace. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });

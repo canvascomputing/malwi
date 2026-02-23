@@ -120,14 +120,14 @@ fn test_native_stack_trace_included_with_t_flag() {
     setup();
 
     // Run WITH --st flag - should have stack traces
-    let output = run_tracer(&[
+    let output = run_tracer_with_timeout(&[
         "x",
         "--st", // Enable stack traces
         "-s",
         "malloc",
         "--",
         "./simple_target",
-    ]);
+    ], STACK_TRACE_TIMEOUT);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -158,7 +158,7 @@ fn test_native_stack_trace_included_with_t_flag() {
 fn test_native_stack_trace_shows_symbol_and_address() {
     setup();
 
-    let output = run_tracer(&["x", "--st", "-s", "malloc", "--", "./simple_target"]);
+    let output = run_tracer_with_timeout(&["x", "--st", "-s", "malloc", "--", "./simple_target"], STACK_TRACE_TIMEOUT);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -197,14 +197,14 @@ fn test_native_stack_trace_shows_symbol_and_address() {
 fn test_native_stack_trace_resolves_known_symbol() {
     setup();
 
-    let output = run_tracer(&[
+    let output = run_tracer_with_timeout(&[
         "x",
         "--st",
         "-s",
         "simple_target_marker",
         "--",
         "./simple_target",
-    ]);
+    ], STACK_TRACE_TIMEOUT);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

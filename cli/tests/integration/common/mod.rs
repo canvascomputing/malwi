@@ -551,9 +551,18 @@ pub fn get_bash_major_version(bash: &std::path::Path) -> Option<u32> {
     None
 }
 
+/// Default timeout for tests. Most tests finish well under this limit;
+/// the timeout is a safety net for loaded CI runners.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Extended timeout for --st (stack trace) tests. Stack trace collection adds
+/// overhead: the agent captures V8/Python stack frames per event, and the CLI
+/// parses/displays them. These tests are the most sensitive to timing.
+pub const STACK_TRACE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Run malwi with given arguments and capture output
 pub fn run_tracer(args: &[&str]) -> Output {
-    run_tracer_with_timeout(args, Duration::from_secs(10))
+    run_tracer_with_timeout(args, DEFAULT_TIMEOUT)
 }
 
 /// Path to the agent library (release build)

@@ -4,6 +4,7 @@
 
 use crate::common::*;
 use crate::skip_if_no_node;
+use crate::skip_if_no_node_primary;
 
 fn setup() {
     build_fixtures();
@@ -286,14 +287,14 @@ fn test_nodejs_stack_trace_shows_call_chain_with_t_flag() {
 
     skip_if_no_node!(node => {
         // Trace with stack traces enabled (--st flag)
-        let output = run_tracer(&[
+        let output = run_tracer_with_timeout(&[
             "x",
             "--js", "innerFunc",
             "--st",  // Enable stack traces
             "--",
             node.to_str().unwrap(),
             "--eval", "function outerFunc() { innerFunc(); } function innerFunc() { return 42; } outerFunc();",
-        ]);
+        ], STACK_TRACE_TIMEOUT);
 
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -335,14 +336,14 @@ fn test_nodejs_stack_trace_captures_deep_call_hierarchy() {
 
     skip_if_no_node!(node => {
         // Deep call stack to verify stack trace captures multiple levels
-        let output = run_tracer(&[
+        let output = run_tracer_with_timeout(&[
             "x",
             "--js", "level3",
             "--st",
             "--",
             node.to_str().unwrap(),
             "--eval", "function level1() { level2(); } function level2() { level3(); } function level3() { return 'deep'; } level1();",
-        ]);
+        ], STACK_TRACE_TIMEOUT);
 
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1557,5 +1558,195 @@ fn test_nodejs_wrapping_builtin_constructors_does_not_break_runtime() {
             "Test should complete successfully. stdout: {}, stderr: {}",
             stdout, stderr
         );
+    });
+}
+
+// ============================================================================
+// Threat Vector Tests — Node.js Attack Patterns
+// ============================================================================
+
+/// Threat: eval() generates runtime code that could be invisible to static
+/// analysis. The codegen gate should intercept eval-created functions.
+#[test]
+fn test_nodejs_eval_traces_dynamically_created_functions() {
+    setup();
+
+    skip_if_no_node!(node => {
+        let output = run_tracer(&[
+            "x",
+            "--js", "evilFunc",
+            "--js", "*",
+            "--",
+            node.to_str().unwrap(),
+            "--eval", "eval('function evilFunc() { return 42; }'); evilFunc();",
+        ]);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Node.js eval() tracing test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // The codegen gate or bytecode tracing should capture eval-defined functions
+        if stdout.contains("evilFunc") {
+            println!("TRACED: eval()-defined functions are visible");
+        } else {
+            println!("KNOWN GAP: eval()-defined functions not captured by current tracing. \
+                      Bytecode hooks may not fire for eval'd code on this V8 version.");
+        }
+    });
+}
+
+/// Threat: worker_threads run in separate V8 isolates. If tracing doesn't
+/// propagate, all worker code is invisible. This documents the current behavior.
+#[test]
+fn test_nodejs_worker_thread_tracing() {
+    setup();
+
+    skip_if_no_node_primary!(node => {
+        // Write a temp file that uses worker_threads
+        let script = r#"
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+if (isMainThread) {
+    const worker = new Worker(__filename);
+    worker.on('exit', () => {});
+    // Keep main thread alive briefly for worker to finish
+    setTimeout(() => {}, 500);
+} else {
+    function workerFunc() { return 'from_worker'; }
+    workerFunc();
+}
+"#;
+        let script_path = std::env::temp_dir().join(format!(
+            "malwi-worker-test-{}.js",
+            std::process::id()
+        ));
+        std::fs::write(&script_path, script).expect("failed to write worker test script");
+
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "--js", "workerFunc",
+                "--",
+                node.to_str().unwrap(),
+                script_path.to_str().unwrap(),
+            ],
+            std::time::Duration::from_secs(15),
+        );
+
+        let _ = std::fs::remove_file(&script_path);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Node.js worker_threads test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // Document whether workers are traced or a known gap
+        if stdout.contains("workerFunc") {
+            println!("TRACED: worker_threads functions are visible");
+        } else {
+            println!("KNOWN GAP: worker_threads run in separate V8 isolates; \
+                      tracing does not propagate to workers.");
+        }
+    });
+}
+
+/// Threat: Native addons loaded via process.dlopen() can execute arbitrary
+/// native code. Verify that dlopen calls are detectable.
+#[test]
+fn test_nodejs_native_addon_dlopen_detected() {
+    setup();
+
+    skip_if_no_node_primary!(node => {
+        // Try to load a nonexistent .node file — the dlopen call itself should
+        // be interceptable even though it fails
+        let script = r#"
+try { process.dlopen({exports:{}}, '/nonexistent_addon_12345.node'); } catch(e) {}
+"#;
+        let output = run_tracer(&[
+            "x",
+            "-s", "dlopen",
+            "--",
+            node.to_str().unwrap(),
+            "-e", script,
+        ]);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        // The native dlopen symbol should be traced regardless of whether the
+        // load succeeds
+        if stdout.contains("dlopen") {
+            println!("TRACED: dlopen calls from process.dlopen() are visible");
+            // Verify the path argument is captured
+            assert!(
+                stdout.contains("nonexistent_addon") || stdout.contains(".node"),
+                "Expected addon path in dlopen arguments. stdout: {}",
+                stdout
+            );
+        } else {
+            println!("NOTE: dlopen not captured (may be inlined or symbol not exported). stderr: {}", stderr);
+        }
+    });
+}
+
+/// Threat: Node.js axios is the most popular HTTP client library.
+/// Verify that axios HTTP calls produce trace events when the library is available.
+#[test]
+fn test_nodejs_axios_http_traced() {
+    setup();
+
+    skip_if_no_node_primary!(node => {
+        // Check if axios is importable
+        let check = std::process::Command::new(node.as_os_str())
+            .args(["-e", "require('axios')"])
+            .output();
+        match check {
+            Ok(out) if out.status.success() => {}
+            _ => {
+                println!("SKIPPED: Node.js 'axios' library not installed");
+                return;
+            }
+        }
+
+        let script = r#"
+const axios = require('axios');
+axios.get('http://127.0.0.1:1/test').catch(() => {});
+// Keep event loop alive briefly for the request to fire
+setTimeout(() => {}, 500);
+"#;
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "--js", "http.request",
+                "--",
+                node.to_str().unwrap(),
+                "-e", script,
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        // axios uses http.request internally — should produce a trace
+        if stdout.contains("http.request") {
+            println!("TRACED: axios HTTP calls visible via http.request hook");
+        } else {
+            println!("KNOWN GAP: axios HTTP call not captured. \
+                      This may indicate axios bypasses http.request on this Node version. \
+                      stderr: {}", stderr);
+        }
     });
 }

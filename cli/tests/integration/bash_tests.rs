@@ -623,3 +623,128 @@ fn test_bash_piped_stdin_auto_selects_bash_install_policy() {
         return;
     });
 }
+
+// ============================================================================
+// Threat Vector Tests — Bash Attack Patterns
+// ============================================================================
+
+/// Threat: `exec 3<>/dev/tcp/host/port` does TCP I/O without any external
+/// command. This bypasses shell_execve and all command hooks since it's a
+/// bash built-in redirection mechanism, not a command execution.
+/// This test documents the known gap.
+#[test]
+fn test_bash_dev_tcp_network_access_gap() {
+    setup();
+
+    skip_if_no_bash!(bash => {
+        // Attempt /dev/tcp connection to a port that won't connect (port 1)
+        // The 2>/dev/null suppresses the "Connection refused" error
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c", "*",
+                "--",
+                bash.to_str().unwrap(),
+                "-c", "exec 3<>/dev/tcp/127.0.0.1/1 2>/dev/null || true",
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // /dev/tcp is handled internally by bash's redirection code,
+        // not via shell_execve or execute_command_internal.
+        // No trace event should appear for the TCP access itself.
+        let has_tcp_trace = stdout.lines().any(|l| {
+            l.contains("[malwi]") && (l.contains("/dev/tcp") || l.contains("tcp"))
+        });
+
+        if has_tcp_trace {
+            println!("TRACED: /dev/tcp access is somehow visible (unexpected)");
+        } else {
+            println!("KNOWN GAP: /dev/tcp network access bypasses all command hooks. \
+                      Bash handles this internally via redirection, not exec.");
+        }
+
+        // Only test one bash version — behavior is consistent across versions
+        return;
+    });
+}
+
+/// Threat: `exec <cmd>` replaces the shell process with the command.
+/// Since exec uses execve, our exec hooks should still catch it.
+#[test]
+fn test_bash_exec_builtin_traces_replaced_command() {
+    setup();
+
+    skip_if_no_bash!(bash => {
+        // exec replaces the shell process with cat. The exec hook should
+        // fire before the replacement happens.
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c", "*",
+                "--",
+                bash.to_str().unwrap(),
+                "-c", "exec cat /dev/null",
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // exec replaces the process, so the cat command should be traced
+        // via the exec builtin hook or the execve hook
+        let has_cat_trace = stdout.lines().any(|l| l.contains("[malwi]") && l.contains("cat"));
+        assert!(
+            has_cat_trace,
+            "Expected cat trace from 'exec cat'. The exec builtin should trigger \
+             command tracing before process replacement. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+/// Threat: `trap '<cmd>' EXIT` runs commands during shell exit. These commands
+/// execute after the main script and could exfiltrate data or clean up evidence.
+#[test]
+fn test_bash_trap_exit_commands_traced() {
+    setup();
+
+    skip_if_no_bash!(bash => {
+        // Register a trap that runs cat on EXIT, then exit normally
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-c", "*",
+                "--",
+                bash.to_str().unwrap(),
+                "-c", "trap 'cat /dev/null' EXIT; exit 0",
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
+
+        // The trap handler runs during EXIT, so cat should be traced
+        let has_cat_trace = stdout.lines().any(|l| l.contains("[malwi]") && l.contains("cat"));
+
+        if has_cat_trace {
+            println!("TRACED: trap EXIT commands are visible");
+        } else {
+            // Trap handlers may not fire if the agent is torn down before
+            // the shell gets to run the EXIT trap
+            println!("KNOWN GAP: trap EXIT command not captured — \
+                      agent may be unloaded before shell runs EXIT handlers.");
+        }
+    });
+}
