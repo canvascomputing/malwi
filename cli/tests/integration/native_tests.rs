@@ -13,21 +13,33 @@ fn setup() {
 // ============================================================================
 
 #[test]
-fn test_native_tracing_captures_malloc_calls() {
+fn test_native_tracing_captures_marker_function() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "malloc", "--", "./simple_target"]);
+    // Hook simple_target_marker — a custom function compiled with -rdynamic,
+    // reliably hookable on all platforms (unlike malloc which may resist
+    // inline patching on hardened glibc configurations).
+    let output = run_tracer(&["x", "-s", "simple_target_marker", "--", "./simple_target"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}\n{}", stdout, stderr);
 
-    // Should have traced malloc calls
     assert!(
-        combined.contains("malloc"),
-        "Expected malloc trace events. stdout: {}, stderr: {}",
+        output.status.success(),
+        "Tracer exited with error. stdout: {}, stderr: {}",
         stdout,
         stderr
+    );
+
+    // Should have a [malwi] trace line for simple_target_marker
+    let stdout_clean = strip_ansi_codes(&stdout);
+    let has_trace = stdout_clean
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker"));
+    assert!(
+        has_trace,
+        "Expected [malwi] trace event for simple_target_marker. stdout: {}",
+        stdout
     );
 }
 
@@ -35,12 +47,12 @@ fn test_native_tracing_captures_malloc_calls() {
 fn test_native_tracing_glob_pattern_matches_prefixed_functions() {
     setup();
 
-    // Use a more specific glob pattern to avoid matching too many functions
-    // malloc* matches 60+ functions on macOS which can overwhelm HTTP
+    // Use a glob pattern that matches simple_target_marker — a custom function
+    // always present in the dynamic symbol table via -rdynamic.
     let output = run_tracer(&[
         "x",
         "-s",
-        "malloc_good*", // Matches only malloc_good_size
+        "simple_target*", // Matches simple_target_marker
         "--",
         "./simple_target",
     ]);
@@ -48,12 +60,22 @@ fn test_native_tracing_glob_pattern_matches_prefixed_functions() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Glob patterns should work
     assert!(
-        output.status.success() || stderr.contains("malloc"),
+        output.status.success(),
         "Glob pattern test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
+    );
+
+    // Glob pattern should have matched simple_target_marker and produced trace events
+    let stdout_clean = strip_ansi_codes(&stdout);
+    let has_trace = stdout_clean
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker"));
+    assert!(
+        has_trace,
+        "Expected [malwi] trace event from glob pattern simple_target*. stdout: {}",
+        stdout
     );
 }
 
@@ -95,7 +117,7 @@ fn test_native_stack_trace_omitted_without_t_flag() {
     setup();
 
     // Run WITHOUT --st flag - should NOT have stack traces
-    let output = run_tracer(&["x", "-s", "malloc", "--", "./simple_target"]);
+    let output = run_tracer(&["x", "-s", "simple_target_marker", "--", "./simple_target"]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -107,7 +129,17 @@ fn test_native_stack_trace_omitted_without_t_flag() {
         stderr
     );
 
-    // Should NOT have stack trace frames when -t is not used
+    // Precondition: tracing must have produced events (avoid vacuous pass)
+    let stdout_clean = strip_ansi_codes(&stdout);
+    assert!(
+        stdout_clean
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker")),
+        "Precondition failed: no trace events captured. stdout: {}",
+        stdout
+    );
+
+    // Should NOT have stack trace frames when --st is not used
     assert!(
         !has_stack_trace(&stdout),
         "Expected no stack traces without --st flag. stdout: {}",
@@ -125,7 +157,7 @@ fn test_native_stack_trace_included_with_t_flag() {
             "x",
             "--st", // Enable stack traces
             "-s",
-            "malloc",
+            "simple_target_marker",
             "--",
             "./simple_target",
         ],
@@ -142,10 +174,13 @@ fn test_native_stack_trace_included_with_t_flag() {
         stderr
     );
 
-    // Should have malloc function call
+    // Should have simple_target_marker function call
+    let stdout_clean = strip_ansi_codes(&stdout);
     assert!(
-        stdout.contains("malloc"),
-        "Expected malloc trace. stdout: {}",
+        stdout_clean
+            .lines()
+            .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker")),
+        "Expected simple_target_marker trace. stdout: {}",
         stdout
     );
 
@@ -162,7 +197,14 @@ fn test_native_stack_trace_shows_symbol_and_address() {
     setup();
 
     let output = run_tracer_with_timeout(
-        &["x", "--st", "-s", "malloc", "--", "./simple_target"],
+        &[
+            "x",
+            "--st",
+            "-s",
+            "simple_target_marker",
+            "--",
+            "./simple_target",
+        ],
         STACK_TRACE_TIMEOUT,
     );
 
@@ -280,20 +322,6 @@ fn test_native_hooks_trace_events_from_multiple_threads() {
         "Expected multiple marker events. stdout: {}, stderr: {}",
         stdout,
         stderr
-    );
-}
-
-#[test]
-fn test_multithreaded_tracing_completes_without_crash() {
-    setup();
-
-    // Run once to verify basic functionality (multiple iterations can be slow)
-    let output = run_tracer(&["x", "-s", "multithread_marker", "--", "./multithread"]);
-
-    assert!(
-        output.status.success(),
-        "Multi-threaded test crashed. stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 
