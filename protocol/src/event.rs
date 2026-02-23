@@ -276,4 +276,7 @@ pub struct HostChildInfo {
     /// Source line where the call originated (caller's line)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_line: Option<u32>,
+    /// Runtime-specific stack trace (Python, Node.js, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_stack: Option<RuntimeStack>,
 }

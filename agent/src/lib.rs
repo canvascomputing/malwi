@@ -572,6 +572,7 @@ impl ForkHandler for Agent {
             native_stack: vec![],
             source_file: None,
             source_line: None,
+            runtime_stack: None,
         };
         self.notify_child_created(info);
     }
@@ -608,6 +609,7 @@ impl SpawnHandler for Agent {
             native_stack: info.native_stack,
             source_file: info.source_file,
             source_line: info.source_line,
+            runtime_stack: info.runtime_stack,
         };
         self.notify_child_created(child_info);
     }
@@ -622,6 +624,7 @@ impl SpawnHandler for Agent {
             native_stack: info.native_stack,
             source_file: info.source_file,
             source_line: info.source_line,
+            runtime_stack: info.runtime_stack,
         };
         self.notify_child_created(child_info);
     }

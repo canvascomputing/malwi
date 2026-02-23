@@ -201,7 +201,7 @@ unsafe extern "C" fn audit_hook(
             .and_then(|s| std::path::Path::new(s).file_name().and_then(|p| p.to_str()))
             .or_else(|| argv.first().map(|s| s.as_str()));
         if let Some(cmd) = cmd {
-            let (matches, _capture_stack) = crate::exec::filter::check_filter(cmd);
+            let (matches, capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
                     let native_stack = capture_native_stack_for_exec(cmd);
@@ -211,6 +211,16 @@ unsafe extern "C" fn audit_hook(
                     } else {
                         (None, None)
                     };
+                    let runtime_stack = if capture_stack {
+                        let frames = capture_current_python_stack();
+                        if frames.is_empty() {
+                            None
+                        } else {
+                            Some(malwi_protocol::RuntimeStack::Python(frames))
+                        }
+                    } else {
+                        None
+                    };
                     agent.on_spawn_created(crate::exec::SpawnInfo {
                         child_pid: 0,
                         path: None,
@@ -218,6 +228,7 @@ unsafe extern "C" fn audit_hook(
                         native_stack,
                         source_file,
                         source_line,
+                        runtime_stack,
                     });
                 }
             }

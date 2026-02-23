@@ -234,6 +234,7 @@ pub struct SpawnInfo {
     pub native_stack: Vec<usize>,
     pub source_file: Option<String>,
     pub source_line: Option<u32>,
+    pub runtime_stack: Option<malwi_protocol::RuntimeStack>,
 }
 
 /// Callback trait for spawn/exec events.
@@ -812,6 +813,7 @@ unsafe extern "C" fn on_posix_spawn_leave(
                     native_stack: spawn_ctx.native_stack,
                     source_file: None,
                     source_line: None,
+                    runtime_stack: None,
                 });
             }
         });
@@ -1114,6 +1116,7 @@ pub(crate) unsafe extern "C" fn posix_spawn_rebind_wrapper(
                 native_stack,
                 source_file: None,
                 source_line: None,
+                runtime_stack: None,
             });
         }
     }
@@ -1175,6 +1178,7 @@ pub(crate) unsafe extern "C" fn posix_spawnp_rebind_wrapper(
                 native_stack,
                 source_file: None,
                 source_line: None,
+                runtime_stack: None,
             });
         }
     }
@@ -1216,6 +1220,7 @@ pub(crate) unsafe extern "C" fn execve_rebind_wrapper(
                 native_stack,
                 source_file: None,
                 source_line: None,
+                runtime_stack: None,
             });
         }
     }
@@ -1277,6 +1282,7 @@ pub(crate) unsafe extern "C" fn __execve_rebind_wrapper(
                 native_stack,
                 source_file: None,
                 source_line: None,
+                runtime_stack: None,
             });
         }
     }
@@ -1434,6 +1440,7 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
             native_stack,
             source_file: None,
             source_line: None,
+            runtime_stack: None,
         });
     }
 }

@@ -477,6 +477,7 @@ fn child_info_to_trace_event(info: HostChildInfo, cmd_name: String) -> TraceEven
         function: cmd_name,
         arguments,
         native_stack: info.native_stack,
+        runtime_stack: info.runtime_stack,
         source_file: info.source_file,
         source_line: info.source_line,
         ..Default::default()

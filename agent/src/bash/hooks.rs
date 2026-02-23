@@ -105,6 +105,7 @@ pub(crate) unsafe extern "C" fn on_shell_execve_enter(
             native_stack,
             source_file,
             source_line,
+            runtime_stack: None,
         });
     }
 }
@@ -219,6 +220,7 @@ pub(crate) unsafe extern "C" fn on_execute_command_internal_enter(
                     native_stack,
                     source_file,
                     source_line,
+                    runtime_stack: None,
                 });
             }
         }
@@ -271,6 +273,7 @@ pub(crate) unsafe extern "C" fn on_eval_builtin_enter(
             native_stack,
             source_file,
             source_line,
+            runtime_stack: None,
         });
     }
 }
@@ -317,6 +320,7 @@ pub(crate) unsafe extern "C" fn on_source_builtin_enter(
             native_stack,
             source_file,
             source_line,
+            runtime_stack: None,
         });
     }
 }
