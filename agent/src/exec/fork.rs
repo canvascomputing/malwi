@@ -274,9 +274,8 @@ pub(crate) unsafe extern "C" fn fork_rebind_wrapper() -> libc::pid_t {
     if let Some(agent) = crate::Agent::get() {
         if result > 0 {
             agent.on_fork_in_parent(result as u32);
-        } else if result == 0 {
-            agent.on_fork_in_child();
         }
+        // Child (result == 0) handled by pthread_atfork.
     }
 
     result
@@ -307,9 +306,8 @@ pub(crate) unsafe extern "C" fn __fork_rebind_wrapper() -> libc::pid_t {
     if let Some(agent) = crate::Agent::get() {
         if result > 0 {
             agent.on_fork_in_parent(result as u32);
-        } else if result == 0 {
-            agent.on_fork_in_child();
         }
+        // Child (result == 0) handled by pthread_atfork.
     }
 
     result
@@ -339,12 +337,9 @@ unsafe extern "C" fn on_fork_leave(context: *mut InvocationContext, user_data: *
             let child_pid = result as u32;
             debug!("Fork detected: parent, child_pid = {}", child_pid);
             agent.on_fork_in_parent(child_pid);
-        } else if result == 0 {
-            // We're in the child process
-            debug!("Fork detected: child process");
-            agent.on_fork_in_child();
         }
-        // result < 0 means fork failed, ignore
+        // result == 0 (child) is handled by pthread_atfork — no duplicate call needed.
+        // result < 0 means fork failed, ignore.
     }
 }
 

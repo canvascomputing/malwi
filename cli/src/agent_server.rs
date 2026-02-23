@@ -203,6 +203,9 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
     let mut agent_pid: Option<u32> = None;
     // Track whether the agent sent a clean Shutdown message
     let mut shutdown_received = false;
+    // Track whether this connection incremented active_agents.
+    // Only connections that incremented should send Disconnected (which triggers a decrement).
+    let mut counted = false;
 
     // 4. Message loop
     let mut read_buf = vec![0u8; 64 * 1024];
@@ -241,12 +244,14 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
                         shared,
                         &mut agent_pid,
                         &mut shutdown_received,
+                        &mut counted,
                     )?;
                 }
                 Event::CloseReceived(_) | Event::Closed => {
-                    // Send Disconnected if we had a PID but no clean Shutdown
+                    // Send Disconnected if we had a PID, no clean Shutdown, and
+                    // this connection actually incremented active_agents.
                     if let Some(pid) = agent_pid {
-                        if !shutdown_received {
+                        if !shutdown_received && counted {
                             let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
                         }
                     }
@@ -261,8 +266,9 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
     }
 
     // Connection dropped (EOF or error) — send Disconnected if no clean Shutdown
+    // and this connection actually incremented active_agents.
     if let Some(pid) = agent_pid {
-        if !shutdown_received {
+        if !shutdown_received && counted {
             let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
         }
     }
@@ -286,6 +292,7 @@ fn handle_message(
     shared: &SharedState,
     agent_pid: &mut Option<u32>,
     shutdown_received: &mut bool,
+    counted: &mut bool,
 ) -> Result<()> {
     match msg {
         AgentMessage::Configure(req) => {
@@ -303,6 +310,7 @@ fn handle_message(
                 .remove(&req.pid);
             if !already_counted {
                 shared.active_agents.fetch_add(1, Ordering::SeqCst);
+                *counted = true;
             }
 
             let resp = CliMessage::ConfigureResponse(ConfigureResponse {
@@ -377,6 +385,7 @@ fn handle_message(
             *agent_pid = Some(req.child_pid);
 
             shared.active_agents.fetch_add(1, Ordering::SeqCst);
+            *counted = true;
             shared
                 .reconnected_pids
                 .lock()
@@ -423,9 +432,15 @@ fn handle_message(
                 pids.remove(&req.pid);
             }
 
-            let _ = shared
-                .event_tx
-                .send(AgentEvent::Disconnected { pid: req.pid });
+            // Only send Disconnected if this connection incremented active_agents.
+            // Without this, a forked child that exec's (Reconnect +1, WS close -1)
+            // followed by the exec'd process (Configure already_counted, Shutdown -1)
+            // would undercount and cause premature CLI exit.
+            if *counted {
+                let _ = shared
+                    .event_tx
+                    .send(AgentEvent::Disconnected { pid: req.pid });
+            }
         }
     }
     Ok(())

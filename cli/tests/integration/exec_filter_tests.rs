@@ -566,7 +566,9 @@ fn test_exec_stack_trace_from_python_subprocess() {
         stdout, stderr
     );
 
-    // Should have stack frames with --st flag
+    // Should have stack frames with --st flag.
+    // The audit hook fires BEFORE posix_spawn — while still in Python's C code
+    // in the parent process — so frame pointer walking works on all platforms.
     assert!(
         has_stack_trace(&stdout),
         "Should have stack frames with --st flag. stdout: {}",

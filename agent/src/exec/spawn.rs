@@ -7,10 +7,13 @@
 
 use std::cell::Cell;
 use std::collections::HashSet;
-use std::ffi::{c_char, CStr, CString};
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
+use std::ffi::{c_char, CStr};
 use std::ptr;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

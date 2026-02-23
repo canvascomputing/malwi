@@ -577,10 +577,6 @@ impl ForkHandler for Agent {
     }
 
     fn on_fork_in_child(&self) {
-        // In the child process after fork:
-        // With HTTP, no reconnection ceremony needed — each POST is independent.
-        // Just notify the CLI that we're a child process.
-
         let child_pid = std::process::id();
         let parent_pid = unsafe { libc::getppid() } as u32;
 

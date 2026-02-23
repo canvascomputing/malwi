@@ -50,7 +50,6 @@ pub fn start_audit_registration_task() {
     });
 }
 
-#[cfg(target_os = "macos")]
 #[allow(unreachable_code)]
 fn capture_native_stack_for_exec(cmd: &str) -> Vec<usize> {
     let (_matches, capture_stack) = crate::exec::filter::check_filter(cmd);
@@ -205,23 +204,20 @@ unsafe extern "C" fn audit_hook(
             let (matches, _capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
-                    let native_stack = {
-                        #[cfg(target_os = "macos")]
-                        {
-                            capture_native_stack_for_exec(cmd)
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            Vec::new()
-                        }
+                    let native_stack = capture_native_stack_for_exec(cmd);
+                    let (source_file, source_line) = if let Some(api) = PYTHON_API.get() {
+                        let frame = (api.eval_get_frame)();
+                        super::helpers::extract_frame_location(frame)
+                    } else {
+                        (None, None)
                     };
                     agent.on_spawn_created(crate::exec::SpawnInfo {
                         child_pid: 0,
                         path: None,
                         argv: Some(argv),
                         native_stack,
-                        source_file: None,
-                        source_line: None,
+                        source_file,
+                        source_line,
                     });
                 }
             }
