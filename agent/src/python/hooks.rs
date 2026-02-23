@@ -316,6 +316,82 @@ pub unsafe fn is_hooked_or_hook(arg: *mut c_void, display_name: &str, capture_st
 }
 
 // =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tracing::filter::Filter;
+
+    /// Test that register_pending_hooks correctly filters patterns:
+    /// - Glob patterns (containing * or ?) are skipped
+    /// - Multi-dot patterns (e.g., "http.client.HTTPConnection") are skipped
+    /// - Patterns without a dot are skipped
+    /// - Only simple "module.function" patterns are accepted
+    ///
+    /// Uses a single test to avoid static state interference between tests.
+    #[test]
+    fn test_register_pending_hooks_filter_logic() {
+        // Before any registration, pending state from previous register calls
+        // may or may not be set, so we focus on verifying the behavior after
+        // our specific calls.
+
+        // Register only glob/invalid patterns — these should all be skipped
+        let glob_only_filters = vec![
+            Filter::new("os.*", false),                                // glob with *
+            Filter::new("sys.get?", false),                            // glob with ?
+            Filter::new("http.client.HTTPConnection.__init__", false), // multi-dot
+            Filter::new("nodot", false),                               // no dot at all
+            Filter::new(".leadingdot", false),                         // leading dot, empty module
+            Filter::new("trailingdot.", false), // trailing dot, empty function
+        ];
+
+        // Get count before
+        let count_before = PENDING_C_HOOKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+
+        register_pending_hooks(&glob_only_filters);
+
+        // Count should not have increased — all patterns were ineligible
+        let count_after_globs = PENDING_C_HOOKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        assert_eq!(
+            count_before, count_after_globs,
+            "Glob/multi-dot/invalid patterns should not be added to pending hooks"
+        );
+
+        // Now register valid exact patterns
+        let exact_filters = vec![
+            Filter::new("os.getpid", true),
+            Filter::new("json.loads", false),
+        ];
+
+        register_pending_hooks(&exact_filters);
+
+        let count_after_exact = PENDING_C_HOOKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        assert_eq!(
+            count_after_exact,
+            count_after_globs + 2,
+            "Exact module.function patterns should be added to pending hooks"
+        );
+
+        // has_pending should be true now
+        assert!(
+            has_pending(),
+            "has_pending() should be true after adding exact patterns"
+        );
+    }
+}
+
+// =============================================================================
 // INTERCEPTOR CALLBACK
 // =============================================================================
 
@@ -345,7 +421,10 @@ unsafe extern "C" fn on_c_function_enter(_context: *mut InvocationContext, user_
         if let Some(api) = api {
             // Get the current Python frame for source location.
             // This is safe because GIL is held during C→C calls within CPython.
-            let frame = (api.eval_get_frame)();
+            let frame = match api.eval_get_frame {
+                Some(eval_get_frame) => eval_get_frame(),
+                None => std::ptr::null_mut(),
+            };
 
             let runtime_stack = super::helpers::maybe_capture_stack(frame, data.capture_stack);
             let (source_file, source_line) = super::helpers::extract_frame_location(frame);

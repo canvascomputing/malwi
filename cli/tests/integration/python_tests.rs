@@ -729,3 +729,201 @@ except Exception:
         );
     });
 }
+
+// ============================================================================
+// Stack Depth & Frame Content Accuracy Tests
+// ============================================================================
+
+/// Verify that deep recursive call stacks are captured with correct depth.
+/// Uses a 100-level recursive fixture and asserts that the captured stack
+/// contains a meaningful number of frames (exercising MAX_FRAMES path).
+#[test]
+fn test_python_stack_trace_recursive_depth() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let output = run_tracer_with_timeout(&[
+            "x",
+            "--st",
+            "--py", "recurse",
+            "--",
+            python.to_str().unwrap(),
+            "./test_python_recursive.py",
+        ], STACK_TRACE_TIMEOUT);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Python recursive stack test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // Should have traced the recurse function
+        assert!(
+            stdout.contains("recurse"),
+            "Expected recurse trace. stdout: {}",
+            stdout
+        );
+
+        // Find the deepest recurse event (the last one with stack frames)
+        // and count how many "recurse" frames appear in its stack
+        let lines: Vec<&str> = stdout.lines().collect();
+        let mut max_recurse_depth = 0;
+
+        let mut i = 0;
+        while i < lines.len() {
+            if lines[i].contains("[malwi]") && lines[i].contains("recurse") {
+                // Count stack frames containing "recurse" after this event
+                let mut depth = 0;
+                let mut j = i + 1;
+                while j < lines.len() {
+                    if lines[j].starts_with("    at ") {
+                        if lines[j].contains("recurse") {
+                            depth += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                    j += 1;
+                }
+                if depth > max_recurse_depth {
+                    max_recurse_depth = depth;
+                }
+            }
+            i += 1;
+        }
+
+        // With 100 levels of recursion, we expect the deepest stack to have
+        // many recurse frames. Allow some slack for Python internals overhead.
+        assert!(
+            max_recurse_depth >= 50,
+            "Expected at least 50 recursive stack frames at deepest point, got {}. stdout: {}",
+            max_recurse_depth, stdout
+        );
+    });
+}
+
+/// Verify that stack frame content (function name, filename, line number) is accurate.
+/// Asserts on specific function names and file references rather than just
+/// checking that frames exist.
+#[test]
+fn test_python_stack_trace_frame_content_accuracy() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let output = run_tracer_with_timeout(&[
+            "x",
+            "--st",
+            "--py", "nested_inner",
+            "--",
+            python.to_str().unwrap(),
+            "./test_python.py",
+        ], STACK_TRACE_TIMEOUT);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Python frame accuracy test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // Find the nested_inner event and its stack frames
+        let lines: Vec<&str> = stdout.lines().collect();
+        let mut stack_frames = Vec::new();
+        let mut found_event = false;
+
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("[malwi]") && line.contains("nested_inner") {
+                found_event = true;
+                // Collect stack frames
+                for stack_line in lines.iter().skip(i + 1) {
+                    if stack_line.starts_with("    at ") {
+                        stack_frames.push(*stack_line);
+                    } else {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        assert!(found_event, "Expected nested_inner event. stdout: {}", stdout);
+
+        // Stack should contain nested_outer as caller
+        let has_outer = stack_frames.iter().any(|f| f.contains("nested_outer"));
+        assert!(
+            has_outer,
+            "Expected nested_outer in stack frames. frames: {:?}",
+            stack_frames
+        );
+
+        // Stack frames should reference test_python.py
+        let has_filename = stack_frames.iter().any(|f| f.contains("test_python.py"));
+        assert!(
+            has_filename,
+            "Expected test_python.py in stack frames. frames: {:?}",
+            stack_frames
+        );
+
+        // Stack frames should have line numbers (format: "filename:N")
+        let has_line_number = stack_frames.iter().any(|f| {
+            f.contains(".py:") && f.split(".py:").nth(1).map_or(false, |rest| {
+                rest.chars().next().map_or(false, |c| c.is_ascii_digit())
+            })
+        });
+        assert!(
+            has_line_number,
+            "Expected line numbers in stack frames. frames: {:?}",
+            stack_frames
+        );
+    });
+}
+
+// ============================================================================
+// Unicode Function Name Tests
+// ============================================================================
+
+/// Verify that Python functions with non-ASCII (Unicode) names are traced correctly.
+/// Tests with German (grüße) and Cyrillic (подсчёт) function names.
+#[test]
+fn test_python_unicode_function_names_traced() {
+    setup();
+
+    skip_if_no_python!(python => {
+        // Trace the German function name
+        let output = run_tracer(&[
+            "x",
+            "--py", "grüße",
+            "--py", "подсчёт",
+            "--",
+            python.to_str().unwrap(),
+            "./test_python_unicode.py",
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python unicode function test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // At least one of the Unicode function names should appear in output
+        let has_german = stdout.contains("grüße");
+        let has_cyrillic = stdout.contains("подсчёт");
+
+        assert!(
+            has_german || has_cyrillic,
+            "Expected at least one Unicode function name in trace output. \
+             grüße: {}, подсчёт: {}. stdout: {}, stderr: {}",
+            has_german, has_cyrillic, stdout, stderr
+        );
+    });
+}

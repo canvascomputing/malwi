@@ -143,7 +143,7 @@ pub struct PythonApi {
     pub dict_get_item_string: PyDict_GetItemStringFn,
     pub frame_get_back: PyFrame_GetBackFn,
     pub frame_get_line_number: PyFrame_GetLineNumberFn,
-    pub eval_get_frame: PyEval_GetFrameFn,
+    pub eval_get_frame: Option<PyEval_GetFrameFn>,
     /// PyCode_GetName is optional (Python 3.11+ only)
     pub code_get_name: Option<PyCode_GetNameFn>,
     // Argument extraction APIs (some optional for older Python versions)
@@ -208,9 +208,9 @@ pub fn resolve_python_api() -> Option<PythonApi> {
             .ok()
             .map(|addr| unsafe { std::mem::transmute(addr) })?;
 
-    let eval_get_frame: PyEval_GetFrameFn = native::find_export(None, "PyEval_GetFrame")
+    let eval_get_frame: Option<PyEval_GetFrameFn> = native::find_export(None, "PyEval_GetFrame")
         .ok()
-        .map(|addr| unsafe { std::mem::transmute(addr) })?;
+        .map(|addr| unsafe { std::mem::transmute(addr) });
 
     // PyCode_GetName is optional (Python 3.11+)
     let code_get_name: Option<PyCode_GetNameFn> = native::find_export(None, "PyCode_GetName")
@@ -331,6 +331,7 @@ pub fn init_python_api() -> bool {
     match resolve_python_api() {
         Some(api) => {
             let has_code_get_name = api.code_get_name.is_some();
+            let has_eval_get_frame = api.eval_get_frame.is_some();
             let has_thread_iter = api.interp_thread_head.is_some()
                 && api.tstate_next.is_some()
                 && api.tstate_get_interp.is_some()
@@ -340,6 +341,9 @@ pub fn init_python_api() -> bool {
                     debug!("Python API initialized (using PyCode_GetName)");
                 } else {
                     debug!("Python API initialized (using co_name fallback)");
+                }
+                if !has_eval_get_frame {
+                    debug!("PyEval_GetFrame NOT available (stack capture and source location disabled)");
                 }
                 if has_thread_iter {
                     debug!("Thread iteration APIs available for profile propagation");

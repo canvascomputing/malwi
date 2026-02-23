@@ -50,9 +50,19 @@ pub fn start_audit_registration_task() {
     });
 }
 
+/// Get the current Python frame, or null if PyEval_GetFrame is unavailable.
+///
+/// # Safety
+/// Caller must ensure GIL is held.
+unsafe fn get_current_frame() -> *mut c_void {
+    match PYTHON_API.get().and_then(|api| api.eval_get_frame) {
+        Some(eval_get_frame) => eval_get_frame(),
+        None => std::ptr::null_mut(),
+    }
+}
+
 #[allow(unreachable_code)]
-fn capture_native_stack_for_exec(cmd: &str) -> Vec<usize> {
-    let (_matches, capture_stack) = crate::exec::filter::check_filter(cmd);
+fn capture_native_stack_for_exec(capture_stack: bool) -> Vec<usize> {
     if !capture_stack {
         return Vec::new();
     }
@@ -145,12 +155,27 @@ fn parse_python_list_repr(list_repr: &str) -> Option<Vec<String>> {
 
 /// Audit hook callback.
 ///
+/// Wraps `audit_hook_inner` in `catch_unwind` so a panic in our code
+/// never propagates into the Python interpreter (undefined behaviour).
+///
 /// SAFETY: This is called by Python with GIL held.
 unsafe extern "C" fn audit_hook(
     event: *const c_char,
     args: *mut c_void,
     _user_data: *mut c_void,
 ) -> i32 {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        audit_hook_inner(event, args)
+    })) {
+        Ok(result) => result,
+        Err(_) => 0,
+    }
+}
+
+/// Inner audit hook logic, separated so `catch_unwind` covers the entire body.
+///
+/// SAFETY: Caller must ensure GIL is held.
+unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
     // Try to register profile hook if we have filters and haven't registered yet
     if !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) && has_any_filters() {
         do_register_profile_hook();
@@ -168,12 +193,20 @@ unsafe extern "C" fn audit_hook(
     // The audit hook uses Python C-API helpers (repr(), tuple iteration).
     // Initialize the API cache opportunistically so exec-only runs can still
     // extract subprocess.Popen arguments.
-    let _ = init_python_api();
+    if !init_python_api() {
+        debug!(
+            "Python API not available in audit hook for event '{}'",
+            event_str
+        );
+    }
 
     // Exec filter integration for Python: treat subprocess.Popen as an exec event.
     // This avoids relying on low-level fork/exec interception for Python runtimes.
     if crate::exec::filter::has_filters() && event_str == "subprocess.Popen" {
         let arguments = extract_tuple_arguments(args);
+        if arguments.is_empty() {
+            debug!("subprocess.Popen audit: no arguments extracted");
+        }
         // Python audit args for subprocess.Popen look like:
         // ('executable', ['argv0', ...], cwd, env)
         // Prefer the argv list at index 1.
@@ -200,16 +233,17 @@ unsafe extern "C" fn audit_hook(
             .first()
             .and_then(|s| std::path::Path::new(s).file_name().and_then(|p| p.to_str()))
             .or_else(|| argv.first().map(|s| s.as_str()));
+        if cmd.is_none() {
+            debug!("subprocess.Popen audit: could not extract command name");
+        }
         if let Some(cmd) = cmd {
             let (matches, capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
-                    let native_stack = capture_native_stack_for_exec(cmd);
-                    let (source_file, source_line) = if let Some(api) = PYTHON_API.get() {
-                        let frame = (api.eval_get_frame)();
+                    let native_stack = capture_native_stack_for_exec(capture_stack);
+                    let (source_file, source_line) = {
+                        let frame = get_current_frame();
                         super::helpers::extract_frame_location(frame)
-                    } else {
-                        (None, None)
                     };
                     let runtime_stack = if capture_stack {
                         let frames = capture_current_python_stack();
@@ -266,11 +300,9 @@ unsafe extern "C" fn audit_hook(
 
     // Extract caller's source location from the current frame
     // For audit events, PyEval_GetFrame returns the caller's frame (borrowed ref — no decref)
-    let (caller_file, caller_line) = if let Some(api) = PYTHON_API.get() {
-        let frame = (api.eval_get_frame)();
+    let (caller_file, caller_line) = {
+        let frame = get_current_frame();
         super::helpers::extract_frame_location(frame)
-    } else {
-        (None, None)
     };
 
     let trace_event = crate::tracing::event::python_enter(&event_str)
@@ -286,6 +318,121 @@ unsafe extern "C" fn audit_hook(
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_python_list_repr_basic() {
+        assert_eq!(
+            parse_python_list_repr("['curl', '--version']"),
+            Some(vec!["curl".to_string(), "--version".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_single_element() {
+        assert_eq!(
+            parse_python_list_repr("['single']"),
+            Some(vec!["single".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_empty_list() {
+        assert_eq!(parse_python_list_repr("[]"), Some(vec![]));
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_empty_list_with_spaces() {
+        assert_eq!(parse_python_list_repr("[  ]"), Some(vec![]));
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_mixed_quotes() {
+        // Python repr can use either quote style
+        assert_eq!(
+            parse_python_list_repr(r#"['/bin/sh', '-c', "echo 'hello'"]"#),
+            Some(vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'hello'".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_double_quoted() {
+        assert_eq!(
+            parse_python_list_repr(r#"["curl", "--version"]"#),
+            Some(vec!["curl".to_string(), "--version".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_escaped_backslash() {
+        assert_eq!(
+            parse_python_list_repr(r"['path with\\backslash']"),
+            Some(vec!["path with\\backslash".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_escaped_quote() {
+        assert_eq!(
+            parse_python_list_repr(r"['it\'s']"),
+            Some(vec!["it's".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_no_brackets() {
+        assert_eq!(parse_python_list_repr(""), None);
+        assert_eq!(parse_python_list_repr("not a list"), None);
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_missing_closing_bracket() {
+        assert_eq!(parse_python_list_repr("[open"), None);
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_missing_opening_bracket() {
+        assert_eq!(parse_python_list_repr("closed]"), None);
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_path_arguments() {
+        // Real-world subprocess.Popen argv
+        assert_eq!(
+            parse_python_list_repr("['python3', '-m', 'pip', 'install', 'requests']"),
+            Some(vec![
+                "python3".to_string(),
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "requests".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_empty_string_element() {
+        assert_eq!(
+            parse_python_list_repr("['', 'arg']"),
+            Some(vec!["".to_string(), "arg".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_python_list_repr_spaces_in_values() {
+        assert_eq!(
+            parse_python_list_repr("['hello world', 'foo bar']"),
+            Some(vec!["hello world".to_string(), "foo bar".to_string()])
+        );
+    }
 }
 
 /// Register audit hook (PEP 578) - for logging Python runtime events

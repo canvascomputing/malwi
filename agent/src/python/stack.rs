@@ -9,6 +9,8 @@ use malwi_protocol::PythonFrame;
 use super::ffi::PYTHON_API;
 use super::helpers::{get_code_filename, get_qualname, get_simple_name};
 
+const MAX_FRAMES: usize = 256;
+
 /// Capture Python call stack by walking frame chain.
 ///
 /// Walks from the given frame up to the top of the call stack,
@@ -28,8 +30,10 @@ pub unsafe fn capture_python_stack(frame: *mut c_void) -> Vec<PythonFrame> {
     let mut frames = Vec::new();
     let mut current = frame;
     let initial = frame;
+    let mut count = 0;
 
-    while !current.is_null() {
+    while !current.is_null() && count < MAX_FRAMES {
+        count += 1;
         let code = (api.frame_get_code)(current);
         if !code.is_null() {
             let function = get_qualname(code)
@@ -70,13 +74,13 @@ pub unsafe fn capture_python_stack(frame: *mut c_void) -> Vec<PythonFrame> {
 /// # Safety
 /// Caller must ensure GIL is held.
 pub unsafe fn capture_current_python_stack() -> Vec<PythonFrame> {
-    let api = match PYTHON_API.get() {
-        Some(api) => api,
+    let eval_get_frame = match PYTHON_API.get().and_then(|api| api.eval_get_frame) {
+        Some(f) => f,
         None => return Vec::new(),
     };
 
     // Get current frame (borrowed reference - do NOT decref)
-    let frame = (api.eval_get_frame)();
+    let frame = eval_get_frame();
     if frame.is_null() {
         return Vec::new();
     }
