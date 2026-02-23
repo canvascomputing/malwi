@@ -462,6 +462,79 @@ greet("World", "Hi")
 }
 
 // ============================================================================
+// Python C Extension (c_call) Tracing Tests
+// ============================================================================
+
+/// Verify that C built-in function calls are traced via PYTRACE_C_CALL.
+/// os.getpid() is a C extension function — its internal module is "posix"
+/// but should be matchable via the "os" alias.
+#[test]
+fn test_python_c_function_call_traced() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let output = run_tracer(&[
+            "x",
+            "--py", "os.getpid",
+            "--",
+            python.to_str().unwrap(),
+            "-c", "import os; pid = os.getpid(); print(f'pid={pid}')",
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python c_call test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        assert!(
+            stdout.contains("getpid"),
+            "Expected os.getpid trace via PYTRACE_C_CALL. \
+             C extension functions should be visible. \
+             stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+/// Verify that C extension functions from json module are traced.
+/// json.loads is actually _json.loads internally.
+#[test]
+fn test_python_c_function_json_loads_traced() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let output = run_tracer(&[
+            "x",
+            "--py", "json.loads",
+            "--",
+            python.to_str().unwrap(),
+            "-c", "import json; json.loads('{}')",
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python c_call json test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        assert!(
+            stdout.contains("loads"),
+            "Expected json.loads trace via PYTRACE_C_CALL. \
+             _json.loads should be matched via json alias. \
+             stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+    });
+}
+
+// ============================================================================
 // Threat Vector Tests — Python Attack Patterns
 // ============================================================================
 
@@ -557,15 +630,16 @@ after_clear()
 }
 
 /// Threat: pickle deserialization can execute arbitrary code via __reduce__.
-/// Verify that functions triggered by pickle.loads() are traced.
+/// When __reduce__ returns (os.getpid, ()), pickle's C code calls os.getpid
+/// directly via PyObject_Call — a C→C call that bypasses the Python eval loop.
+/// The interceptor hooks the actual C function pointer, catching C→C calls.
 #[test]
 fn test_python_pickle_rce_function_traced() {
     setup();
 
     skip_if_no_python_primary!(python => {
         let script = r#"
-import pickle
-import os
+import pickle, os
 
 class Exploit:
     def __reduce__(self):
@@ -573,7 +647,7 @@ class Exploit:
 
 payload = pickle.dumps(Exploit())
 result = pickle.loads(payload)
-print(f"pid={result}")
+print(f"pickle_done pid={result}")
 "#;
         let output = run_tracer(&[
             "x",
@@ -592,11 +666,12 @@ print(f"pid={result}")
             stdout, stderr
         );
 
-        // pickle.loads() calls os.getpid via __reduce__ — should be traced
+        // os.getpid is hooked via interceptor — catches C→C calls from pickle
         assert!(
             stdout.contains("getpid"),
-            "Expected os.getpid trace from pickle deserialization RCE. \
-             Pickle __reduce__ payloads should be visible. stdout: {}, stderr: {}",
+            "Expected os.getpid trace from pickle deserialization. \
+             Pickle __reduce__ → os.getpid (C→C) should be caught by interceptor. \
+             stdout: {}, stderr: {}",
             stdout, stderr
         );
     });

@@ -8,20 +8,20 @@ use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+use crate::native;
 use log::{debug, error};
 use malwi_intercept::CallListener;
 use malwi_intercept::InvocationContext;
-use malwi_protocol::RuntimeStack;
-
-use crate::native;
 
 use super::ffi::{
     init_python_api, PyEval_SetProfileAllThreadsFn, PyEval_SetProfileFn, PyGILState_EnsureFn,
-    PyGILState_ReleaseFn, Py_IsInitializedFn, PYTHON_API, PYTRACE_CALL,
+    PyGILState_ReleaseFn, Py_IsInitializedFn, PYTHON_API, PYTRACE_CALL, PYTRACE_C_CALL,
 };
 use super::filters::matches_filter;
-use super::helpers::{extract_function_arguments, get_code_filename, get_qualified_function_name};
-use super::stack::capture_python_stack;
+use super::helpers::{
+    extract_caller_location, extract_frame_location, extract_function_arguments,
+    get_c_function_qualified_name, get_qualified_function_name, maybe_capture_stack,
+};
 
 // Dedup set for Python envvar names — reports each variable once per thread.
 thread_local! {
@@ -195,7 +195,7 @@ unsafe extern "C" fn profile_hook(
     _obj: *mut c_void,
     frame: *mut c_void,
     what: c_int,
-    _arg: *mut c_void,
+    arg: *mut c_void,
 ) -> c_int {
     // After thread creation, propagate profile hook to new threads.
     // The THREAD_CREATED flag is set by:
@@ -209,12 +209,36 @@ unsafe extern "C" fn profile_hook(
         propagate_profile_to_threads();
     }
 
-    // Only trace CALL events (enter)
-    if what != PYTRACE_CALL {
+    // Try to resolve pending C function hooks (exact patterns awaiting module import).
+    // The atomic check is ~1ns no-op once all hooks are resolved.
+    if super::hooks::has_pending() {
+        super::hooks::try_resolve_pending();
+    }
+
+    // Handle both Python calls and C extension calls
+    let is_c_call = what == PYTRACE_C_CALL;
+    if what != PYTRACE_CALL && !is_c_call {
         return 0;
     }
 
-    // Get qualified function name (e.g., "os.spawn", "json.loads")
+    if is_c_call {
+        // C function call — extract name from the function object (arg parameter).
+        // IMPORTANT: Always clear pending exceptions after c_call handling.
+        // During early bootstrap (e.g. _PyImport_InitCore on Python 3.13+),
+        // get_attr_string calls may leave exceptions set. Returning 0 with a
+        // pending exception causes SystemError and crashes import.
+        let result = handle_c_call(frame, arg);
+        if result == 0 {
+            if let Some(api) = PYTHON_API.get() {
+                if let Some(err_clear) = api.err_clear {
+                    err_clear();
+                }
+            }
+        }
+        return result;
+    }
+
+    // Python function call — extract name from frame's code object
     let qualified_name = match get_qualified_function_name(frame) {
         Some(name) => name,
         None => return 0,
@@ -237,42 +261,8 @@ unsafe extern "C" fn profile_hook(
     // Apply Python-specific formatting for networking functions
     let network_info = super::format::format_python_arguments(&qualified_name, &mut arguments);
 
-    // Capture Python stack if enabled
-    let runtime_stack = if capture_stack {
-        let frames = capture_python_stack(frame);
-        if frames.is_empty() {
-            None
-        } else {
-            Some(RuntimeStack::Python(frames))
-        }
-    } else {
-        None
-    };
-
-    // Extract caller's source location from the parent frame
-    let (caller_file, caller_line) = {
-        let api = PYTHON_API.get();
-        if let Some(api) = api {
-            let back = (api.frame_get_back)(frame);
-            if !back.is_null() {
-                let code = (api.frame_get_code)(back);
-                let file = if !code.is_null() {
-                    let f = get_code_filename(code);
-                    (api.py_decref)(code);
-                    f
-                } else {
-                    None
-                };
-                let line = (api.frame_get_line_number)(back) as u32;
-                (api.py_decref)(back);
-                (file, if line > 0 { Some(line) } else { None })
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        }
-    };
+    let runtime_stack = maybe_capture_stack(frame, capture_stack);
+    let (caller_file, caller_line) = extract_caller_location(frame);
 
     // Build trace event using EventBuilder
     let event = crate::tracing::event::python_enter(&qualified_name)
@@ -285,6 +275,69 @@ unsafe extern "C" fn profile_hook(
     // Send to CLI (handles review mode internally)
     if super::helpers::send_trace_event(event).is_err() {
         // User denied - raise PermissionError to abort the call
+        raise_permission_error();
+        return -1;
+    }
+
+    0
+}
+
+/// Handle a PYTRACE_C_CALL event — trace C built-in function calls.
+///
+/// For c_call events, `arg` is the C function object being called and `frame`
+/// is the *caller's* frame (the Python frame that invoked the C function).
+///
+/// # Safety
+/// Called from profile_hook with GIL held. `frame` and `arg` are valid Python objects.
+unsafe fn handle_c_call(frame: *mut c_void, arg: *mut c_void) -> c_int {
+    let (internal_name, aliased_name) = match get_c_function_qualified_name(arg) {
+        Some(names) => names,
+        None => return 0,
+    };
+
+    // Try filter with internal name first (e.g. "posix.getpid"), then aliased (e.g. "os.getpid")
+    let (matches, capture_stack) = matches_filter(&internal_name);
+    let (matches, capture_stack, display_name) = if matches {
+        // Use aliased name for display if available, otherwise internal
+        let name = aliased_name.as_deref().unwrap_or(&internal_name);
+        (true, capture_stack, name.to_string())
+    } else if let Some(ref aliased) = aliased_name {
+        let (m, cs) = matches_filter(aliased);
+        if m {
+            (true, cs, aliased.clone())
+        } else {
+            return 0;
+        }
+    } else {
+        return 0;
+    };
+
+    if !matches {
+        return 0;
+    }
+
+    // Try to hook this C function with the interceptor for C→C call tracing.
+    // If already hooked, skip the profile event — the interceptor handles it.
+    // If not yet hooked (first time), we install the hook and trace this call
+    // from the profile hook. Future calls go through the interceptor.
+    if super::hooks::is_hooked_or_hook(arg, &display_name, capture_stack) {
+        return 0;
+    }
+
+    // C functions don't have accessible arguments from the profile hook.
+    // The frame is the caller's frame, not the C function's.
+    let arguments = Vec::new();
+
+    let runtime_stack = maybe_capture_stack(frame, capture_stack);
+    let (caller_file, caller_line) = extract_frame_location(frame);
+
+    let event = crate::tracing::event::python_enter(&display_name)
+        .arguments(arguments)
+        .runtime_stack(runtime_stack)
+        .source_location(caller_file, caller_line)
+        .build();
+
+    if super::helpers::send_trace_event(event).is_err() {
         raise_permission_error();
         return -1;
     }
@@ -460,6 +513,11 @@ pub fn do_register_profile_hook() -> bool {
 
     PROFILE_HOOK_REGISTERED.store(true, Ordering::SeqCst);
     debug!("Python profile hook registered successfully");
+
+    // Set up pending C function hooks for eager resolution (exact patterns like "os.getpid").
+    // These will be resolved on the first profile event when modules are available.
+    let filters = super::filters::PYTHON_FILTERS.get_all();
+    super::hooks::register_pending_hooks(&filters);
 
     // For Python < 3.12, install thread creation hook to detect new threads
     // Python 3.12+ has _thread.start_new_thread audit events and PyEval_SetProfileAllThreads

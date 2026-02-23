@@ -48,7 +48,15 @@ pub fn add_filter(pattern: &str, capture_stack: bool) {
     PYTHON_FILTERS.add(pattern, capture_stack);
 }
 
-/// Check if any filters are registered.
+/// Check if any filters are registered or envvar monitoring is active.
+///
+/// The envvar monitoring check is needed because `enable_envvar_monitoring()`
+/// does not add a filter to PYTHON_FILTERS — adding `_Environ.__getitem__`
+/// as a filter caused `register_pending_hooks()` to call
+/// `PyImport_ImportModule("_Environ")`, which crashes on Python 3.10 since
+/// `_Environ` is not a top-level importable module. Instead, envvar
+/// monitoring registers the profile hook directly and signals its presence
+/// here so the audit hook's deferred registration path still triggers.
 pub fn has_any_filters() -> bool {
-    PYTHON_FILTERS.has_any()
+    PYTHON_FILTERS.has_any() || super::is_envvar_monitoring_enabled()
 }

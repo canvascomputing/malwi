@@ -106,6 +106,13 @@ pub type PyAuditHookFunction =
 pub type PySys_AddAuditHookFn =
     unsafe extern "C" fn(hook: PyAuditHookFunction, user_data: *mut c_void) -> c_int;
 
+/// PyCFunction_GetFunction - get the C function pointer from a PyCFunctionObject
+/// Returns the ml_meth field (the actual C function pointer). Stable API since Python 2.0.
+pub type PyCFunction_GetFunctionFn = unsafe extern "C" fn(op: *mut c_void) -> *mut c_void;
+
+/// PyImport_ImportModule - import a module by name (returns new reference)
+pub type PyImport_ImportModuleFn = unsafe extern "C" fn(name: *const c_char) -> *mut c_void;
+
 /// PyInterpreterState_ThreadHead - get first thread in interpreter
 pub type PyInterpreterState_ThreadHeadFn = unsafe extern "C" fn(interp: *mut c_void) -> *mut c_void;
 
@@ -120,6 +127,7 @@ pub type PyThreadState_UncheckedGetFn = unsafe extern "C" fn() -> *mut c_void;
 
 // PyTrace event types
 pub const PYTRACE_CALL: c_int = 0;
+pub const PYTRACE_C_CALL: c_int = 4;
 
 // =============================================================================
 // PYTHON API STRUCT
@@ -148,6 +156,9 @@ pub struct PythonApi {
     pub err_clear: Option<PyErr_ClearFn>,
     pub err_set_string: Option<PyErr_SetStringFn>,
     pub exc_permission_error: *mut c_void,
+    // C function hooking APIs
+    pub pycfunction_get_function: Option<PyCFunction_GetFunctionFn>,
+    pub import_module: Option<PyImport_ImportModuleFn>,
     // Thread state iteration APIs (for propagating profile to new threads)
     pub interp_thread_head: Option<PyInterpreterState_ThreadHeadFn>,
     pub tstate_next: Option<PyThreadState_NextFn>,
@@ -247,6 +258,17 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         .map(|addr| unsafe { *(addr as *const *mut c_void) })
         .unwrap_or(std::ptr::null_mut());
 
+    // C function hooking APIs (optional - for interceptor-based C→C tracing)
+    let pycfunction_get_function: Option<PyCFunction_GetFunctionFn> =
+        native::find_export(None, "PyCFunction_GetFunction")
+            .ok()
+            .map(|addr| unsafe { std::mem::transmute(addr) });
+
+    let import_module: Option<PyImport_ImportModuleFn> =
+        native::find_export(None, "PyImport_ImportModule")
+            .ok()
+            .map(|addr| unsafe { std::mem::transmute(addr) });
+
     // Thread state iteration APIs (optional - for propagating profile to new threads)
     let interp_thread_head: Option<PyInterpreterState_ThreadHeadFn> =
         native::find_export(None, "PyInterpreterState_ThreadHead")
@@ -290,6 +312,8 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         err_clear,
         err_set_string,
         exc_permission_error,
+        pycfunction_get_function,
+        import_module,
         interp_thread_head,
         tstate_next,
         tstate_get_interp,

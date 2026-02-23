@@ -10,14 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use log::{debug, error};
-use malwi_protocol::RuntimeStack;
 
 use crate::exec::SpawnHandler;
 use crate::native;
 
 use super::ffi::{init_python_api, PyAuditHookFunction, PySys_AddAuditHookFn, PYTHON_API};
 use super::filters::{has_any_filters, matches_filter};
-use super::helpers::{cstr_to_string, extract_tuple_arguments, get_code_filename};
+use super::helpers::{cstr_to_string, extract_tuple_arguments};
 use super::profile::{do_register_profile_hook, set_thread_created, PROFILE_HOOK_REGISTERED};
 use super::stack::capture_current_python_stack;
 
@@ -252,7 +251,7 @@ unsafe extern "C" fn audit_hook(
         if frames.is_empty() {
             None
         } else {
-            Some(RuntimeStack::Python(frames))
+            Some(malwi_protocol::RuntimeStack::Python(frames))
         }
     } else {
         None
@@ -260,28 +259,11 @@ unsafe extern "C" fn audit_hook(
 
     // Extract caller's source location from the current frame
     // For audit events, PyEval_GetFrame returns the caller's frame (borrowed ref — no decref)
-    let (caller_file, caller_line) = {
-        let api = PYTHON_API.get();
-        if let Some(api) = api {
-            let frame = (api.eval_get_frame)();
-            if !frame.is_null() {
-                let code = (api.frame_get_code)(frame);
-                let file = if !code.is_null() {
-                    let f = get_code_filename(code);
-                    (api.py_decref)(code);
-                    f
-                } else {
-                    None
-                };
-                let line = (api.frame_get_line_number)(frame) as u32;
-                // eval_get_frame returns borrowed ref — do NOT decref frame
-                (file, if line > 0 { Some(line) } else { None })
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        }
+    let (caller_file, caller_line) = if let Some(api) = PYTHON_API.get() {
+        let frame = (api.eval_get_frame)();
+        super::helpers::extract_frame_location(frame)
+    } else {
+        (None, None)
     };
 
     let trace_event = crate::tracing::event::python_enter(&event_str)

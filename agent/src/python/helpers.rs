@@ -6,7 +6,7 @@
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 
-use malwi_protocol::Argument;
+use malwi_protocol::{Argument, RuntimeStack};
 
 use super::ffi::PYTHON_API;
 
@@ -164,6 +164,112 @@ pub unsafe fn get_code_argcount(code: *mut c_void) -> usize {
         0
     } else {
         count as usize
+    }
+}
+
+/// Map C extension internal module names to their public Python aliases.
+///
+/// C built-in functions report their *internal* module name, not the public alias.
+/// For example, `os.getpid.__module__` returns `"posix"` (the C extension), not `"os"`.
+fn c_module_alias(module: &str) -> Option<&'static str> {
+    match module {
+        "posix" | "nt" => Some("os"),
+        "_socket" => Some("socket"),
+        "_json" => Some("json"),
+        "_pickle" => Some("pickle"),
+        "_csv" => Some("csv"),
+        "_ssl" => Some("ssl"),
+        "_hashlib" => Some("hashlib"),
+        "_io" => Some("io"),
+        _ => None,
+    }
+}
+
+/// Extract qualified name from a C function object (PYTRACE_C_CALL arg).
+///
+/// Returns `(internal_name, aliased_name)` where:
+/// - `internal_name` is e.g. `"posix.getpid"`
+/// - `aliased_name` is e.g. `Some("os.getpid")` (if alias exists)
+///
+/// # Safety
+/// Caller must ensure `arg` is a valid PyCFunctionObject pointer and GIL is held.
+pub unsafe fn get_c_function_qualified_name(arg: *mut c_void) -> Option<(String, Option<String>)> {
+    if arg.is_null() {
+        return None;
+    }
+
+    let api = PYTHON_API.get()?;
+
+    // Get __name__ attribute (new reference)
+    let name_obj = (api.get_attr_string)(arg, c"__name__".as_ptr());
+    if name_obj.is_null() {
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
+        return None;
+    }
+    let func_name = cstr_to_string((api.unicode_as_utf8)(name_obj));
+    (api.py_decref)(name_obj);
+    let func_name = func_name?;
+
+    // Get __module__ attribute (new reference)
+    let module_obj = (api.get_attr_string)(arg, c"__module__".as_ptr());
+    let module_name = if !module_obj.is_null() {
+        let s = cstr_to_string((api.unicode_as_utf8)(module_obj));
+        (api.py_decref)(module_obj);
+        s
+    } else {
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
+        None
+    };
+
+    // Try __self__.__class__ path for bound methods if module is missing
+    let module_name = if module_name.as_ref().is_some_and(|m| !m.is_empty()) {
+        module_name
+    } else {
+        let self_obj = (api.get_attr_string)(arg, c"__self__".as_ptr());
+        if !self_obj.is_null() {
+            let class_obj = (api.get_attr_string)(self_obj, c"__class__".as_ptr());
+            let result = if !class_obj.is_null() {
+                let mod_obj = (api.get_attr_string)(class_obj, c"__module__".as_ptr());
+                let m = if !mod_obj.is_null() {
+                    let s = cstr_to_string((api.unicode_as_utf8)(mod_obj));
+                    (api.py_decref)(mod_obj);
+                    s
+                } else {
+                    if let Some(err_clear) = api.err_clear {
+                        err_clear();
+                    }
+                    None
+                };
+                (api.py_decref)(class_obj);
+                m
+            } else {
+                if let Some(err_clear) = api.err_clear {
+                    err_clear();
+                }
+                None
+            };
+            (api.py_decref)(self_obj);
+            result
+        } else {
+            if let Some(err_clear) = api.err_clear {
+                err_clear();
+            }
+            None
+        }
+    };
+
+    // Compose qualified name
+    match module_name {
+        Some(ref module) if !module.is_empty() && module != "builtins" => {
+            let internal = format!("{}.{}", module, func_name);
+            let aliased = c_module_alias(module).map(|alias| format!("{}.{}", alias, func_name));
+            Some((internal, aliased))
+        }
+        _ => Some((func_name, None)),
     }
 }
 
@@ -535,6 +641,83 @@ pub unsafe fn extract_function_arguments(frame: *mut c_void) -> Vec<Argument> {
     (api.py_decref)(locals);
 
     arguments
+}
+
+/// Extract source location directly from the given frame.
+///
+/// Returns `(filename, line_number)` from the frame's code object.
+///
+/// # Safety
+/// Caller must ensure frame is a valid PyFrameObject pointer and GIL is held.
+pub unsafe fn extract_frame_location(frame: *mut c_void) -> (Option<String>, Option<u32>) {
+    let api = match PYTHON_API.get() {
+        Some(api) => api,
+        None => return (None, None),
+    };
+
+    if frame.is_null() {
+        return (None, None);
+    }
+
+    let code = (api.frame_get_code)(frame);
+    let file = if !code.is_null() {
+        let f = get_code_filename(code);
+        (api.py_decref)(code);
+        f
+    } else {
+        None
+    };
+    let line = (api.frame_get_line_number)(frame) as u32;
+    (file, if line > 0 { Some(line) } else { None })
+}
+
+/// Extract source location from the parent (caller) of the given frame.
+///
+/// Walks one frame back to get the caller's file and line number.
+///
+/// # Safety
+/// Caller must ensure frame is a valid PyFrameObject pointer and GIL is held.
+pub unsafe fn extract_caller_location(frame: *mut c_void) -> (Option<String>, Option<u32>) {
+    let api = match PYTHON_API.get() {
+        Some(api) => api,
+        None => return (None, None),
+    };
+
+    let back = (api.frame_get_back)(frame);
+    if back.is_null() {
+        return (None, None);
+    }
+
+    let code = (api.frame_get_code)(back);
+    let file = if !code.is_null() {
+        let f = get_code_filename(code);
+        (api.py_decref)(code);
+        f
+    } else {
+        None
+    };
+    let line = (api.frame_get_line_number)(back) as u32;
+    (api.py_decref)(back);
+    (file, if line > 0 { Some(line) } else { None })
+}
+
+/// Conditionally capture a Python stack trace from the given frame.
+///
+/// Returns `Some(RuntimeStack::Python(...))` if `capture` is true and the
+/// stack is non-empty, `None` otherwise.
+///
+/// # Safety
+/// Caller must ensure frame is a valid PyFrameObject pointer and GIL is held.
+pub unsafe fn maybe_capture_stack(frame: *mut c_void, capture: bool) -> Option<RuntimeStack> {
+    if !capture || frame.is_null() {
+        return None;
+    }
+    let frames = super::stack::capture_python_stack(frame);
+    if frames.is_empty() {
+        None
+    } else {
+        Some(RuntimeStack::Python(frames))
+    }
 }
 
 /// Send trace event, handling review mode if enabled.

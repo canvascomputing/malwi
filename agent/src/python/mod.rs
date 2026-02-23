@@ -19,6 +19,7 @@ mod ffi;
 mod filters;
 pub mod format;
 mod helpers;
+mod hooks;
 mod profile;
 mod stack;
 pub mod version;
@@ -80,14 +81,28 @@ pub fn start_audit_registration_task() {
 
 /// Enable Python envvar monitoring.
 ///
-/// Adds a filter for `_Environ.__getitem__` so the profile hook catches
-/// `os.environ['KEY']`, `os.environ.get('KEY')`, and `os.getenv('KEY')`.
+/// The profile hook handles `_Environ.__getitem__` via a direct
+/// `is_envvar_monitoring_enabled()` check — no filter entry needed.
+///
+/// IMPORTANT: Do NOT add `_Environ.__getitem__` to PYTHON_FILTERS here.
+/// An earlier implementation added it as a filter entry so that
+/// `has_any_filters()` would return true and trigger profile hook
+/// registration. However, filter entries are also fed to
+/// `register_pending_hooks()`, which calls `PyImport_ImportModule` on
+/// the module portion. `_Environ` is not a top-level importable module
+/// (it is an internal class in `os.py`), and attempting to import it
+/// crashes Python 3.10. Instead, this function registers the profile
+/// hook directly and `has_any_filters()` checks the envvar monitoring
+/// flag separately.
 pub fn enable_envvar_monitoring() {
     if PYTHON_ENVVAR_MONITORING.swap(true, Ordering::SeqCst) {
         return; // Already enabled
     }
-    // Hook the common funnel point for all os.environ access
-    add_filter("_Environ.__getitem__", false);
+    // Register the profile hook directly — not via add_filter.
+    // See doc comment above for Python 3.10 rationale.
+    if is_loaded() && !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) {
+        profile::register_profile_hook_with_gil();
+    }
 }
 
 /// Check if Python envvar monitoring is enabled.
