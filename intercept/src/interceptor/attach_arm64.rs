@@ -338,7 +338,15 @@ pub(crate) fn attach(
     // Validate that the required number of instructions can be safely relocated.
     // can_relocate stops after BL/BLR boundaries (which modify LR). SVC is NOT
     // a boundary — it is position-independent (the relocator copies it verbatim).
-    let (max_safe, _scratch) = unsafe { can_relocate(function_address as *const u32, n_insns) };
+    //
+    // Always scan 4 instructions (the max prologue patch size) for scratch register
+    // conflicts, even if only 1 instruction needs relocation. The trampoline always
+    // uses the scratch register for the jump-back sequence after the relocated code.
+    let (max_safe, scratch) = unsafe { can_relocate(function_address as *const u32, 4) };
+    if scratch.is_none() {
+        // Both x16 and x17 are used in the prologue — hooking would clobber a live register.
+        return Err(HookError::WrongSignature);
+    }
     if max_safe < n_insns {
         // Reduce patch size to fit within the safe relocation boundary.
         let dist = (wrapper_addr_estimate as i64 - func_addr as i64).unsigned_abs() as usize;

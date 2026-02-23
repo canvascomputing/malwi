@@ -945,4 +945,31 @@ mod tests {
 
         unsafe { restore_slots(&patched) };
     }
+
+    #[test]
+    fn resolve_address_module_finds_malloc_module() {
+        let malloc_addr = find_global_export_by_name("malloc").expect("malloc should resolve");
+        let module_name =
+            resolve_address_module(malloc_addr).expect("should resolve malloc to a module");
+        // On macOS, malloc lives in libsystem_malloc.dylib.
+        assert!(
+            module_name.contains("malloc"),
+            "expected module containing 'malloc', got: {module_name}"
+        );
+    }
+
+    #[test]
+    fn find_module_by_name_finds_dyld() {
+        let modules = enumerate_modules();
+        // Pick any module that is actually loaded to test find_module_by_name.
+        let first = modules.first().expect("at least one module should exist");
+        let found = find_module_by_name(&first.name).expect("should find module by name");
+        assert_eq!(found.name, first.name);
+        assert_eq!(found.base_address, first.base_address);
+    }
+
+    #[test]
+    fn find_module_by_name_returns_none_for_missing() {
+        assert!(find_module_by_name("nonexistent_module_xyz_999").is_none());
+    }
 }

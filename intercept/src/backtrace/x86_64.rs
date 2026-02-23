@@ -119,6 +119,52 @@ mod tests {
     }
 
     #[test]
+    fn backtrace_from_current_frame() {
+        // Capture the current RBP and RIP via inline asm, then walk the real stack.
+        let rbp: u64;
+        let rip: u64;
+        unsafe {
+            core::arch::asm!(
+                "lea {rip}, [rip]",
+                "mov {rbp}, rbp",
+                rip = out(reg) rip,
+                rbp = out(reg) rbp,
+            );
+        }
+
+        let ctx = X86_64CpuContext {
+            rip,
+            rsp: 0,
+            rflags: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+        };
+
+        let frames = capture_backtrace(&ctx, 32);
+        // We should get at least the current frame (RIP) + one caller.
+        assert!(
+            frames.len() >= 2,
+            "expected at least 2 frames, got {}",
+            frames.len()
+        );
+        // First frame should be our captured RIP.
+        assert_eq!(frames[0], rip as usize);
+    }
+
+    #[test]
     fn test_capture_backtrace_does_not_crash_with_bad_rbp() {
         let ctx = X86_64CpuContext {
             rip: 0x4000_0000,

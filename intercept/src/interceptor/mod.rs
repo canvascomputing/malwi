@@ -153,6 +153,22 @@ impl Interceptor {
 
     pub fn begin_transaction(&self) {}
     pub fn end_transaction(&self) {}
+
+    /// Clear all interceptor state (attach_map + replace_map).
+    ///
+    /// This does NOT restore patched bytes — callers must `detach`/`revert` first.
+    /// Used to recover from poisoned state (e.g. a prior test panicked mid-hook).
+    #[cfg(test)]
+    pub fn reset(&self) {
+        self.attach_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.replace_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
 }
 
 #[cfg(test)]
@@ -168,8 +184,11 @@ mod tests {
     use std::sync::MutexGuard;
 
     // Use the crate-level lock so patcher tests and interceptor tests don't collide.
+    // Also reset interceptor state to recover from prior panics that left stale entries.
     fn lock_hook_tests() -> MutexGuard<'static, ()> {
-        crate::lock_hook_tests()
+        let guard = crate::lock_hook_tests();
+        Interceptor::obtain().reset();
+        guard
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -1352,7 +1371,11 @@ mod tests {
         let (max_safe, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         // SVC is NOT a boundary — all 4 instructions can be safely relocated.
         assert_eq!(max_safe, 4, "SVC should not stop relocation");
-        assert_eq!(scratch, Reg::X16, "x16 should be available (only x8 used)");
+        assert_eq!(
+            scratch,
+            Some(Reg::X16),
+            "x16 should be available (only x8 used)"
+        );
     }
 
     /// Test can_relocate with a prologue that uses x16.
@@ -1372,7 +1395,7 @@ mod tests {
         let (_max, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(
             scratch,
-            Reg::X17,
+            Some(Reg::X17),
             "should fall back to x17 when x16 is used"
         );
     }
@@ -3803,5 +3826,254 @@ mod tests {
             restored_first_byte, orig_first_byte,
             "original bytes restored after revert"
         );
+    }
+
+    // ── Unhookable function tests ──────────────────────────────────
+
+    /// Emit a function that uses both x16 and x17 (no scratch register available).
+    /// Matches frida-gum's `i_can_has_attachability` test pattern.
+    /// The interceptor must reject this because the trampoline/wrapper needs a
+    /// scratch register for branch targets, and hooking would clobber a live register.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn attach_to_unhookable_function_returns_error() {
+        let _g = lock_hook_tests();
+
+        let mut alloc = CodeAllocator::default();
+        let slice = alloc.alloc_any().expect("alloc");
+        unsafe {
+            let mut w = Arm64Writer::new(slice.data, slice.size, slice.data as u64);
+            // MOV X16, #13  — occupies x16
+            w.put_u32_raw(0xD28001B0);
+            // MOV X17, #37  — occupies x17
+            w.put_u32_raw(0xD28004B1);
+            w.put_ret();
+            // Padding for relocation
+            w.put_u32_raw(0xD503201F); // NOP
+            alloc.make_executable(&slice).expect("rx");
+        }
+
+        let i = Interceptor::obtain();
+        let listener = CallListener {
+            on_enter: None,
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        let result = i.attach(slice.pc as *mut c_void, listener);
+        assert!(
+            result.is_err(),
+            "attach to function using both x16 and x17 should fail, got Ok"
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn attach_to_unhookable_function_returns_error() {
+        let _g = lock_hook_tests();
+
+        let mut alloc = CodeAllocator::default();
+        let slice = alloc.alloc_any().expect("alloc");
+        unsafe {
+            let mut w = X86_64Writer::new(slice.data, slice.size, slice.data as u64);
+            w.put_ret(); // single RET — only 1 byte, too short for a 5-byte jmp
+            alloc.make_executable(&slice).expect("rx");
+        }
+        let f: extern "C" fn() = unsafe { core::mem::transmute(slice.pc) };
+
+        f();
+
+        let i = Interceptor::obtain();
+        let listener = CallListener {
+            on_enter: None,
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        let result = i.attach(f as *mut c_void, listener);
+        assert!(result.is_err(), "attach to a bare ret should fail, got Ok");
+    }
+
+    // ── Reentrancy tests ───────────────────────────────────────────
+
+    /// Port of x86_64's on_enter_calls_hooked_function to arm64.
+    /// The on_enter callback calls the hooked function itself (reentrancy);
+    /// verify no infinite loop and both calls return correct values.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn on_enter_calls_hooked_function() {
+        let _g = lock_hook_tests();
+
+        use core::sync::atomic::AtomicI64;
+
+        static REENTRY_DEPTH: AtomicU32 = AtomicU32::new(0);
+        static REENTRY_RESULT: AtomicI64 = AtomicI64::new(0);
+
+        unsafe extern "C" fn reentry_on_enter(ctx: *mut InvocationContext, ud: *mut c_void) {
+            let depth = REENTRY_DEPTH.fetch_add(1, Ordering::Relaxed);
+            if depth == 0 {
+                // First entry: call the hooked function from within the callback.
+                let fptr: extern "C" fn(i64) -> i64 = core::mem::transmute(ud);
+                let result = fptr(99);
+                REENTRY_RESULT.store(result, Ordering::Relaxed);
+            }
+            // depth >= 1: don't recurse further to prevent infinite loop.
+            let _ = ctx;
+        }
+
+        REENTRY_DEPTH.store(0, Ordering::Relaxed);
+        REENTRY_RESULT.store(0, Ordering::Relaxed);
+
+        let i = Interceptor::obtain();
+        let (_f_mem, f) = make_add_const(1); // f(x) = x + 1
+
+        let listener = CallListener {
+            on_enter: Some(reentry_on_enter),
+            on_leave: None,
+            // Pass function pointer as user_data so the callback can call the hooked function.
+            user_data: f as *mut c_void,
+        };
+        i.attach(f as *mut c_void, listener).unwrap();
+
+        let result = f(42);
+        // The outer call goes through the wrapper; the inner call from on_enter
+        // also goes through the wrapper (re-entry).
+        assert_eq!(
+            REENTRY_DEPTH.load(Ordering::Relaxed),
+            2,
+            "re-entry must happen"
+        );
+        // Inner call: f(99) = 100; outer call: f(42) = 43
+        assert_eq!(
+            REENTRY_RESULT.load(Ordering::Relaxed),
+            100,
+            "inner call result"
+        );
+        assert_eq!(result, 43, "outer call result");
+
+        i.detach(&listener);
+    }
+
+    // ── Concurrent stress tests ────────────────────────────────────
+
+    /// One thread calls a function in a tight loop while another thread
+    /// attaches and detaches a listener repeatedly. Verifies no crash
+    /// and the function always returns a valid result.
+    /// Modeled after frida-gum's `attach_detach_torture`.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn attach_detach_concurrent_stress() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let _g = lock_hook_tests();
+
+        static STRESS_ENTER: AtomicU32 = AtomicU32::new(0);
+
+        unsafe extern "C" fn stress_on_enter(_ctx: *mut InvocationContext, _ud: *mut c_void) {
+            STRESS_ENTER.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let i = Interceptor::obtain();
+        let (_f_mem, f) = make_add_const(1);
+        let f_addr = f as usize;
+
+        STRESS_ENTER.store(0, Ordering::Relaxed);
+
+        let listener = CallListener {
+            on_enter: Some(stress_on_enter),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        i.attach(f as *mut c_void, listener).unwrap();
+
+        // Verify hook works before starting the concurrent test.
+        assert_eq!(f(1), 2);
+        assert!(
+            STRESS_ENTER.load(Ordering::Relaxed) > 0,
+            "hook must fire after attach"
+        );
+
+        // Use a flag to keep the caller thread running until we're done.
+        let done = Arc::new(AtomicBool::new(false));
+        let done2 = done.clone();
+
+        let caller = std::thread::spawn(move || {
+            let f: extern "C" fn(i64) -> i64 = unsafe { core::mem::transmute(f_addr) };
+            let mut n = 0i64;
+            while !done2.load(Ordering::Relaxed) {
+                let result = f(n);
+                // Whether hooked or not, the on_enter callback doesn't modify args/retval,
+                // so the result must always be n + 1.
+                assert_eq!(result, n + 1, "call #{n} returned wrong value");
+                n = n.wrapping_add(1);
+            }
+        });
+
+        // Detach/reattach cycle while the caller is active
+        for _ in 0..100 {
+            i.detach(&listener);
+            std::thread::yield_now();
+            let _ = i.attach(f as *mut c_void, listener);
+        }
+
+        done.store(true, Ordering::Relaxed);
+        caller.join().expect("caller thread panicked");
+        i.detach(&listener);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn attach_detach_concurrent_stress() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let _g = lock_hook_tests();
+
+        static STRESS_ENTER: AtomicU32 = AtomicU32::new(0);
+
+        unsafe extern "C" fn stress_on_enter(_ctx: *mut InvocationContext, _ud: *mut c_void) {
+            STRESS_ENTER.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let i = Interceptor::obtain();
+        let (_f_mem, f) = make_add_const(1);
+        let f_addr = f as usize;
+
+        STRESS_ENTER.store(0, Ordering::Relaxed);
+
+        let listener = CallListener {
+            on_enter: Some(stress_on_enter),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+        i.attach(f as *mut c_void, listener).unwrap();
+
+        assert_eq!(f(1), 2);
+        assert!(
+            STRESS_ENTER.load(Ordering::Relaxed) > 0,
+            "hook must fire after attach"
+        );
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done2 = done.clone();
+
+        let caller = std::thread::spawn(move || {
+            let f: extern "C" fn(i64) -> i64 = unsafe { core::mem::transmute(f_addr) };
+            let mut n = 0i64;
+            while !done2.load(Ordering::Relaxed) {
+                let result = f(n);
+                assert_eq!(result, n + 1, "call #{n} returned wrong value");
+                n = n.wrapping_add(1);
+            }
+        });
+
+        for _ in 0..100 {
+            i.detach(&listener);
+            std::thread::yield_now();
+            let _ = i.attach(f as *mut c_void, listener);
+        }
+
+        done.store(true, Ordering::Relaxed);
+        caller.join().expect("caller thread panicked");
+        i.detach(&listener);
     }
 }

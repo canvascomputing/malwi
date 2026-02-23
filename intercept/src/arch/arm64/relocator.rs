@@ -279,7 +279,7 @@ fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
 ///
 /// # Safety
 /// `input` must point to at least `max_insns` valid ARM64 instructions.
-pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) {
+pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Option<Reg>) {
     let mut limit = max_insns;
     let mut x16_used = false;
     let mut x17_used = false;
@@ -316,13 +316,14 @@ pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Reg) 
     }
 
     let scratch = if !x16_used {
-        Reg::X16
+        Some(Reg::X16)
     } else if !x17_used {
-        Reg::X17
+        Some(Reg::X17)
     } else {
-        // Both used - we'll still use X16 but this is a known limitation.
-        // In practice, prologues rarely use both x16 and x17.
-        Reg::X16
+        // Both x16 and x17 are used in the prologue — no safe scratch register.
+        // The trampoline and wrapper need a scratch register for branch targets,
+        // so hooking this function would silently clobber a live register.
+        None
     };
 
     (limit, scratch)
@@ -721,7 +722,7 @@ mod tests {
             limit, 2,
             "BLR should stop relocation (include it, stop after)"
         );
-        assert_eq!(scratch, Reg::X17, "x17 since x16 is used");
+        assert_eq!(scratch, Some(Reg::X17), "x17 since x16 is used");
     }
 
     /// RET is NOT a relocation boundary.
@@ -735,7 +736,7 @@ mod tests {
         ];
         let (limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
         assert_eq!(limit, 4, "RET is not a relocation boundary");
-        assert_eq!(scratch, Reg::X16, "x16 available (no x16/x17 usage)");
+        assert_eq!(scratch, Some(Reg::X16), "x16 available (no x16/x17 usage)");
     }
 
     #[test]
@@ -894,7 +895,11 @@ mod tests {
         //         = 0xA9BF43F3
         let insns: [u32; 1] = [0xA9BF43F3];
         let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
-        assert_eq!(scratch, Reg::X17, "X16 in Rt2 should cause fallback to X17");
+        assert_eq!(
+            scratch,
+            Some(Reg::X17),
+            "X16 in Rt2 should cause fallback to X17"
+        );
     }
 
     /// STP X19, X17, [SP, #-16]! has X17 in Rt2 (bits 14-10) — scratch should be X16.
@@ -906,7 +911,7 @@ mod tests {
         let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
         assert_eq!(
             scratch,
-            Reg::X16,
+            Some(Reg::X16),
             "X17 in Rt2 should cause X16 to be chosen"
         );
     }
