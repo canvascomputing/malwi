@@ -1237,7 +1237,6 @@ fn category_from_hook_type(hook_type: &HookType) -> malwi_protocol::EventCategor
     use malwi_protocol::EventCategory;
     match hook_type {
         HookType::Exec => EventCategory::CommandExec,
-        HookType::DirectSyscall => EventCategory::SyscallDirect,
         HookType::EnvVar => EventCategory::EnvVarAccess,
         _ => EventCategory::FunctionCall,
     }
@@ -1555,11 +1554,7 @@ fn print_trace_event(
     }
 
     let name = display_name(&event.function);
-    let color = if event.hook_type == HookType::DirectSyscall {
-        RED
-    } else {
-        LIGHT_BLUE
-    };
+    let color = LIGHT_BLUE;
     let src = format_source_location(&event.source_file, event.source_line);
 
     if event.hook_type == HookType::Exec {

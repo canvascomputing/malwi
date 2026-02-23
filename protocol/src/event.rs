@@ -14,8 +14,6 @@ pub enum HookType {
     Nodejs,
     /// Exec filter for child process commands
     Exec,
-    /// Direct syscall detected by syscall tracing
-    DirectSyscall,
     /// Environment variable access (bash find_variable with att_exported)
     EnvVar,
 }
@@ -109,7 +107,6 @@ pub enum EventCategory {
     NetworkAccess,
     FileAccess,
     CommandExec,
-    SyscallDirect,
     EnvVarAccess,
 }
 

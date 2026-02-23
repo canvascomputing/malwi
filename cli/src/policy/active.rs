@@ -211,10 +211,6 @@ impl ActivePolicy {
                 });
                 self.engine.evaluate_execution(&full_cmd)
             }
-            HookType::DirectSyscall => {
-                let syscall_name = func.strip_prefix("syscall:").unwrap_or(func);
-                self.engine.evaluate_syscall(syscall_name)
-            }
             HookType::EnvVar => self.engine.evaluate_envvar(func),
         };
 
@@ -283,8 +279,7 @@ fn hook_type_discriminant(ht: &HookType) -> u8 {
         HookType::Python => 1,
         HookType::Nodejs => 2,
         HookType::Exec => 3,
-        HookType::DirectSyscall => 4,
-        HookType::EnvVar => 5,
+        HookType::EnvVar => 4,
     }
 }
 
@@ -354,15 +349,6 @@ fn exec_filter_name(pattern: &str) -> String {
 /// Convert a PolicyHookSpec to a HookConfig for the agent.
 fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig {
     match spec.kind {
-        HookSpecKind::Syscall => {
-            return HookConfig {
-                hook_type: HookType::DirectSyscall,
-                symbol: spec.pattern.clone(),
-                arg_count: None,
-                capture_return: false,
-                capture_stack: false,
-            };
-        }
         HookSpecKind::EnvVar => {
             return HookConfig {
                 hook_type: HookType::EnvVar,

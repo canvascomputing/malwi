@@ -313,22 +313,6 @@ impl PolicyEngine {
         self.evaluate_with_key(&key, name, &[])
     }
 
-    /// Evaluate a direct syscall name (global `syscalls` section).
-    pub fn evaluate_syscall(&self, name: &str) -> PolicyDecision {
-        let key = SectionKey::global(Category::Syscalls);
-        self.evaluate_with_key(&key, name, &[])
-    }
-
-    /// Check if the policy has a non-noop `syscalls` section.
-    /// Used to determine whether the syscall monitor should be enabled.
-    pub fn has_syscalls_section(&self) -> bool {
-        let key = SectionKey::global(Category::Syscalls);
-        self.policy
-            .get_section(&key)
-            .map(|s| s.mode != EnforcementMode::Noop && !s.is_empty())
-            .unwrap_or(false)
-    }
-
     /// Core evaluation logic.
     fn evaluate_with_key(
         &self,
@@ -438,8 +422,6 @@ pub enum HookSpecKind {
     Function,
     /// An execution/command hook (exec filter).
     Command,
-    /// A direct syscall detection hook.
-    Syscall,
     /// An environment variable access hook.
     EnvVar,
 }
@@ -487,13 +469,6 @@ impl PolicyEngine {
                         kind,
                         &mut specs,
                     );
-                }
-                Category::Syscalls => {
-                    specs.push(PolicyHookSpec {
-                        runtime: None,
-                        pattern: "*".to_string(),
-                        kind: HookSpecKind::Syscall,
-                    });
                 }
                 Category::Files => {
                     // Hook open/openat to monitor file access.
@@ -671,7 +646,6 @@ fn format_section_name(key: &SectionKey) -> String {
         Category::EnvVars => "envvars",
         Category::Http | Category::Endpoints | Category::Domains | Category::Protocols => "network",
         Category::Execution => "commands",
-        Category::Syscalls => "syscalls",
     };
 
     match key.runtime {
@@ -1849,154 +1823,6 @@ network:
         let d = engine.evaluate_http_url("http://example.com/insecure", "example.com/insecure");
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.mode, EnforcementMode::Warn);
-    }
-
-    // =====================================================================
-    // Tests for evaluate_syscall()
-    // =====================================================================
-
-    #[test]
-    fn test_syscall_deny_all() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  deny:
-    - "*"
-"#,
-        );
-
-        let d = engine.evaluate_syscall("socket");
-        assert_eq!(d.action, PolicyAction::Deny);
-
-        let d = engine.evaluate_syscall("connect");
-        assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_syscall_specific_deny() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  deny:
-    - socket
-    - connect
-"#,
-        );
-
-        let d = engine.evaluate_syscall("socket");
-        assert_eq!(d.action, PolicyAction::Deny);
-
-        let d = engine.evaluate_syscall("connect");
-        assert_eq!(d.action, PolicyAction::Deny);
-
-        // Unlisted syscall should be allowed
-        let d = engine.evaluate_syscall("read");
-        assert_eq!(d.action, PolicyAction::Allow);
-    }
-
-    #[test]
-    fn test_syscall_noop() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  noop:
-    - "*"
-"#,
-        );
-
-        // Noop mode — everything allowed
-        let d = engine.evaluate_syscall("socket");
-        assert_eq!(d.action, PolicyAction::Allow);
-    }
-
-    #[test]
-    fn test_has_syscalls_section() {
-        // With syscalls section
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  deny:
-    - "*"
-"#,
-        );
-        assert!(engine.has_syscalls_section());
-
-        // Without syscalls section
-        let engine = engine_from_yaml("version: 1\n");
-        assert!(!engine.has_syscalls_section());
-
-        // With noop syscalls section
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  noop:
-    - "*"
-"#,
-        );
-        assert!(!engine.has_syscalls_section());
-    }
-
-    #[test]
-    fn test_syscall_warn_mode() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  warn:
-    - "*"
-"#,
-        );
-
-        let d = engine.evaluate_syscall("execve");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.mode, EnforcementMode::Warn);
-    }
-
-    #[test]
-    fn test_extract_hook_specs_includes_syscalls() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-python:
-  deny:
-    - eval
-syscalls:
-  deny:
-    - "*"
-"#,
-        );
-
-        let specs = engine.extract_hook_specs();
-        let syscall_specs: Vec<_> = specs
-            .iter()
-            .filter(|s| s.kind == HookSpecKind::Syscall)
-            .collect();
-        assert_eq!(syscall_specs.len(), 1);
-        assert_eq!(syscall_specs[0].pattern, "*");
-    }
-
-    #[test]
-    fn test_extract_hook_specs_skips_noop_syscalls() {
-        let engine = engine_from_yaml(
-            r#"
-version: 1
-syscalls:
-  noop:
-    - "*"
-"#,
-        );
-
-        let specs = engine.extract_hook_specs();
-        let syscall_specs: Vec<_> = specs
-            .iter()
-            .filter(|s| s.kind == HookSpecKind::Syscall)
-            .collect();
-        assert!(syscall_specs.is_empty());
     }
 
     #[test]

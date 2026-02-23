@@ -207,8 +207,6 @@ pub enum Category {
     Http,
     /// Command execution.
     Execution,
-    /// Direct syscall detection.
-    Syscalls,
 }
 
 impl Category {
@@ -223,7 +221,6 @@ impl Category {
             "files" => Some(Self::Files),
             "envvars" | "env" | "environment" => Some(Self::EnvVars),
             "commands" => Some(Self::Execution),
-            "syscalls" => Some(Self::Syscalls),
             _ => None,
         }
     }

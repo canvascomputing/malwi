@@ -223,8 +223,6 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
         RED
     } else if is_warn {
         YELLOW
-    } else if event.hook_type == HookType::DirectSyscall {
-        RED
     } else {
         LIGHT_BLUE
     };

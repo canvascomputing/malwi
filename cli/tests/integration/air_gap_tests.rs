@@ -133,12 +133,6 @@ fn test_air_gap_bypass_attempts() {
             stdout,
         );
     });
-
-    // ── Vector 6: Direct syscall (inline asm) — NOT YET IMPLEMENTED ─
-    // direct_syscall_target uses raw SVC/SYSCALL instructions to create
-    // a socket without going through libc. This vector requires the
-    // syscall monitor which is not yet implemented in malwi-hook.
-    // TODO: Re-enable when syscall detection is re-implemented.
 }
 
 /// Exfiltration-specific vectors: attempts to smuggle data out through

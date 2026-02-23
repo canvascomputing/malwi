@@ -9,7 +9,6 @@ pub mod http_client; // WebSocket communication with CLI
 pub mod native; // Native function tracing (intercept hooks)
 pub mod nodejs; // Node.js tracing (addon, bytecode hooks, filters)
 pub mod python; // Python tracing (sys.setprofile, audit hooks)
-pub mod syscall; // Direct syscall detection
 pub mod tracing; // Shared infrastructure (thread, time, filter, event)
 
 #[cfg(test)]
@@ -80,8 +79,6 @@ pub struct Agent {
     #[cfg(unix)]
     fork_monitor: Mutex<Option<ForkMonitor>>,
     spawn_monitor: Mutex<Option<SpawnMonitor>>,
-    /// Syscall monitor for direct syscall detection (opt-in).
-    syscall_monitor: Mutex<Option<syscall::SyscallMonitor>>,
 }
 
 impl Agent {
@@ -109,7 +106,6 @@ impl Agent {
             #[cfg(unix)]
             fork_monitor: Mutex::new(None),
             spawn_monitor: Mutex::new(None),
-            syscall_monitor: Mutex::new(None),
         })
     }
 
@@ -210,10 +206,6 @@ impl Agent {
                 // We may be loaded before Python's exported symbols are visible, so retry.
                 python::start_audit_registration_task();
                 debug!("Added exec filter: {}", config.symbol);
-            }
-            HookType::DirectSyscall => {
-                // DirectSyscall is not a hookable type — handled by syscall_monitor, not Interceptor.
-                debug!("Ignoring DirectSyscall hook config for {}", config.symbol);
             }
             HookType::EnvVar => {
                 // EnvVar monitoring: hook bash's find_variable if this is a bash process.
@@ -333,15 +325,6 @@ impl Agent {
         // Enable child gating unconditionally
         self.enable_child_gating_internal();
 
-        // Enable direct syscall detection if any DirectSyscall hook is present
-        if config
-            .hooks
-            .iter()
-            .any(|h| h.hook_type == HookType::DirectSyscall)
-        {
-            self.enable_syscall_monitor();
-        }
-
         // Enumerate loaded modules for CLI-side symbol resolution
         let modules: Vec<malwi_protocol::ModuleInfo> = native::enumerate_modules()
             .into_iter()
@@ -378,24 +361,6 @@ impl Agent {
         )?;
 
         Ok(())
-    }
-
-    /// Enable scan+patch syscall monitor for direct syscall detection.
-    fn enable_syscall_monitor(&self) {
-        let mut guard = self
-            .syscall_monitor
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if guard.is_some() {
-            return;
-        }
-        match unsafe { syscall::SyscallMonitor::new() } {
-            Some(monitor) => {
-                info!("Direct syscall detection enabled (scan+patch)");
-                *guard = Some(monitor);
-            }
-            None => warn!("Failed to enable direct syscall detection"),
-        }
     }
 
     /// Internal: install monitors.

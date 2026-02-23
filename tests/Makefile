@@ -26,7 +26,7 @@ else
 endif
 
 # All targets
-TARGETS = simple_target multithread spawner forker test_target malicious_target malicious_lib.$(SHLIB_EXT) direct_syscall_target
+TARGETS = simple_target multithread spawner forker test_target malicious_target malicious_lib.$(SHLIB_EXT)
 
 # pac_target only on arm64 (requires -mbranch-protection=standard)
 ifeq ($(UNAME_M),arm64)
@@ -69,9 +69,6 @@ malicious_lib.$(SHLIB_EXT): malicious_lib.c
 	$(CC) $(SHLIB_FLAGS) -Wall -g -O0 -o $@ $<
 
 malicious_target: malicious_target.c
-	$(CC) $(CFLAGS) -o $@ $<
-
-direct_syscall_target: direct_syscall_target.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 pac_target: pac_target.c
