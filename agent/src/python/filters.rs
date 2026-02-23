@@ -10,7 +10,7 @@ use log::debug;
 use crate::tracing::FilterManager;
 
 use super::profile::register_profile_hook_with_gil;
-use super::{is_python_loaded, PROFILE_HOOK_REGISTERED};
+use super::{is_loaded, PROFILE_HOOK_REGISTERED};
 
 use std::sync::atomic::Ordering;
 
@@ -22,7 +22,7 @@ pub static PYTHON_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| {
         Box::new(|_pattern, _capture_stack| {
             // Eagerly register profile hook now that we have filters
             // This ensures fast scripts are traced before they complete
-            if is_python_loaded() && !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) {
+            if is_loaded() && !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) {
                 debug!("Eagerly registering profile hook after filter added");
                 register_profile_hook_with_gil();
             }

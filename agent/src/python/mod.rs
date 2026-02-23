@@ -14,6 +14,7 @@
 //! - `helpers`: Internal helper functions for Python introspection
 
 mod audit;
+mod detect;
 mod ffi;
 mod filters;
 pub mod format;
@@ -24,8 +25,6 @@ pub mod version;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::native;
-
 /// Whether Python envvar monitoring is enabled.
 static PYTHON_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
 
@@ -33,13 +32,10 @@ static PYTHON_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
 pub(crate) use profile::PROFILE_HOOK_REGISTERED;
 
 // =============================================================================
-// PUBLIC API
+// PUBLIC API — Standard runtime convention
 // =============================================================================
 
-/// Check if Python runtime is loaded in the process.
-pub fn is_python_loaded() -> bool {
-    native::find_export(None, "Py_GetVersion").is_ok()
-}
+pub use detect::{detected_version, is_loaded};
 
 /// Add a Python function pattern to the filter list.
 /// Supports glob patterns like "os.*" or "*.spawn".
@@ -48,8 +44,19 @@ pub fn is_python_loaded() -> bool {
 /// # Arguments
 /// * `pattern` - Glob pattern to match function names
 /// * `capture_stack` - Whether to capture Python call stack for matched functions
-pub fn add_python_filter(pattern: &str, capture_stack: bool) {
+pub fn add_filter(pattern: &str, capture_stack: bool) {
     filters::add_filter(pattern, capture_stack);
+}
+
+/// Check if qualified function name matches any registered filter.
+/// Returns (matches, capture_stack).
+pub fn check_filter(name: &str) -> (bool, bool) {
+    filters::matches_filter(name)
+}
+
+/// Check if any Python filters are registered.
+pub fn has_filters() -> bool {
+    filters::has_any_filters()
 }
 
 /// Check if profile hook is registered.
@@ -80,7 +87,7 @@ pub fn enable_envvar_monitoring() {
         return; // Already enabled
     }
     // Hook the common funnel point for all os.environ access
-    add_python_filter("_Environ.__getitem__", false);
+    add_filter("_Environ.__getitem__", false);
 }
 
 /// Check if Python envvar monitoring is enabled.

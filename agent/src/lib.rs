@@ -163,9 +163,9 @@ impl Agent {
             }
 
             // Send Node.js version to CLI once it becomes available.
-            // detect_node_version() is a single OnceLock read — negligible overhead.
+            // detected_version() is a single OnceLock read — negligible overhead.
             if nodejs_version_pending {
-                if let Some(v) = nodejs::addon::detect_node_version() {
+                if let Some(v) = nodejs::detected_version() {
                     let _ = self.http.send_runtime_info(
                         std::process::id(),
                         "nodejs",
@@ -196,7 +196,7 @@ impl Agent {
                 }
             },
             HookType::Python => {
-                python::add_python_filter(&config.symbol, config.capture_stack);
+                python::add_filter(&config.symbol, config.capture_stack);
                 debug!("Added Python filter: {}", config.symbol);
             }
             HookType::Nodejs => {
@@ -237,7 +237,7 @@ impl Agent {
                     }
                 }
                 // Python envvar monitoring
-                if python::is_python_loaded() {
+                if python::is_loaded() {
                     python::enable_envvar_monitoring();
                 }
                 // Node.js envvar monitoring
@@ -312,7 +312,7 @@ impl Agent {
 
         let pid = std::process::id();
         let nodejs_version = if nodejs::is_loaded() {
-            nodejs::addon::detect_node_version()
+            nodejs::detected_version()
         } else {
             None
         };
@@ -354,12 +354,12 @@ impl Agent {
             .collect();
 
         // Gather runtime versions for CLI display
-        let python_version = if python::is_python_loaded() {
-            python::version::get().map(|v| v.to_string())
+        let python_version = if python::is_loaded() {
+            python::detected_version().map(|v| v.to_string())
         } else {
             None
         };
-        let bash_version = exec::spawn::detected_bash_version().map(|s| s.to_string());
+        let bash_version = bash::detected_version().map(|s| s.to_string());
 
         // Report ready
         let hooks = self.hook_manager.list_hooks();
@@ -730,7 +730,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     // would poison dlsym("posix_spawn") to return our wrapper address instead
     // of the real libc function, breaking find_global_export_by_name().
     // Register CPython audit hook if CPython is loaded
-    if python::is_python_loaded() {
+    if python::is_loaded() {
         info!("CPython detected, registering audit hook");
         python::register_audit_hook();
     }

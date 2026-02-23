@@ -35,8 +35,13 @@ pub(crate) static BASH_DOLLAR_VARS: AtomicUsize = AtomicUsize::new(0);
 /// Detected bash version string (e.g. "5.2"), set during setup_bash_hooks.
 pub(crate) static BASH_VERSION: OnceLock<String> = OnceLock::new();
 
+/// Check if a bash process has been detected.
+pub fn is_loaded() -> bool {
+    BASH_VERSION.get().is_some()
+}
+
 /// Get the detected bash version, if any.
-pub fn detected_bash_version() -> Option<&'static str> {
+pub fn detected_version() -> Option<&'static str> {
     BASH_VERSION.get().map(|s| s.as_str())
 }
 

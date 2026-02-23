@@ -222,11 +222,6 @@ unsafe fn build_injected_envp(envp: *const *const c_char) -> Option<InjectedEnvp
     })
 }
 
-/// Get the detected bash version, if any.
-pub fn detected_bash_version() -> Option<&'static str> {
-    crate::bash::detected_bash_version()
-}
-
 /// Information about a spawned/exec'd process.
 #[derive(Debug, Clone)]
 pub struct SpawnInfo {

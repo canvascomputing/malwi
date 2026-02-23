@@ -11,6 +11,5 @@ pub use filter::{add_filter, check_filter, has_filters};
 #[cfg(unix)]
 pub use fork::{ForkHandler, ForkMonitor};
 pub use spawn::{
-    detected_bash_version, enable_envvar_monitoring, is_envvar_monitoring_enabled, SpawnHandler,
-    SpawnInfo, SpawnMonitor,
+    enable_envvar_monitoring, is_envvar_monitoring_enabled, SpawnHandler, SpawnInfo, SpawnMonitor,
 };

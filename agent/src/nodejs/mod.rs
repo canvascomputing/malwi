@@ -52,8 +52,6 @@ pub use malwi_protocol::NodejsFrame;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::native;
-
 /// Whether Node.js envvar monitoring is enabled.
 static NODEJS_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
 
@@ -64,6 +62,7 @@ static NODEJS_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
 pub mod addon;
 pub mod bytecode;
 pub mod codegen;
+mod detect;
 pub mod ffi;
 pub mod filters;
 pub mod script;
@@ -73,6 +72,9 @@ pub mod symbols;
 // Re-export commonly used items from addon
 pub use addon::embed::{is_addon_loaded, load_addon};
 
+// Re-export from detect (standard runtime convention)
+pub use detect::{detected_version, is_loaded};
+
 // Re-export from filters (main coordination layer)
 pub use filters::{
     add_filter, check_filter, get_thread_id, has_filters, initialize, is_addon_tracing_active,
@@ -81,31 +83,6 @@ pub use filters::{
 // =============================================================================
 // PUBLIC API
 // =============================================================================
-
-/// Check if Node.js runtime is loaded in the process.
-///
-/// Detection is based on the presence of well-known exports:
-/// - `node_module_register` (Node.js)
-/// - `uv_version` (libuv, bundled with Node.js)
-/// - V8 Isolate symbols
-pub fn is_loaded() -> bool {
-    // Check for Node.js-specific symbol
-    if native::find_export(None, symbols::NODE_MODULE_REGISTER).is_ok() {
-        return true;
-    }
-
-    // Check for libuv (bundled with Node.js)
-    if native::find_export(None, symbols::UV_VERSION).is_ok() {
-        return true;
-    }
-
-    // Check for V8 Isolate
-    if native::find_export(None, symbols::v8::ISOLATE_GET_CURRENT).is_ok() {
-        return true;
-    }
-
-    false
-}
 
 /// Initialize V8 JavaScript tracing.
 ///

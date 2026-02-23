@@ -166,36 +166,85 @@ cli/src/
 ```
 agent/src/
 ├── lib.rs              # Agent entry point, global state
-├── hooks.rs            # Native hook management (malwi-intercept)
-├── http_client.rs       # CLI communication
-├── native.rs           # Native code utilities (symbol resolution)
-├── cpython.rs          # Python tracing via sys.setprofile
-├── exec_filter.rs      # Exec command filtering (ex: prefix)
-├── glob.rs             # Glob pattern matching
-├── stack.rs            # Native stack capture
+├── http_client.rs      # CLI communication
 │
-├── tracing/            # SHARED utilities (Python + Node.js)
+├── native/             # Infrastructure (HookManager, find_export, capture_backtrace)
+│
+├── tracing/            # SHARED utilities (all runtimes)
 │   ├── mod.rs
 │   ├── thread.rs       # thread_id() - single implementation
 │   ├── time.rs         # elapsed_ns(), TRACE_START
-│   ├── filter.rs       # Filter struct, pattern matching
+│   ├── filter.rs       # FilterManager struct, pattern matching
 │   └── event.rs        # EventBuilder for TraceEvent creation
 │
-└── nodejs/             # Node.js tracing (addon, bytecode hooks, filters)
-    ├── mod.rs          # Public API facade
-    ├── bytecode.rs     # V8 bytecode tracing (Runtime_TraceEnter/Exit)
-    ├── codegen.rs      # Synchronous eval/function-constructor gate
-    ├── filters.rs      # Filter management, initialization
-    ├── ffi.rs          # FFI types
-    ├── script.rs       # JS execution
-    ├── stack.rs        # JavaScript stack trace parsing
-    ├── symbols.rs      # V8 symbol names
-    └── addon/          # N-API addon management
-        ├── mod.rs
-        ├── callback.rs # Rust callback from C++ addon
-        ├── embed.rs    # Addon binary extraction
-        ├── ffi.rs      # Addon FFI functions
-        └── loader.rs   # Addon loading strategies
+├── python/             # Python tracing (sys.setprofile, audit hooks)
+│   ├── mod.rs          # Public API facade + re-exports
+│   ├── detect.rs       # is_loaded(), detected_version()
+│   ├── filters.rs      # FilterManager wrapper
+│   ├── profile.rs      # Profile hook registration and callback
+│   ├── audit.rs        # Audit hook (PEP 578)
+│   ├── ffi.rs          # CPython FFI types
+│   ├── format.rs       # Argument formatting
+│   ├── stack.rs        # Python stack capture
+│   └── version.rs      # Version struct, parsing, Py_GetVersion()
+│
+├── nodejs/             # Node.js tracing (addon, bytecode hooks, filters)
+│   ├── mod.rs          # Public API facade + re-exports
+│   ├── detect.rs       # is_loaded(), detected_version()
+│   ├── bytecode.rs     # V8 bytecode tracing (Runtime_TraceEnter/Exit)
+│   ├── codegen.rs      # Synchronous eval/function-constructor gate
+│   ├── filters.rs      # Filter management, initialization
+│   ├── ffi.rs          # FFI types
+│   ├── script.rs       # JS execution
+│   ├── stack.rs        # JavaScript stack trace parsing
+│   ├── symbols.rs      # V8 symbol names
+│   └── addon/          # N-API addon management
+│
+├── bash/               # Bash tracing (shell hooks, builtins)
+│   ├── mod.rs          # Public API facade + re-exports
+│   ├── detect.rs       # is_loaded(), detected_version(), setup_bash_hooks()
+│   ├── hooks.rs        # Hook callbacks (shell_execve, execute_command_internal, etc.)
+│   └── structs.rs      # Bash internal struct layouts
+│
+├── exec/               # Child process monitoring (spawn/fork/exec)
+│   ├── mod.rs
+│   ├── spawn.rs        # posix_spawn/exec hooks, SpawnMonitor
+│   ├── fork.rs         # fork() hooks, ForkMonitor
+│   ├── filter.rs       # Exec command filter (ex: prefix)
+│   └── envvar.rs       # Environment variable deny patterns
+│
+└── syscall/            # Direct syscall detection (scan+patch)
+```
+
+### Runtime Module Convention
+
+Each language runtime module (`python/`, `nodejs/`, `bash/`, future runtimes) follows a standard convention for file naming and public API. The `native/` module is **infrastructure** consumed by all runtimes and does not follow this convention.
+
+**Standard files:**
+
+| File | Purpose | Required? |
+|------|---------|-----------|
+| `mod.rs` | Public API facade — re-exports, no logic | Required |
+| `detect.rs` | `is_loaded()`, `detected_version()` | Required |
+| `hooks.rs` | Hook callback functions | Required |
+| `filters.rs` | FilterManager wrapper: `add_filter`, `check_filter`, `has_filters` | If applicable |
+| `ffi.rs` | FFI type definitions | If applicable |
+
+**Standard public API (re-exported from `mod.rs`):**
+
+```rust
+// Required for all language runtimes
+pub fn is_loaded() -> bool;
+pub fn detected_version() -> Option<...>;  // Version type varies per runtime
+
+// Filter management (if the runtime has its own filter set)
+pub fn add_filter(pattern: &str, capture_stack: bool);
+pub fn check_filter(name: &str) -> (bool, bool);
+pub fn has_filters() -> bool;
+
+// EnvVar monitoring (if supported)
+pub fn enable_envvar_monitoring();
+pub fn is_envvar_monitoring_enabled() -> bool;
 ```
 
 ## Key Types
