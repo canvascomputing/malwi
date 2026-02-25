@@ -56,7 +56,7 @@ DEPENDENCIES.md: Cargo.lock
 	@echo "## Rust" >> DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
 	@echo '```' >> DEPENDENCIES.md
-	cargo tree --workspace --depth 1 --prefix none | grep -v '^malwi' | grep -v '^$$' | sed 's/ (.*//' | sort -u >> DEPENDENCIES.md
+	cargo tree --workspace --prefix none | grep -v '^malwi' | grep -v '^$$' | sed 's/ (.*//;s/^ *//' | sort -u >> DEPENDENCIES.md
 	@echo '```' >> DEPENDENCIES.md
 	@echo "" >> DEPENDENCIES.md
 	@echo "Updated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> DEPENDENCIES.md
