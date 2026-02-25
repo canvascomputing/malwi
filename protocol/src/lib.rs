@@ -6,6 +6,7 @@ pub mod glob;
 pub mod message;
 pub mod platform;
 pub mod protocol;
+pub mod wire;
 
 pub use event::*;
 pub use message::{AgentMessage, CliMessage};

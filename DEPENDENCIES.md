@@ -78,4 +78,4 @@ zerocopy-derive v0.8.39
 zmij v1.0.12
 ```
 
-Updated: 2026-02-25T16:29:28Z
+Updated: 2026-02-25T20:04:02Z
