@@ -153,11 +153,22 @@ fn match_runtime_entry(runtime: Runtime, entry: &std::fs::DirEntry) -> Option<Pa
                 if path.is_file() {
                     return Some(path);
                 }
-                // Directory with bin/ subdirectory (e.g., python3.12/bin/python3.12)
+                // Directory with bin/ subdirectory
                 if path.is_dir() {
+                    // Try exact name first (e.g., python3.12/bin/python3.12)
                     let binary = path.join("bin").join(&name);
                     if binary.is_file() {
                         return Some(binary);
+                    }
+                    // Try minor version (e.g., python3.14.3/bin/python3.14)
+                    if let Some(dot2) = name.rfind('.') {
+                        let minor_name = &name[..dot2];
+                        if minor_name.contains('.') {
+                            let binary = path.join("bin").join(minor_name);
+                            if binary.is_file() {
+                                return Some(binary);
+                            }
+                        }
                     }
                 }
             }
