@@ -120,13 +120,19 @@ impl FilterManager {
             .filters
             .read()
             .map(|guard| Arc::clone(&*guard))
-            .unwrap_or_else(|_| Arc::new(Vec::new()));
+            .unwrap_or_else(|e| {
+                error!("{} filter RwLock poisoned, recovering", self.name);
+                Arc::clone(&e.into_inner())
+            });
         check_filter(&snapshot, name)
     }
 
     /// Check if any filters are registered.
     pub fn has_any(&self) -> bool {
-        self.filters.read().map(|f| !f.is_empty()).unwrap_or(false)
+        self.filters
+            .read()
+            .map(|f| !f.is_empty())
+            .unwrap_or_else(|e| !e.into_inner().is_empty())
     }
 
     /// Get a copy of all registered filters.

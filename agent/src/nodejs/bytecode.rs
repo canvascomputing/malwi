@@ -12,7 +12,7 @@
 //! - Return value passthrough (TraceExit returns args[0])
 
 use std::ffi::{c_char, c_void, CString};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use log::{debug, error, info, warn};
 
@@ -64,21 +64,18 @@ const V8_PRINTF_FILE: &str = "_ZN2v88internal6PrintFEP8_IO_FILEPKcz";
 /// v8::V8::SetFlagsFromString(const char*) -> void
 type SetFlagsFromStringFn = unsafe extern "C" fn(*const c_char);
 
-/// Runtime_TraceEnter/Exit signature: Object Runtime_TraceXxx(int args_count, Address* args, Isolate* isolate)
-/// Object is a tagged pointer (usize), Address is usize, Isolate* is opaque pointer
-type RuntimeTraceFn = unsafe extern "C" fn(i32, *const usize, *mut c_void) -> usize;
+/// Original Runtime_TraceEnter function pointer (set during hook installation).
+/// Written once with Release ordering during `install_trace_hooks()`, read with
+/// Acquire ordering in the replacement callback on arbitrary V8 threads.
+static ORIGINAL_TRACE_ENTER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
-/// Original Runtime_TraceEnter function pointer (set during hook installation)
-static mut ORIGINAL_TRACE_ENTER: Option<RuntimeTraceFn> = None;
-
-/// Original Runtime_TraceExit function pointer (set during hook installation)
-static mut ORIGINAL_TRACE_EXIT: Option<RuntimeTraceFn> = None;
+/// Original Runtime_TraceExit function pointer (set during hook installation).
+/// Written once with Release ordering during `install_trace_hooks()`, read with
+/// Acquire ordering in the replacement callback on arbitrary V8 threads.
+static ORIGINAL_TRACE_EXIT: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// Whether V8's PrintF hook is installed (to suppress trace output)
 static PRINTF_HOOKED: AtomicBool = AtomicBool::new(false);
-
-/// Whether we've attempted to init the stack parser FFI (lazy init on first trace)
-static FFI_INIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // SKIP LOGIC FOR ADDON DEDUPLICATION
@@ -230,11 +227,7 @@ pub fn install_trace_hooks() -> bool {
             &mut original_ptr,
         );
         if result.is_ok() {
-            unsafe {
-                ORIGINAL_TRACE_ENTER = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(
-                    original_ptr,
-                ));
-            }
+            ORIGINAL_TRACE_ENTER.store(original_ptr as *mut c_void, Ordering::Release);
             info!("Replaced Runtime_TraceEnter at {:#x}", addr);
             hooks_installed += 1;
         } else {
@@ -275,11 +268,7 @@ pub fn install_trace_hooks() -> bool {
             &mut original_ptr,
         );
         if result.is_ok() {
-            unsafe {
-                ORIGINAL_TRACE_EXIT = Some(std::mem::transmute::<*const c_void, RuntimeTraceFn>(
-                    original_ptr,
-                ));
-            }
+            ORIGINAL_TRACE_EXIT.store(original_ptr as *mut c_void, Ordering::Release);
             info!("Replaced Runtime_TraceExit at {:#x}", addr);
             hooks_installed += 1;
         } else {
@@ -407,20 +396,8 @@ unsafe extern "C" fn replacement_trace_enter(
 ) -> usize {
     // Lazy init of stack parser FFI - must happen after V8 is ready
     // so we detect the correct Node.js version for addon selection.
-    if !FFI_INIT_ATTEMPTED.swap(true, Ordering::SeqCst) {
-        match super::addon::get_addon_path() {
-            Some(addon_path) => {
-                if stack::resolve_stack_parser_ffi(&addon_path) {
-                    info!("Stack parser FFI loaded from {:?}", addon_path);
-                } else {
-                    warn!("Stack parser FFI failed to load from {:?}", addon_path);
-                }
-            }
-            None => {
-                warn!("No addon path available - function names will show as <function>");
-            }
-        }
-    }
+    // Retries until addon metadata is available (wrapper may not have run yet).
+    stack::ensure_available();
 
     // Return undefined_value (0x11 is V8's undefined on arm64/x64)
     // We skip calling the original to avoid V8's trace output pollution.

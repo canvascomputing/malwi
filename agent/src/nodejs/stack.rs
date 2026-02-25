@@ -273,6 +273,24 @@ pub fn is_stack_parser_available() -> bool {
     STACK_PARSER_FFI.get().is_some()
 }
 
+/// Ensure the stack parser FFI is loaded, attempting initialization if needed.
+///
+/// On the first call where the addon path is available, this resolves all FFI
+/// symbols from the addon via dlopen/dlsym. Subsequent calls are a single
+/// `OnceLock::get().is_some()` check.
+///
+/// Returns true if the FFI is available after this call.
+pub fn ensure_available() -> bool {
+    if STACK_PARSER_FFI.get().is_some() {
+        return true;
+    }
+    if let Some(addon_path) = super::addon::get_addon_path() {
+        resolve_stack_parser_ffi(&addon_path)
+    } else {
+        false
+    }
+}
+
 // =============================================================================
 // SAFE RUST WRAPPERS
 // =============================================================================

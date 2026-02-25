@@ -39,8 +39,7 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
     }
 
     // Mark addon tracing as active on first callback (signals bytecode dedup)
-    if !CALLBACK_SEEN.load(Ordering::Relaxed) {
-        CALLBACK_SEEN.store(true, Ordering::Relaxed);
+    if !CALLBACK_SEEN.swap(true, Ordering::Relaxed) {
         super::set_addon_tracing_active(true);
     }
 
