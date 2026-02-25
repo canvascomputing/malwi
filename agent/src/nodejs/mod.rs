@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_filter() {
+    fn test_add_filter_enables_matching_and_rejects_non_matching() {
         add_filter("fs.*", true);
         assert!(has_filters());
 

@@ -332,7 +332,7 @@ mod tests {
     ///
     /// Uses a single test to avoid static state interference between tests.
     #[test]
-    fn test_register_pending_hooks_filter_logic() {
+    fn test_register_pending_hooks_skips_globs_and_accepts_exact() {
         // Before any registration, pending state from previous register calls
         // may or may not be set, so we focus on verifying the behavior after
         // our specific calls.

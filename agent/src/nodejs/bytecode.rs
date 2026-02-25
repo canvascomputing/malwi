@@ -625,7 +625,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_initialization_state() {
+    fn test_bytecode_atomics_are_accessible() {
         // Just verify the state variables are accessible
         let _enabled = NODEJS_TRACE_ENABLED.load(Ordering::SeqCst);
         let _installed = HOOKS_INSTALLED.load(Ordering::SeqCst);

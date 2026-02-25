@@ -1694,7 +1694,7 @@ mod tests {
         const CPU_SUBTYPE_ARM64E: i32 = 2;
 
         #[test]
-        fn test_thin_arm64_not_arm64e() {
+        fn test_thin_macho_arm64_is_not_arm64e() {
             let bytes = thin_macho(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
             let (path, cpath) = write_temp_binary(&bytes, "macho");
             assert!(!is_arm64e_binary(cpath.as_ptr()));
@@ -1702,7 +1702,7 @@ mod tests {
         }
 
         #[test]
-        fn test_thin_arm64e() {
+        fn test_thin_macho_arm64e_detected() {
             let bytes = thin_macho(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E);
             let (path, cpath) = write_temp_binary(&bytes, "macho");
             assert!(is_arm64e_binary(cpath.as_ptr()));
@@ -1710,7 +1710,7 @@ mod tests {
         }
 
         #[test]
-        fn test_thin_x86_64() {
+        fn test_thin_macho_x86_64_is_not_arm64e() {
             let bytes = thin_macho(CPU_TYPE_X86_64, 3);
             let (path, cpath) = write_temp_binary(&bytes, "macho");
             assert!(!is_arm64e_binary(cpath.as_ptr()));
@@ -1718,7 +1718,7 @@ mod tests {
         }
 
         #[test]
-        fn test_fat_with_arm64_slice() {
+        fn test_fat_macho_with_arm64_slice_is_not_arm64e() {
             let bytes = fat_macho(&[
                 (CPU_TYPE_X86_64, 3),
                 (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
@@ -1729,7 +1729,7 @@ mod tests {
         }
 
         #[test]
-        fn test_fat_arm64e_only() {
+        fn test_fat_macho_arm64e_detected() {
             let bytes = fat_macho(&[(CPU_TYPE_X86_64, 3), (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E)]);
             let (path, cpath) = write_temp_binary(&bytes, "macho");
             assert!(is_arm64e_binary(cpath.as_ptr()));
@@ -1737,7 +1737,7 @@ mod tests {
         }
 
         #[test]
-        fn test_fat_mixed_arm64_and_arm64e() {
+        fn test_fat_macho_with_both_slices_prefers_non_arm64e() {
             let bytes = fat_macho(&[
                 (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E),
                 (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
@@ -1749,25 +1749,25 @@ mod tests {
         }
 
         #[test]
-        fn test_script_shebang() {
+        fn test_script_with_shebang_is_not_arm64e() {
             let (path, cpath) = write_temp_binary(b"#!/bin/bash\necho hello\n", "script");
             assert!(!is_arm64e_binary(cpath.as_ptr()));
             let _ = std::fs::remove_file(path);
         }
 
         #[test]
-        fn test_nonexistent_file() {
+        fn test_nonexistent_file_is_not_arm64e() {
             let cpath = CString::new("/tmp/malwi_nonexistent_test_file_xyz").unwrap();
             assert!(!is_arm64e_binary(cpath.as_ptr()));
         }
 
         #[test]
-        fn test_null_path() {
+        fn test_null_path_is_not_arm64e() {
             assert!(!is_arm64e_binary(std::ptr::null()));
         }
 
         #[test]
-        fn test_empty_file() {
+        fn test_empty_file_is_not_arm64e() {
             let (path, cpath) = write_temp_binary(b"", "empty");
             assert!(!is_arm64e_binary(cpath.as_ptr()));
             let _ = std::fs::remove_file(path);

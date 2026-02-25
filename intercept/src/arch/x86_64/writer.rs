@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reg_reg() {
+    fn test_rax_rax() {
         let bytes = encode(|w| unsafe { w.put_test_reg_reg(Reg::RAX, Reg::RAX) });
         assert_eq!(bytes, &[0x48, 0x85, 0xC0]);
     }

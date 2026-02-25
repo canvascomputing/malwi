@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_deny() {
+    fn test_deny_rule_blocks_matching_function() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -680,7 +680,7 @@ python:
     }
 
     #[test]
-    fn test_basic_allow() {
+    fn test_allow_rule_permits_matching_function() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -861,7 +861,7 @@ files:
     }
 
     #[test]
-    fn test_mode_default_block() {
+    fn test_default_mode_uses_block_enforcement() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -876,7 +876,7 @@ python:
     }
 
     #[test]
-    fn test_mode_log() {
+    fn test_log_key_denies_with_log_enforcement() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -892,7 +892,7 @@ files:
     }
 
     #[test]
-    fn test_mode_noop() {
+    fn test_noop_mode_allows_everything() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -908,7 +908,7 @@ python:
     }
 
     #[test]
-    fn test_runtime_isolation() {
+    fn test_python_deny_does_not_affect_nodejs_allow() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -931,7 +931,7 @@ nodejs:
     }
 
     #[test]
-    fn test_domain_evaluation() {
+    fn test_deny_network_blocks_matching_domain() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -949,7 +949,7 @@ network:
     }
 
     #[test]
-    fn test_endpoint_evaluation() {
+    fn test_deny_network_blocks_matching_endpoint() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -967,7 +967,7 @@ network:
     }
 
     #[test]
-    fn test_protocol_evaluation() {
+    fn test_protocol_allowlist_blocks_unlisted_protocol() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -987,7 +987,7 @@ network:
     }
 
     #[test]
-    fn test_execution_evaluation() {
+    fn test_deny_commands_blocks_matching_execution() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -1012,7 +1012,7 @@ commands:
     }
 
     #[test]
-    fn test_empty_policy() {
+    fn test_empty_policy_allows_any_function() {
         let engine = engine_from_yaml("version: 1\n");
 
         let decision = engine.evaluate_function(Runtime::Python, "anything", &[]);
@@ -1056,7 +1056,7 @@ network:
     }
 
     #[test]
-    fn test_special_characters() {
+    fn test_pattern_with_special_chars_matches_literally() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -1097,7 +1097,7 @@ python:
     }
 
     #[test]
-    fn test_empty_arguments() {
+    fn test_unconstrained_deny_matches_with_empty_args() {
         let engine = engine_from_yaml(
             r#"
 version: 1

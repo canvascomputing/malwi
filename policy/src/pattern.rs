@@ -197,7 +197,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_exact_pattern() {
+    fn test_exact_pattern_matches_identical_string() {
         let p = compile_pattern("eval").unwrap();
         assert!(p.matches("eval"));
         assert!(!p.matches("evaluate"));
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_glob_star() {
+    fn test_glob_star_suffix_matches_any_ending() {
         let p = compile_pattern("fs.*").unwrap();
         assert!(p.matches("fs.readFile"));
         assert!(p.matches("fs.writeFile"));
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_glob_double_star() {
+    fn test_double_star_matches_across_path_segments() {
         let p = compile_pattern("/app/**/*.py").unwrap();
         assert!(p.matches("/app/src/main.py"));
         assert!(p.matches("/app/src/lib/util.py"));
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_glob_question_mark() {
+    fn test_question_mark_matches_single_character() {
         let p = compile_pattern("file?.txt").unwrap();
         assert!(p.matches("file1.txt"));
         assert!(p.matches("fileA.txt"));
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_pattern() {
+    fn test_regex_pattern_matches_partial_string() {
         let p = compile_pattern("regex:^AWS_").unwrap();
         assert!(p.matches("AWS_ACCESS_KEY"));
         assert!(p.matches("AWS_SECRET"));
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_regex() {
+    fn test_invalid_regex_returns_error() {
         let result = compile_pattern("regex:[invalid");
         assert!(result.is_err());
     }

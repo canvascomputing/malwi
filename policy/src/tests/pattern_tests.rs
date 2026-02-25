@@ -3,7 +3,7 @@
 use crate::pattern::{compile_pattern, compile_pattern_case_insensitive};
 
 #[test]
-fn test_exact_match() {
+fn test_exact_pattern_matches_identical_string_only() {
     let p = compile_pattern("eval").unwrap();
     assert!(p.matches("eval"));
     assert!(!p.matches("Eval"));
@@ -13,7 +13,7 @@ fn test_exact_match() {
 }
 
 #[test]
-fn test_glob_star() {
+fn test_glob_star_suffix_matches_any_ending() {
     let p = compile_pattern("fs.*").unwrap();
     assert!(p.matches("fs.readFile"));
     assert!(p.matches("fs.writeFile"));
@@ -24,7 +24,7 @@ fn test_glob_star() {
 }
 
 #[test]
-fn test_glob_star_prefix() {
+fn test_glob_star_prefix_matches_any_beginning() {
     let p = compile_pattern("*.pypi.org").unwrap();
     assert!(p.matches("files.pypi.org"));
     assert!(p.matches("test.pypi.org"));
@@ -33,7 +33,7 @@ fn test_glob_star_prefix() {
 }
 
 #[test]
-fn test_glob_star_middle() {
+fn test_glob_star_middle_matches_any_substring() {
     let p = compile_pattern("test.*.com").unwrap();
     assert!(p.matches("test.example.com"));
     assert!(p.matches("test.api.com"));
@@ -43,7 +43,7 @@ fn test_glob_star_middle() {
 }
 
 #[test]
-fn test_glob_double_star() {
+fn test_double_star_matches_across_path_segments() {
     let p = compile_pattern("/app/**/*.py").unwrap();
     assert!(p.matches("/app/main.py"));
     assert!(p.matches("/app/src/main.py"));
@@ -52,7 +52,7 @@ fn test_glob_double_star() {
 }
 
 #[test]
-fn test_glob_question_mark() {
+fn test_question_mark_matches_single_character() {
     let p = compile_pattern("file?.txt").unwrap();
     assert!(p.matches("file1.txt"));
     assert!(p.matches("fileA.txt"));
@@ -61,7 +61,7 @@ fn test_glob_question_mark() {
 }
 
 #[test]
-fn test_glob_complex() {
+fn test_combined_glob_operators_match_nested_paths() {
     let p = compile_pattern("/app/*/test_*.py").unwrap();
     assert!(p.matches("/app/src/test_main.py"));
     assert!(p.matches("/app/lib/test_util.py"));
@@ -70,7 +70,7 @@ fn test_glob_complex() {
 }
 
 #[test]
-fn test_regex_simple() {
+fn test_regex_prefix_anchor_matches_starting_substring() {
     let p = compile_pattern("regex:^AWS_").unwrap();
     assert!(p.matches("AWS_ACCESS_KEY"));
     assert!(p.matches("AWS_SECRET"));
@@ -79,7 +79,7 @@ fn test_regex_simple() {
 }
 
 #[test]
-fn test_regex_complex() {
+fn test_regex_alternation_matches_exact_values() {
     let p = compile_pattern("regex:^(GET|POST|PUT|DELETE)$").unwrap();
     assert!(p.matches("GET"));
     assert!(p.matches("POST"));
@@ -90,7 +90,7 @@ fn test_regex_complex() {
 }
 
 #[test]
-fn test_regex_with_special_chars() {
+fn test_regex_tld_pattern_matches_onion_and_i2p() {
     let p = compile_pattern("regex:.*\\.(onion|i2p)$").unwrap();
     assert!(p.matches("hidden.onion"));
     assert!(p.matches("site.i2p"));
@@ -98,7 +98,7 @@ fn test_regex_with_special_chars() {
 }
 
 #[test]
-fn test_invalid_regex() {
+fn test_invalid_regex_returns_error() {
     assert!(compile_pattern("regex:[invalid").is_err());
     assert!(compile_pattern("regex:(unclosed").is_err());
     assert!(compile_pattern("regex:*invalid").is_err());
@@ -172,14 +172,14 @@ fn test_special_chars_escaped() {
 }
 
 #[test]
-fn test_empty_pattern() {
+fn test_empty_pattern_matches_only_empty_string() {
     let p = compile_pattern("").unwrap();
     assert!(p.matches(""));
     assert!(!p.matches("anything"));
 }
 
 #[test]
-fn test_star_only() {
+fn test_star_only_matches_any_input() {
     let p = compile_pattern("*").unwrap();
     assert!(p.matches("anything"));
     assert!(p.matches(""));
@@ -189,7 +189,7 @@ fn test_star_only() {
 }
 
 #[test]
-fn test_double_star_only() {
+fn test_double_star_only_matches_any_input() {
     let p = compile_pattern("**").unwrap();
     assert!(p.matches("anything"));
     assert!(p.matches("path/to/file"));

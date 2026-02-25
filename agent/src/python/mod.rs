@@ -119,14 +119,14 @@ mod tests {
     use malwi_protocol::glob::matches_glob;
 
     #[test]
-    fn test_matches_glob_exact() {
+    fn test_python_filter_matches_exact_name() {
         assert!(matches_glob("os.spawn", "os.spawn"));
         assert!(!matches_glob("os.spawn", "os.system"));
         assert!(!matches_glob("os.spawn", "json.loads"));
     }
 
     #[test]
-    fn test_matches_glob_wildcard_suffix() {
+    fn test_python_filter_matches_wildcard_suffix() {
         assert!(matches_glob("os.*", "os.spawn"));
         assert!(matches_glob("os.*", "os.system"));
         assert!(!matches_glob("os.*", "json.loads"));
@@ -138,28 +138,28 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_glob_wildcard_prefix() {
+    fn test_python_filter_matches_wildcard_prefix() {
         assert!(matches_glob("*.spawn", "os.spawn"));
         assert!(matches_glob("*.spawn", "subprocess.spawn"));
         assert!(!matches_glob("*.spawn", "os.system"));
     }
 
     #[test]
-    fn test_matches_glob_wildcard_middle() {
+    fn test_python_filter_matches_wildcard_middle() {
         assert!(matches_glob("json.*s", "json.loads"));
         assert!(matches_glob("json.*s", "json.dumps"));
         assert!(!matches_glob("json.*s", "json.load"));
     }
 
     #[test]
-    fn test_matches_glob_wildcard_only() {
+    fn test_python_filter_star_matches_any_function() {
         assert!(matches_glob("*", "anything"));
         assert!(matches_glob("*", "os.spawn"));
         assert!(matches_glob("*", ""));
     }
 
     #[test]
-    fn test_matches_glob_multiple_wildcards() {
+    fn test_python_filter_multiple_wildcards_match_segments() {
         assert!(matches_glob("*load*", "json.loads"));
         assert!(matches_glob("*load*", "pickle.load"));
         assert!(matches_glob("*load*", "loader"));
