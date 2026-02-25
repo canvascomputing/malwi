@@ -1,18 +1,16 @@
 //! WebSocket server for agent communication.
 //!
 //! Receives agent messages via WebSocket using `malwi-websocket`.
-//! Each agent connection is a persistent WebSocket on its own thread.
+//! Each agent connection is a persistent WebSocket on its own tokio task.
 
 use std::collections::HashSet;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use log::debug;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use malwi_protocol::{
     AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookConfig,
@@ -43,15 +41,15 @@ pub enum AgentEvent {
     /// Review mode decision request (agent blocks on WS response)
     ReviewRequest {
         event: TraceEvent,
-        response_tx: Sender<ReviewDecision>,
+        response_tx: tokio::sync::oneshot::Sender<ReviewDecision>,
     },
 }
 
-/// Shared state for the WebSocket server threads.
+/// Shared state for the WebSocket server tasks.
 struct SharedState {
     hook_configs: Vec<HookConfig>,
     review_mode: bool,
-    event_tx: SyncSender<AgentEvent>,
+    event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
     active_agents: Arc<AtomicU32>,
     /// Suppresses duplicate exec events caused by libc PATH iteration.
     /// Key: (child_pid, command_basename).
@@ -64,14 +62,14 @@ struct SharedState {
 
 /// WebSocket server for agent communication.
 pub struct AgentServer {
-    listener: std::net::TcpListener,
+    listener: tokio::net::TcpListener,
     url: String,
     shared: Arc<SharedState>,
 }
 
 /// Create a TcpListener bound to 127.0.0.1:0 with SO_REUSEADDR set before bind.
 #[cfg(unix)]
-fn create_reuse_addr_listener() -> Result<std::net::TcpListener> {
+fn create_reuse_addr_listener() -> Result<tokio::net::TcpListener> {
     use std::os::unix::io::FromRawFd;
 
     unsafe {
@@ -117,7 +115,9 @@ fn create_reuse_addr_listener() -> Result<std::net::TcpListener> {
             anyhow::bail!("listen() failed: {}", err);
         }
 
-        Ok(std::net::TcpListener::from_raw_fd(fd))
+        let std_listener = std::net::TcpListener::from_raw_fd(fd);
+        std_listener.set_nonblocking(true)?;
+        Ok(tokio::net::TcpListener::from_std(std_listener)?)
     }
 }
 
@@ -126,7 +126,7 @@ impl AgentServer {
     pub fn new(
         hook_configs: Vec<HookConfig>,
         review_mode: bool,
-        event_tx: SyncSender<AgentEvent>,
+        event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
         active_agents: Arc<AtomicU32>,
     ) -> Result<Self> {
         let listener = create_reuse_addr_listener()?;
@@ -155,9 +155,9 @@ impl AgentServer {
     }
 
     /// Run the WebSocket server, accepting connections until all agents disconnect.
-    pub fn run(self) {
-        for stream in self.listener.incoming() {
-            let stream = match stream {
+    pub async fn run(self) {
+        loop {
+            let (stream, _) = match self.listener.accept().await {
                 Ok(s) => s,
                 Err(e) => {
                     debug!("Accept error: {}", e);
@@ -165,8 +165,8 @@ impl AgentServer {
                 }
             };
             let shared = self.shared.clone();
-            thread::spawn(move || {
-                if let Err(e) = handle_agent_connection(stream, &shared) {
+            tokio::spawn(async move {
+                if let Err(e) = handle_agent_connection(stream, &shared).await {
                     debug!("Agent connection error: {}", e);
                 }
             });
@@ -175,12 +175,15 @@ impl AgentServer {
 }
 
 /// Handle a single agent WebSocket connection.
-fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Result<()> {
+async fn handle_agent_connection(
+    mut stream: tokio::net::TcpStream,
+    shared: &SharedState,
+) -> Result<()> {
     stream.set_nodelay(true)?;
 
     // 1. Read WebSocket upgrade request
     let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf)?;
+    let n = stream.read(&mut buf).await?;
     if n == 0 {
         anyhow::bail!("empty handshake");
     }
@@ -191,7 +194,7 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
     // 2. Send 101 upgrade response
     let response = build_server_handshake_response(&request, None, &[])
         .map_err(|e| anyhow::anyhow!("WS handshake response failed: {}", e))?;
-    stream.write_all(&response)?;
+    stream.write_all(&response).await?;
 
     // 3. Create WebSocket connection state machine
     let mut conn = Connection::new(ConnectionConfig {
@@ -207,17 +210,23 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
     // Only connections that incremented should send Disconnected (which triggers a decrement).
     let mut counted = false;
 
-    // 4. Message loop
+    // 4. Message loop with read timeout
     let mut read_buf = vec![0u8; 64 * 1024];
     loop {
-        let n = match stream.read(&mut read_buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                debug!("Agent read error: {}", e);
-                break;
-            }
-        };
+        // 30s read timeout prevents hung-connection tasks
+        let n =
+            match tokio::time::timeout(Duration::from_secs(30), stream.read(&mut read_buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
+                    debug!("Agent read error: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    debug!("Agent read timed out");
+                    break;
+                }
+            };
 
         let events = match conn.ingest(&read_buf[..n], None) {
             Ok(events) => events,
@@ -245,14 +254,15 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
                         &mut agent_pid,
                         &mut shutdown_received,
                         &mut counted,
-                    )?;
+                    )
+                    .await?;
                 }
                 Event::CloseReceived(_) | Event::Closed => {
                     // Send Disconnected if we had a PID, no clean Shutdown, and
                     // this connection actually incremented active_agents.
                     if let Some(pid) = agent_pid {
                         if !shutdown_received && counted {
-                            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
+                            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid }).await;
                         }
                     }
                     return Ok(());
@@ -262,14 +272,14 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
         }
 
         // Flush any outbound frames (pongs, responses)
-        flush_outbox(&mut conn, &mut stream)?;
+        flush_outbox(&mut conn, &mut stream).await?;
     }
 
     // Connection dropped (EOF or error) — send Disconnected if no clean Shutdown
     // and this connection actually incremented active_agents.
     if let Some(pid) = agent_pid {
         if !shutdown_received && counted {
-            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid });
+            let _ = shared.event_tx.send(AgentEvent::Disconnected { pid }).await;
         }
     }
 
@@ -277,18 +287,18 @@ fn handle_agent_connection(mut stream: TcpStream, shared: &SharedState) -> Resul
 }
 
 /// Flush all queued outbound WebSocket frames to the stream.
-fn flush_outbox(conn: &mut Connection, stream: &mut TcpStream) -> Result<()> {
+async fn flush_outbox(conn: &mut Connection, stream: &mut tokio::net::TcpStream) -> Result<()> {
     while let Some(bytes) = conn.poll_outbound() {
-        stream.write_all(&bytes)?;
+        stream.write_all(&bytes).await?;
     }
     Ok(())
 }
 
 /// Handle a single agent message.
-fn handle_message(
+async fn handle_message(
     msg: AgentMessage,
     conn: &mut Connection,
-    stream: &mut TcpStream,
+    stream: &mut tokio::net::TcpStream,
     shared: &SharedState,
     agent_pid: &mut Option<u32>,
     shutdown_received: &mut bool,
@@ -320,7 +330,7 @@ fn handle_message(
             let json = serde_json::to_string(&resp)?;
             conn.send_message(Message::Text(json), None)
                 .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
-            flush_outbox(conn, stream)?;
+            flush_outbox(conn, stream).await?;
         }
         AgentMessage::Ready(req) => {
             debug!(
@@ -329,14 +339,17 @@ fn handle_message(
                 req.hooks_installed.len()
             );
 
-            let _ = shared.event_tx.send(AgentEvent::Ready {
-                pid: req.pid,
-                hooks: req.hooks_installed,
-                nodejs_version: req.nodejs_version,
-                python_version: req.python_version,
-                bash_version: req.bash_version,
-                modules: req.modules,
-            });
+            let _ = shared
+                .event_tx
+                .send(AgentEvent::Ready {
+                    pid: req.pid,
+                    hooks: req.hooks_installed,
+                    nodejs_version: req.nodejs_version,
+                    python_version: req.python_version,
+                    bash_version: req.bash_version,
+                    modules: req.modules,
+                })
+                .await;
         }
         AgentMessage::Runtime(req) => {
             debug!(
@@ -344,17 +357,20 @@ fn handle_message(
                 req.pid, req.runtime, req.version
             );
 
-            let _ = shared.event_tx.send(AgentEvent::RuntimeInfo {
-                runtime: req.runtime,
-                version: req.version,
-            });
+            let _ = shared
+                .event_tx
+                .send(AgentEvent::RuntimeInfo {
+                    runtime: req.runtime,
+                    version: req.version,
+                })
+                .await;
         }
         AgentMessage::Event(event) => {
-            let _ = shared.event_tx.send(AgentEvent::Trace(event));
+            let _ = shared.event_tx.send(AgentEvent::Trace(event)).await;
         }
         AgentMessage::Events(events) => {
             for event in events {
-                let _ = shared.event_tx.send(AgentEvent::Trace(event));
+                let _ = shared.event_tx.send(AgentEvent::Trace(event)).await;
             }
         }
         AgentMessage::Child(info) => {
@@ -374,7 +390,7 @@ fn handle_message(
             }
 
             let event = child_info_to_trace_event(info, cmd_name);
-            let _ = shared.event_tx.send(AgentEvent::Trace(event));
+            let _ = shared.event_tx.send(AgentEvent::Trace(event)).await;
         }
         AgentMessage::Reconnect(req) => {
             debug!(
@@ -393,24 +409,31 @@ fn handle_message(
                 .insert(req.child_pid);
 
             // Send Ready event for the child (it inherits hooks from parent)
-            let _ = shared.event_tx.send(AgentEvent::Ready {
-                pid: req.child_pid,
-                hooks: vec![],
-                nodejs_version: None,
-                python_version: None,
-                bash_version: None,
-                modules: vec![],
-            });
-        }
-        AgentMessage::Review { request_id, event } => {
-            // Create oneshot channel, send to main loop, block for response
-            let (response_tx, response_rx) = std::sync::mpsc::channel::<ReviewDecision>();
             let _ = shared
                 .event_tx
-                .send(AgentEvent::ReviewRequest { event, response_tx });
+                .send(AgentEvent::Ready {
+                    pid: req.child_pid,
+                    hooks: vec![],
+                    nodejs_version: None,
+                    python_version: None,
+                    bash_version: None,
+                    modules: vec![],
+                })
+                .await;
+        }
+        AgentMessage::Review { request_id, event } => {
+            // Create oneshot channel, send to main loop, await response
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel::<ReviewDecision>();
+            let _ = shared
+                .event_tx
+                .send(AgentEvent::ReviewRequest { event, response_tx })
+                .await;
 
-            // Block until main thread decides
-            let decision = response_rx.recv().unwrap_or(ReviewDecision::Allow);
+            // 5 min timeout prevents infinite hangs if CLI exits during review
+            let decision = match tokio::time::timeout(Duration::from_secs(300), response_rx).await {
+                Ok(Ok(d)) => d,
+                _ => ReviewDecision::Allow,
+            };
 
             let resp = CliMessage::ReviewResponse {
                 request_id,
@@ -419,7 +442,7 @@ fn handle_message(
             let json = serde_json::to_string(&resp)?;
             conn.send_message(Message::Text(json), None)
                 .map_err(|e| anyhow::anyhow!("WS send failed: {}", e))?;
-            flush_outbox(conn, stream)?;
+            flush_outbox(conn, stream).await?;
         }
         AgentMessage::Shutdown(req) => {
             debug!("Agent PID {} shutting down", req.pid);
@@ -439,7 +462,8 @@ fn handle_message(
             if *counted {
                 let _ = shared
                     .event_tx
-                    .send(AgentEvent::Disconnected { pid: req.pid });
+                    .send(AgentEvent::Disconnected { pid: req.pid })
+                    .await;
             }
         }
     }

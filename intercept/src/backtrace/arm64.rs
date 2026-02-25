@@ -1,3 +1,4 @@
+use crate::code::ptrauth::strip_return_address_pac;
 use crate::types::Arm64CpuContext;
 
 pub fn capture_backtrace(cpu_context: &Arm64CpuContext, max_depth: usize) -> Vec<usize> {
@@ -10,7 +11,8 @@ pub fn capture_backtrace(cpu_context: &Arm64CpuContext, max_depth: usize) -> Vec
     let mut lr = cpu_context.lr;
 
     if lr != 0 {
-        frames.push(lr as usize);
+        // Strip PAC bits from return address (signed by PACIASP on ARMv8.3+).
+        frames.push(strip_return_address_pac(lr as usize));
     }
 
     for _ in 0..max_depth.saturating_sub(1) {
@@ -24,7 +26,8 @@ pub fn capture_backtrace(cpu_context: &Arm64CpuContext, max_depth: usize) -> Vec
         if ret_addr == 0 {
             break;
         }
-        frames.push(ret_addr as usize);
+        // Strip PAC bits from return address (signed by PACIASP on ARMv8.3+).
+        frames.push(strip_return_address_pac(ret_addr as usize));
         if prev_fp <= fp {
             break;
         }

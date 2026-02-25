@@ -30,6 +30,9 @@ clap = { version = "4.5.53", features = ["derive"] }
 libc = "0.2.178"
 mach2 = "0.4"
 
+# Async runtime (CLI only)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "io-util"] }
+
 # Testing
 criterion = { version = "0.5", features = ["html_reports"] }
 

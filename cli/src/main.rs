@@ -13,9 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,7 +24,6 @@ use malwi_protocol::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEv
 use std::path::Path;
 
 use agent_server::{AgentEvent, AgentServer};
-use ws_server::BusControl;
 
 const BANNER: &str = "                    __          __\n    .--------.---.-|  .--.--.--|__|\n    |        |  _  |  |  |  |  |  |\n    |__|__|__|___._|__|________|__|\n\n  Detect malicious code at runtime in\n  Python, Node.js and Bash.\n  ____________________________________";
 
@@ -262,7 +259,8 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
@@ -297,7 +295,7 @@ fn main() -> Result<()> {
                 monitor_port,
                 ws_port,
             };
-            spawn_and_trace(trace_config, program)?;
+            spawn_and_trace(trace_config, program).await?;
         }
         Commands::M { port, stack_trace } => {
             monitor::run_monitor(port, stack_trace)?;
@@ -684,7 +682,7 @@ fn maybe_transform_piped_download(program: Vec<String>) -> (Vec<String>, Option<
     (new_program, Some(temp_path))
 }
 
-fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
+async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
     if program.is_empty() {
         anyhow::bail!("No program specified");
     }
@@ -884,16 +882,16 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
             .as_ref()
             .is_some_and(|p| p.has_blocking_sections());
 
-    // Bounded channel for events from HTTP server threads to main loop.
-    // Bounded channel provides backpressure: when the main thread can't keep up
-    // (e.g., stdout pipe is full), server threads block on send, which delays
-    // the HTTP response, which naturally throttles the agent.
-    let (event_tx, event_rx) = mpsc::sync_channel::<AgentEvent>(1024);
+    // Bounded channel for events from WebSocket server tasks to main loop.
+    // Bounded channel provides backpressure: when the main task can't keep up
+    // (e.g., stdout pipe is full), server tasks block on send, which delays
+    // the WebSocket response, which naturally throttles the agent.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(1024);
 
     // Track active agent connections (shared between server and main loop)
     let active_agents = Arc::new(AtomicU32::new(0));
 
-    // Create HTTP server for agent communication
+    // Create WebSocket server for agent communication
     let requested_hooks = hook_configs.clone();
     let server = AgentServer::new(
         hook_configs,
@@ -905,7 +903,7 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
     let server_url = server.url().to_string();
     debug!("Agent server listening on {}", server_url);
 
-    // Spawn the target process with the agent injected
+    // Spawn the target process with the agent injected (sync, one-shot posix_spawn)
     let needs_js = requested_hooks
         .iter()
         .any(|h| h.hook_type == HookType::Nodejs);
@@ -918,11 +916,8 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
 
     debug!("Spawned process with PID {}", root_pid);
 
-    // Run HTTP server in background thread
-    let server_handle = thread::Builder::new()
-        .name("agent-server".to_string())
-        .spawn(move || server.run())
-        .expect("Failed to spawn agent server thread");
+    // Run WebSocket server as tokio task
+    let server_handle = tokio::spawn(async move { server.run().await });
 
     // Create monitor client if --monitor flag was passed
     let monitor_client = if config.use_monitor {
@@ -936,14 +931,13 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         client.start_session(&program, root_pid as u32)?;
     }
 
-    // Fan-out control channel for external WS subscribers
-    let (control_tx, control_rx) = mpsc::sync_channel::<BusControl>(16);
+    // Broadcast channel for external WS subscribers
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel::<Arc<TraceEvent>>(256);
 
     let _ws_broadcast_handle = if let Some(ws_port) = config.ws_port {
-        let ws = ws_server::WsServer::new(ws_port, control_tx)?;
-        Some(thread::spawn(move || ws.run()))
+        let ws = ws_server::WsServer::new(ws_port, broadcast_tx.clone())?;
+        Some(tokio::spawn(async move { ws.run().await }))
     } else {
-        drop(control_tx);
         None
     };
 
@@ -975,19 +969,23 @@ fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()> {
         all_pids: HashMap::new(),
         root_dead_since: None,
         symbol_resolver: symbol_resolver::SymbolResolver::new(),
-        subscribers: Vec::new(),
+        broadcast_tx: if config.ws_port.is_some() {
+            Some(broadcast_tx)
+        } else {
+            None
+        },
         next_seq: 0,
-        control_rx,
     };
 
     // Main event loop - process events and print output
     let exit_code = run_main_event_loop(
-        event_rx,
+        &mut event_rx,
         &active_agents,
         &server_handle,
         &loop_config,
         &mut loop_state,
-    )?;
+    )
+    .await?;
 
     // Notify monitor of session end
     if let Some(ref client) = monitor_client {
@@ -1023,12 +1021,10 @@ struct EventLoopState {
     all_pids: HashMap<u32, bool>,
     root_dead_since: Option<std::time::Instant>,
     symbol_resolver: symbol_resolver::SymbolResolver,
-    /// Fan-out subscribers for enriched events (external WS clients).
-    subscribers: Vec<mpsc::SyncSender<Arc<TraceEvent>>>,
+    /// Broadcast sender for enriched events (external WS clients).
+    broadcast_tx: Option<tokio::sync::broadcast::Sender<Arc<TraceEvent>>>,
     /// Monotonic sequence number for enriched events.
     next_seq: u64,
-    /// Receiver for new subscriber registrations.
-    control_rx: Receiver<BusControl>,
 }
 
 /// Check if a process is still running using waitpid with WNOHANG.
@@ -1051,27 +1047,22 @@ fn is_process_alive(_pid: i32) -> bool {
 
 /// Main event loop - receives events from all agents and prints them.
 /// Returns the exit code of the root process if available.
-fn run_main_event_loop(
-    event_rx: Receiver<AgentEvent>,
+async fn run_main_event_loop(
+    event_rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
     active_agents: &AtomicU32,
-    server_handle: &thread::JoinHandle<()>,
-    config: &EventLoopConfig,
+    server_handle: &tokio::task::JoinHandle<()>,
+    config: &EventLoopConfig<'_>,
     state: &mut EventLoopState,
 ) -> Result<Option<i32>> {
-    loop {
-        // Process pending subscriber registrations
-        while let Ok(ctrl) = state.control_rx.try_recv() {
-            match ctrl {
-                BusControl::Subscribe(sub) => state.subscribers.push(sub),
-            }
-        }
+    let mut process_check = tokio::time::interval(std::time::Duration::from_millis(200));
 
-        // Wait for events
-        match event_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(event) => {
+    loop {
+        tokio::select! {
+            // Events delivered instantly (no polling delay)
+            Some(event) = event_rx.recv() => {
                 let is_disconnect = matches!(&event, AgentEvent::Disconnected { .. });
                 process_event(event, config, state)?;
-                // Decrement active_agents here (not in the HTTP handler) so that
+                // Decrement active_agents here (not in the WS handler) so that
                 // all preceding events in the FIFO channel are guaranteed to have
                 // been processed first. This eliminates the shutdown drain race.
                 if is_disconnect {
@@ -1081,10 +1072,12 @@ fn run_main_event_loop(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Check if server thread panicked
+
+            // Periodic liveness check (replaces timeout-based polling)
+            _ = process_check.tick() => {
+                // Check if server task panicked
                 if server_handle.is_finished() {
-                    debug!("Server thread exited unexpectedly");
+                    debug!("Server task exited unexpectedly");
                     break;
                 }
                 // Check if all agents disconnected
@@ -1102,8 +1095,8 @@ fn run_main_event_loop(
                 }
                 // Fallback: if root process has exited but some agents haven't
                 // sent Disconnected (e.g., forked children that died without cleanup),
-                // wait up to 500ms then exit gracefully. With WebSocket EOF detection
-                // (Change 1), this path is rarely needed.
+                // wait up to 500ms then exit gracefully. With WebSocket EOF detection,
+                // this path is rarely needed.
                 if state.seen_root && !is_process_alive(config.root_pid) {
                     match state.root_dead_since {
                         None => {
@@ -1120,9 +1113,9 @@ fn run_main_event_loop(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break;
-            }
+
+            // All senders dropped
+            else => break,
         }
     }
 
@@ -1334,14 +1327,20 @@ fn process_event(
                         }
                         policy::EventDisposition::Display => ReviewDecision::Allow,
                         policy::EventDisposition::Review { .. } => {
-                            prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                            tokio::task::block_in_place(|| {
+                                prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                            })
                         }
                     }
                 } else {
-                    prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                    tokio::task::block_in_place(|| {
+                        prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                    })
                 }
             } else {
-                prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                tokio::task::block_in_place(|| {
+                    prompt_review_decision(&event, state.output_writer.as_deref_mut())
+                })
             };
             let _ = response_tx.send(decision);
         }
@@ -1359,16 +1358,17 @@ fn category_from_hook_type(hook_type: &HookType) -> malwi_protocol::EventCategor
     }
 }
 
-/// Enrich a trace event with CLI-side fields and fan out to subscribers.
+/// Enrich a trace event with CLI-side fields and fan out to broadcast subscribers.
 fn fan_out(
     trace_event: &mut TraceEvent,
     state: &mut EventLoopState,
     config: &EventLoopConfig,
     disposition: &str,
 ) {
-    if state.subscribers.is_empty() {
-        return;
-    }
+    let broadcast_tx = match &state.broadcast_tx {
+        Some(tx) => tx,
+        None => return,
+    };
     state.next_seq += 1;
     trace_event.seq = state.next_seq;
     trace_event.source = Some(malwi_protocol::EventSource::Agent {
@@ -1377,10 +1377,7 @@ fn fan_out(
     trace_event.category = Some(category_from_hook_type(&trace_event.hook_type));
     trace_event.disposition = Some(disposition.to_string());
 
-    let arc = Arc::new(trace_event.clone());
-    state
-        .subscribers
-        .retain(|sub| sub.try_send(Arc::clone(&arc)).is_ok());
+    let _ = broadcast_tx.send(Arc::new(trace_event.clone()));
 }
 
 /// Emit a "[malwi] denied:" message for a blocked event.
