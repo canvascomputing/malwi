@@ -16,9 +16,130 @@ mod darwin {
     use mach2::vm_types::vm_offset_t;
     use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t, vm_address_t, vm_size_t};
 
+    use core::sync::atomic::{AtomicU8, Ordering};
+
     const FALSE: boolean_t = 0;
     const TRUE: boolean_t = 1;
     const VM_FLAGS_OVERWRITE: libc::c_int = 0x4000;
+
+    // --- Raw SVC probe ---
+    // On some macOS environments (GitHub runner VMs under hypervisor), raw Mach
+    // traps via `SVC #0x80` are blocked by the kernel, delivering SIGSYS instead
+    // of returning an error.  We probe once at first use and cache the result.
+
+    /// 0 = untested, 1 = supported, 2 = blocked
+    static RAW_SVC_OK: AtomicU8 = AtomicU8::new(0);
+
+    /// 3 = probe in progress (used for CAS locking)
+    const SVC_PROBING: u8 = 3;
+
+    #[cfg(target_arch = "aarch64")]
+    fn is_raw_svc_supported() -> bool {
+        let v = RAW_SVC_OK.load(Ordering::Acquire);
+        match v {
+            1 => return true,
+            2 => return false,
+            _ => {}
+        }
+        // First caller wins the probe; losers spin until done.
+        match RAW_SVC_OK.compare_exchange(0, SVC_PROBING, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                let ok = unsafe { probe_raw_svc() };
+                RAW_SVC_OK.store(if ok { 1 } else { 2 }, Ordering::Release);
+                ok
+            }
+            Err(_) => {
+                // Another thread is probing — spin until they write the result.
+                let mut v = RAW_SVC_OK.load(Ordering::Acquire);
+                while v == 0 || v == SVC_PROBING {
+                    core::hint::spin_loop();
+                    v = RAW_SVC_OK.load(Ordering::Acquire);
+                }
+                v == 1
+            }
+        }
+    }
+
+    /// Probe whether raw `SVC #0x80` Mach traps work on this system.
+    ///
+    /// Installs a temporary SIGSYS handler that longjmps back to a recovery
+    /// point, then executes a harmless `mach_task_self` trap via raw SVC.
+    /// If SIGSYS fires, the handler recovers and we return `false`.
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn probe_raw_svc() -> bool {
+        use core::cell::UnsafeCell;
+        use core::ffi::c_int;
+        use core::mem::MaybeUninit;
+
+        // ARM64 macOS <setjmp.h>:
+        //   _JBLEN = ((14 + 8 + 2) * 2) = 48
+        //            ^^^   ^   ^    ^
+        //           x19-  d8-  lr,  doubled for pointer-auth
+        //           x28   d15  sp   salt storage
+        //   sigjmp_buf = int[_JBLEN + 1]  (+1 for saved-sigmask flag)
+        type SigJmpBuf = [c_int; 49];
+
+        // Not in the `libc` crate, but real symbols in libsystem_platform.dylib.
+        extern "C" {
+            fn sigsetjmp(env: *mut SigJmpBuf, savesigs: c_int) -> c_int;
+            fn siglongjmp(env: *mut SigJmpBuf, val: c_int) -> !;
+        }
+
+        // Thread-local jump buffer for siglongjmp recovery.
+        thread_local! {
+            static JUMP_BUF: UnsafeCell<SigJmpBuf> = UnsafeCell::new([0; 49]);
+        }
+
+        unsafe extern "C" fn sigsys_handler(
+            _sig: c_int,
+            _info: *mut libc::siginfo_t,
+            _ctx: *mut libc::c_void,
+        ) {
+            JUMP_BUF.with(|buf| {
+                siglongjmp((*buf).get(), 1);
+            });
+        }
+
+        // Save the current SIGSYS handler.
+        let mut old_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
+        let mut new_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
+        new_action.sa_sigaction = sigsys_handler as usize;
+        new_action.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
+
+        if libc::sigaction(libc::SIGSYS, &new_action, &mut old_action) != 0 {
+            // Can't install handler — assume SVC is not safe.
+            return false;
+        }
+
+        let ok = JUMP_BUF.with(|buf| {
+            if sigsetjmp((*buf).get(), 1) != 0 {
+                // We got here via siglongjmp from the SIGSYS handler.
+                return false;
+            }
+
+            // Attempt a harmless Mach trap: mach_task_self().
+            //   movn x16, 0x1b  →  x16 = ~0x1b = -28 (trap number for task_self)
+            //   svc  0x80       →  Mach kernel trap entry on ARM64
+            let ret: u64;
+            core::arch::asm!(
+                "movn x16, 0x1b",
+                "svc 0x80",
+                lateout("x0") ret,
+                out("x16") _,
+                options(nostack, nomem),
+            );
+
+            // If we get here, the SVC succeeded (ret is a valid port name).
+            let _ = ret;
+            true
+        });
+
+        // Restore original SIGSYS handler.
+        libc::sigaction(libc::SIGSYS, &old_action, core::ptr::null_mut());
+
+        ok
+    }
 
     extern "C" {
         fn vm_remap(
@@ -56,6 +177,12 @@ mod darwin {
             return kr;
         }
 
+        // Only attempt raw SVC if probed safe on this system. On GitHub runner
+        // VMs (hypervisor), the kernel blocks raw Mach traps with SIGSYS.
+        if !is_raw_svc_supported() {
+            return kr;
+        }
+
         // Fall back to direct SVC syscall for ARM64. Under hardened runtime /
         // "debugger mapping" enforcement the libsystem wrapper may fail where
         // the raw SVC succeeds.
@@ -64,6 +191,8 @@ mod darwin {
         let x2: u64 = size;
         let x3: u64 = set_maximum as u64;
         let x4: u64 = new_protection as u64;
+        // movn x16, 0xd  →  x16 = ~0xd = -14 (trap number for mach_vm_protect)
+        // svc  0x80      →  Mach kernel trap entry on ARM64
         let ret: u64;
         core::arch::asm!(
             "movn x16, 0xd",
