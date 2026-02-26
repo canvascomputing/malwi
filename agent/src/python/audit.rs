@@ -7,14 +7,15 @@
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use log::{debug, error};
 
 use crate::exec::SpawnHandler;
 use crate::native;
 
-use super::ffi::{init_python_api, PyAuditHookFunction, PySys_AddAuditHookFn, PYTHON_API};
+use super::ffi::{
+    init_python_api, PyAuditHookFunction, PySys_AddAuditHookFn, Py_IsInitializedFn, PYTHON_API,
+};
 use super::filters::{has_any_filters, matches_filter};
 use super::helpers::{cstr_to_string, extract_tuple_arguments};
 use super::profile::{do_register_profile_hook, set_thread_created, PROFILE_HOOK_REGISTERED};
@@ -23,31 +24,76 @@ use super::stack::capture_current_python_stack;
 static AUDIT_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
 static AUDIT_REG_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Best-effort background task to register the audit hook once Python is ready.
+/// Register the audit hook deterministically after Python initialization.
 ///
-/// In some environments the agent is loaded very early (dyld constructor), and
-/// Python's exported symbols may not be visible yet. Retrying avoids missing
-/// subprocess audit events when exec filters are configured.
+/// If Python is already initialized, registers the audit hook directly.
+/// Otherwise, hooks `Py_RunMain` (called after init completes) and
+/// registers the audit hook in its on-enter callback.
 pub fn start_audit_registration_task() {
-    if AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
-        return;
-    }
+    // Reset the registered flag: an early (pre-Py_Initialize) registration may
+    // have appeared to succeed but the hook can be silently lost during init on
+    // some Python builds.  Force re-registration now that exec filters need it.
+    AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
+
     if AUDIT_REG_TASK_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
 
-    std::thread::spawn(|| {
-        // Bound the retry window to avoid an unkillable background loop.
-        for _ in 0..100 {
-            if AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
-                break;
-            }
-            if register_audit_hook() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+    // If Python is already initialized, register directly.
+    if is_python_initialized() {
+        register_audit_hook();
+        return;
+    }
+
+    // Python not ready yet; hook Py_RunMain (called after init) for
+    // deterministic post-init registration.
+    if !hook_post_init() {
+        // Py_RunMain not available (embedded Python that calls Py_Initialize +
+        // PyRun_* directly).  Fall back to direct registration — it may be
+        // silently lost during Py_Initialize on some builds, but it's the best
+        // we can do.
+        register_audit_hook();
+    }
+}
+
+/// Hook a post-init function so the audit hook is registered deterministically
+/// once Python initialization completes.
+///
+/// We hook `Py_RunMain` (on-enter) rather than `Py_InitializeFromConfig`
+/// (on-leave) because the interceptor's return-hook mechanism does not work
+/// reliably for `Py_InitializeFromConfig` on all platforms.
+fn hook_post_init() -> bool {
+    let addr = match native::find_export(None, "Py_RunMain") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+
+    let listener = malwi_intercept::CallListener {
+        on_enter: Some(on_post_init_enter),
+        on_leave: None,
+        user_data: std::ptr::null_mut(),
+    };
+
+    let interceptor = malwi_intercept::Interceptor::obtain();
+    match interceptor.attach(addr as *mut c_void, listener) {
+        Ok(()) => {
+            debug!("Hooked Py_RunMain for post-init audit registration");
+            true
         }
-    });
+        Err(e) => {
+            debug!("Failed to hook Py_RunMain: {:?}", e);
+            false
+        }
+    }
+}
+
+unsafe extern "C" fn on_post_init_enter(
+    _ctx: *mut malwi_intercept::InvocationContext,
+    _user_data: *mut c_void,
+) {
+    if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
+        register_audit_hook();
+    }
 }
 
 /// Get the current Python frame, or null if PyEval_GetFrame is unavailable.
@@ -461,9 +507,22 @@ pub fn register_audit_hook() -> bool {
     if result == 0 {
         debug!("Python audit hook registered");
         AUDIT_HOOK_REGISTERED.store(true, Ordering::SeqCst);
+        if crate::agent_debug_enabled() {
+            eprintln!("[malwi-agent] audit hook registered");
+        }
         true
     } else {
         error!("PySys_AddAuditHook failed with code {}", result);
         false
     }
+}
+
+/// Check whether the Python interpreter is fully initialized.
+fn is_python_initialized() -> bool {
+    let addr = match native::find_export(None, "Py_IsInitialized") {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let f: Py_IsInitializedFn = unsafe { std::mem::transmute(addr) };
+    unsafe { f() != 0 }
 }

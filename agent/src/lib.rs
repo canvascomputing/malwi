@@ -396,9 +396,17 @@ impl Agent {
         match unsafe { ForkMonitor::new(self) } {
             Some(monitor) => {
                 info!("Fork monitor installed");
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] fork monitor installed");
+                }
                 *guard = Some(monitor);
             }
-            None => warn!("Failed to install fork monitor"),
+            None => {
+                warn!("Failed to install fork monitor");
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] fork monitor installation failed");
+                }
+            }
         }
     }
 
@@ -419,9 +427,17 @@ impl Agent {
                     }
                 }
                 info!("Spawn monitor installed");
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] spawn monitor installed");
+                }
                 *guard = Some(monitor);
             }
-            None => warn!("Failed to install spawn monitor"),
+            None => {
+                warn!("Failed to install spawn monitor");
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] spawn monitor installation failed");
+                }
+            }
         }
 
         // Install dlsym override AFTER spawn monitor hooks are set up.
@@ -693,10 +709,21 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     // AFTER the spawn monitor hooks are set up, not here. Installing it early
     // would poison dlsym("posix_spawn") to return our wrapper address instead
     // of the real libc function, breaking find_global_export_by_name().
-    // Register CPython audit hook if CPython is loaded
+    // Register CPython audit hook if CPython is loaded.
+    // This may succeed even before Py_Initialize() on some builds (e.g.
+    // python-build-standalone).  On builds where pre-init hooks are silently
+    // lost, start_audit_registration_task() will hook Py_RunMain to
+    // re-register post-init (or fall back to direct registration for
+    // embedded Python that bypasses Py_RunMain).
     if python::is_loaded() {
         info!("CPython detected, registering audit hook");
-        python::register_audit_hook();
+        let registered = python::register_audit_hook();
+        if AGENT_DEBUG.load(Ordering::Relaxed) {
+            eprintln!(
+                "[malwi-agent] early audit hook registration: {}",
+                if registered { "ok" } else { "deferred" }
+            );
+        }
     }
 
     // Detect Node.js runtime and enable tracing.
