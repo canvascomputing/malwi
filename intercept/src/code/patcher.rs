@@ -34,7 +34,7 @@ mod darwin {
     const SVC_PROBING: u8 = 3;
 
     #[cfg(target_arch = "aarch64")]
-    fn is_raw_svc_supported() -> bool {
+    pub(super) fn is_raw_svc_supported() -> bool {
         let v = RAW_SVC_OK.load(Ordering::Acquire);
         match v {
             1 => return true,
@@ -137,6 +137,101 @@ mod darwin {
 
         // Restore original SIGSYS handler.
         libc::sigaction(libc::SIGSYS, &old_action, core::ptr::null_mut());
+
+        ok
+    }
+
+    /// Probe whether SVC #0x80 can execute from a dynamically allocated
+    /// code page (as opposed to the binary's own .text section).
+    ///
+    /// This is the critical distinction for trampoline safety: `probe_raw_svc()`
+    /// tests SVC from inline asm (the binary's code segment), but trampolines
+    /// execute relocated SVC instructions from `mach_vm_allocate`'d pages.
+    /// Hypervisor-based runners may allow the former but block the latter.
+    #[cfg(all(test, target_arch = "aarch64"))]
+    pub(super) fn can_execute_svc_from_dynamic_page() -> bool {
+        use std::sync::OnceLock;
+        static RESULT: OnceLock<bool> = OnceLock::new();
+        *RESULT.get_or_init(|| unsafe { probe_svc_from_dynamic_page() })
+    }
+
+    #[cfg(all(test, target_arch = "aarch64"))]
+    unsafe fn probe_svc_from_dynamic_page() -> bool {
+        use core::cell::UnsafeCell;
+        use core::ffi::c_int;
+        use core::mem::MaybeUninit;
+
+        type SigJmpBuf = [c_int; 49];
+
+        extern "C" {
+            fn sigsetjmp(env: *mut SigJmpBuf, savesigs: c_int) -> c_int;
+            fn siglongjmp(env: *mut SigJmpBuf, val: c_int) -> !;
+        }
+
+        thread_local! {
+            static JUMP_BUF: UnsafeCell<SigJmpBuf> = UnsafeCell::new([0; 49]);
+        }
+
+        unsafe extern "C" fn sigsys_handler(
+            _sig: c_int,
+            _info: *mut libc::siginfo_t,
+            _ctx: *mut libc::c_void,
+        ) {
+            JUMP_BUF.with(|buf| {
+                siglongjmp((*buf).get(), 1);
+            });
+        }
+
+        let task = mach_task_self();
+        let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as u64;
+
+        // Allocate a dynamic page (same mechanism as CodeAllocator::alloc_any).
+        let mut addr: mach_vm_address_t = 0;
+        let kr = mach_vm_allocate(task, &mut addr, page_sz, VM_FLAGS_ANYWHERE);
+        if kr != KERN_SUCCESS {
+            return false;
+        }
+
+        // Write: MOVN X16, #0x1b; SVC #0x80; RET
+        // This is the mach_task_self() trap — harmless.
+        let code = addr as *mut u32;
+        code.write(0x92800370); // MOVN X16, #0x1b  (x16 = -28)
+        code.add(1).write(0xD4001001); // SVC #0x80
+        code.add(2).write(0xD65F03C0); // RET
+
+        // Make executable.
+        let kr = mach2::vm::mach_vm_protect(task, addr, page_sz, 0, VM_PROT_READ | VM_PROT_EXECUTE);
+        if kr != KERN_SUCCESS {
+            let _ = mach_vm_deallocate(task, addr, page_sz);
+            return false;
+        }
+
+        // Install SIGSYS handler for recovery.
+        let mut old_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
+        let mut new_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
+        new_action.sa_sigaction = sigsys_handler as usize;
+        new_action.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
+
+        if libc::sigaction(libc::SIGSYS, &new_action, &mut old_action) != 0 {
+            let _ = mach_vm_deallocate(task, addr, page_sz);
+            return false;
+        }
+
+        let ok = JUMP_BUF.with(|buf| {
+            if sigsetjmp((*buf).get(), 1) != 0 {
+                // Got here via siglongjmp — SVC was blocked from this page.
+                return false;
+            }
+            // Call the dynamically generated code.
+            let f: extern "C" fn() -> u64 = core::mem::transmute(addr as *const u8);
+            let _ret = f();
+            true
+        });
+
+        // Restore handler, deallocate page.
+        libc::sigaction(libc::SIGSYS, &old_action, core::ptr::null_mut());
+        let _ = mach_vm_deallocate(task, addr, page_sz);
 
         ok
     }
@@ -746,6 +841,33 @@ pub unsafe fn patch_code(
         let _ = (addr, size, apply);
         Err(HookError::Unsupported)
     }
+}
+
+/// Check whether raw SVC #0x80 Mach traps work on this system.
+///
+/// Exposed for tests that need to gate syscall-dependent behavior.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn is_raw_svc_supported() -> bool {
+    darwin::is_raw_svc_supported()
+}
+
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+pub(crate) fn is_raw_svc_supported() -> bool {
+    false
+}
+
+/// Check whether SVC #0x80 can execute from a dynamically allocated code page.
+///
+/// Returns `false` on non-macOS-arm64 or if the kernel blocks SVC from
+/// heap-allocated pages (e.g., hypervisor-based CI runners).
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn can_execute_svc_from_dynamic_page() -> bool {
+    darwin::can_execute_svc_from_dynamic_page()
+}
+
+#[cfg(all(test, not(all(target_os = "macos", target_arch = "aarch64"))))]
+pub(crate) fn can_execute_svc_from_dynamic_page() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -1373,5 +1495,31 @@ mod tests {
 
             let _ = mach2::vm::mach_vm_deallocate(task, addr, page_sz as mach_vm_size_t);
         }
+    }
+
+    /// Verify the inline SVC probe completes without crashing.
+    ///
+    /// On systems where SVC is blocked (CI runners under hypervisor),
+    /// the probe's SIGSYS handler must recover gracefully and return false.
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn probe_raw_svc_completes_without_crash() {
+        let _g = crate::lock_hook_tests();
+        let result = is_raw_svc_supported();
+        // Either true or false is valid depending on the environment.
+        // The important thing is no SIGSYS crash.
+        eprintln!("is_raw_svc_supported() = {result}");
+    }
+
+    /// Verify the dynamic-page SVC probe completes without crashing.
+    ///
+    /// This tests the exact scenario that causes CI failures: executing
+    /// SVC #0x80 from a `mach_vm_allocate`'d page (like trampoline pages).
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn svc_from_dynamic_page_probe_completes_without_crash() {
+        let _g = crate::lock_hook_tests();
+        let result = can_execute_svc_from_dynamic_page();
+        eprintln!("can_execute_svc_from_dynamic_page() = {result}");
     }
 }

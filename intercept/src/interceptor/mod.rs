@@ -1433,6 +1433,15 @@ mod tests {
 
         let _g = lock_hook_tests();
 
+        // On macOS, libc syscall wrappers use SVC #0x80 which gets relocated
+        // to the trampoline page. If the kernel blocks SVC from dynamic pages
+        // (e.g., hypervisor-based CI runners), skip this test.
+        #[cfg(target_os = "macos")]
+        if !crate::code::patcher::can_execute_svc_from_dynamic_page() {
+            eprintln!("skipping: SVC #0x80 blocked from dynamic pages on this system");
+            return;
+        }
+
         static SOCKET_ENTER: AtomicU32 = AtomicU32::new(0);
 
         unsafe extern "C" fn socket_on_enter(_ctx: *mut InvocationContext, _ud: *mut c_void) {
@@ -1486,6 +1495,15 @@ mod tests {
         use core::sync::atomic::{AtomicU32, Ordering};
 
         let _g = lock_hook_tests();
+
+        // On macOS, libc syscall wrappers use SVC #0x80 which gets relocated
+        // to the trampoline page. If the kernel blocks SVC from dynamic pages
+        // (e.g., hypervisor-based CI runners), skip this test.
+        #[cfg(target_os = "macos")]
+        if !crate::code::patcher::can_execute_svc_from_dynamic_page() {
+            eprintln!("skipping: SVC #0x80 blocked from dynamic pages on this system");
+            return;
+        }
 
         static CONNECT_ENTER: AtomicU32 = AtomicU32::new(0);
 
