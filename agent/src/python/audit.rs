@@ -47,13 +47,44 @@ pub fn start_audit_registration_task() {
 
     // Python not ready yet; hook Py_RunMain (called after init) for
     // deterministic post-init registration.
-    if !hook_post_init() {
-        // Py_RunMain not available (embedded Python that calls Py_Initialize +
-        // PyRun_* directly).  Fall back to direct registration — it may be
-        // silently lost during Py_Initialize on some builds, but it's the best
-        // we can do.
-        register_audit_hook();
+    if hook_post_init() {
+        return;
     }
+
+    // Fallback: code patching is unavailable (macOS hypervisor VMs, etc.).
+    //
+    // Strategy: register the audit hook IMMEDIATELY (pre-init), then
+    // poll as a safety net.  On standard CPython, PySys_AddAuditHook
+    // stores pre-init hooks in a global list that is migrated to the
+    // interpreter during Py_Initialize — so the hook is active before
+    // any user code runs.  The poll loop re-registers post-init only
+    // if the pre-init attempt failed (exotic builds where pre-init
+    // hooks are lost).
+    std::thread::Builder::new()
+        .name("malwi-audit-poll".into())
+        .spawn(|| {
+            // Register immediately, pre-init.  On standard CPython the
+            // hook survives Py_Initialize and is active before user code.
+            let registered = register_audit_hook();
+
+            // Poll for init completion.  If already registered the hook
+            // is active; just confirm init completed normally.
+            // If registration failed, re-register post-init (inherent
+            // race on exotic builds — best effort).
+            for _ in 0..5000 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                if is_python_initialized() {
+                    if !registered {
+                        register_audit_hook();
+                    }
+                    return;
+                }
+            }
+            if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
+                register_audit_hook();
+            }
+        })
+        .ok();
 }
 
 /// Hook a post-init function so the audit hook is registered deterministically
