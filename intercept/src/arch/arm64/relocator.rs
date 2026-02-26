@@ -242,31 +242,22 @@ fn estimated_size(kind: InsnKind) -> usize {
     }
 }
 
-/// Check if a given instruction uses register X16 or X17.
-fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
+extern "C" {
+    fn capstone_check_x16_x17(
+        code: *const u8,
+        insn_count: usize,
+        uses_x16: *mut bool,
+        uses_x17: *mut bool,
+    );
+}
+
+/// Check if any of the given instructions use register X16 or X17.
+/// Uses Capstone disassembly for correct operand typing — no false positives
+/// from immediate fields that happen to contain 16 or 17.
+fn insn_uses_x16_x17(code: *const u8, count: usize) -> (bool, bool) {
     let mut x16 = false;
     let mut x17 = false;
-
-    // Check common register fields:
-    //   Rd/Rt (bits 0-4), Rn (bits 5-9), Rt2 (bits 14-10), Rm (bits 16-20)
-    // Rt2 is used by STP/LDP for the second register. On non-STP/LDP instructions
-    // bits 14-10 may be immediate fields, causing conservative false positives —
-    // this is acceptable (we pick the other scratch register unnecessarily).
-    let rd = insn & 0x1f;
-    let rn = (insn >> 5) & 0x1f;
-    let rt2 = (insn >> 10) & 0x1f;
-    let rm = (insn >> 16) & 0x1f;
-
-    // Don't flag SP (31) as X16/X17.
-    for r in [rd, rn, rt2, rm] {
-        if r == 16 {
-            x16 = true;
-        }
-        if r == 17 {
-            x17 = true;
-        }
-    }
-
+    unsafe { capstone_check_x16_x17(code, count, &mut x16, &mut x17) };
     (x16, x17)
 }
 
@@ -281,17 +272,10 @@ fn insn_uses_x16_x17(insn: u32) -> (bool, bool) {
 /// `input` must point to at least `max_insns` valid ARM64 instructions.
 pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Option<Reg>) {
     let mut limit = max_insns;
-    let mut x16_used = false;
-    let mut x17_used = false;
 
     for i in 0..max_insns {
         let insn = unsafe { input.add(i).read() };
         let kind = insn_kind(insn);
-
-        // Check scratch register usage.
-        let (u16, u17) = insn_uses_x16_x17(insn);
-        x16_used |= u16;
-        x17_used |= u17;
 
         // BL, BLR, and PAC BLR variants (BLRAA/BLRAAZ/BLRAB/BLRABZ) mark
         // boundaries where further relocation is unsafe (they set LR to pc+4,
@@ -314,6 +298,10 @@ pub unsafe fn can_relocate(input: *const u32, max_insns: usize) -> (usize, Optio
             break;
         }
     }
+
+    // Use Capstone to determine scratch register availability over the
+    // instructions we will actually relocate (up to `limit`).
+    let (x16_used, x17_used) = insn_uses_x16_x17(input as *const u8, limit);
 
     let scratch = if !x16_used {
         Some(Reg::X16)
@@ -886,6 +874,30 @@ mod tests {
         assert_eq!(read_u32(&buf, 16), 0x3DC00200, "LDR Q0, [X16, #0]");
     }
 
+    /// A prologue matching glibc's open() on arm64: SUB sp, ADRP, LDR unsigned-offset, STP.
+    /// Before the fix, bits 10-14 of SUB and LDR were falsely decoded as Rt2, flagging
+    /// both X16 and X17 and making the function appear unhookable (scratch = None).
+    #[test]
+    fn can_relocate_no_false_positive_from_immediate_fields() {
+        let insns: [u32; 4] = [
+            0xd101c3ff, // SUB SP, SP, #0x70       (bits 10-14 = 16, NOT a register)
+            0xf0000663, // ADRP X3, ...             (bits 10-14 = 24, not relevant)
+            0xf9474463, // LDR X3, [X3, #3720]      (bits 10-14 = 17, NOT a register)
+            0xa9037bfd, // STP X29, X30, [SP, #0x30] (bits 10-14 = 30 = X30, real Rt2)
+        ];
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 4) };
+        assert!(
+            scratch.is_some(),
+            "should have a scratch register (X16 or X17 available), got None"
+        );
+        // Neither X16 nor X17 actually appears in this prologue.
+        assert_eq!(
+            scratch,
+            Some(Reg::X16),
+            "X16 should be available as scratch"
+        );
+    }
+
     /// STP X19, X16, [SP, #-16]! has X16 in Rt2 (bits 14-10) — scratch should be X17.
     #[test]
     fn can_relocate_detects_x16_in_stp_rt2() {
@@ -1023,5 +1035,50 @@ mod tests {
             assert_eq!(w.offset(), 4);
         }
         assert_eq!(read_u32(&buf, 0), 0xD61F_0A1F, "BRAAZ X16 copied verbatim");
+    }
+
+    /// ADD X0, X1, #1024 has bits 16-20 = 16 (part of imm12), must NOT flag X16.
+    #[test]
+    fn can_relocate_no_false_positive_from_add_immediate() {
+        // ADD X0, X1, #1024: sf=1, op=0, S=0, imm12=1024=0x400, Rn=1, Rd=0
+        // Encoding: 0x91000000 | (0x400 << 10) | (1 << 5) | 0 = 0x91100020
+        // Bits 16-20 of 0x91100020 = (0x91100020 >> 16) & 0x1F = 0x10 = 16
+        let insns: [u32; 1] = [0x91100020];
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
+        assert_eq!(
+            scratch,
+            Some(Reg::X16),
+            "ADD imm with bits 16-20=16 must not falsely flag X16"
+        );
+    }
+
+    /// SUB SP, SP, #0x440 has bits 16-20 = 17 (part of imm12), must NOT flag X17.
+    #[test]
+    fn can_relocate_no_false_positive_from_sub_immediate() {
+        // SUB SP, SP, #0x440: sf=1, op=1, S=0, imm12=0x440=1088, Rn=SP(31), Rd=SP(31)
+        // Encoding: 0xD1000000 | (0x440 << 10) | (31 << 5) | 31 = 0xD11103FF
+        // Bits 16-20 of 0xD11103FF = (0xD11103FF >> 16) & 0x1F = 0x11 = 17
+        let insns: [u32; 1] = [0xD11103FF];
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
+        assert_eq!(
+            scratch,
+            Some(Reg::X16),
+            "SUB imm with bits 16-20=17 must not falsely flag X17"
+        );
+    }
+
+    /// B #+64 has bits 0-4 = 16 (part of imm26), must NOT flag X16.
+    #[test]
+    fn can_relocate_no_false_positive_from_branch_immediate() {
+        // B #+64: imm26 = 64/4 = 16 = 0x10
+        // Encoding: 0x14000000 | 0x10 = 0x14000010
+        // Bits 0-4 of 0x14000010 = 0x10 = 16
+        let insns: [u32; 1] = [0x14000010];
+        let (_limit, scratch) = unsafe { can_relocate(insns.as_ptr(), 1) };
+        assert_eq!(
+            scratch,
+            Some(Reg::X16),
+            "B imm with bits 0-4=16 must not falsely flag X16"
+        );
     }
 }

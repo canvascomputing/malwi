@@ -12,6 +12,9 @@ log.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 anyhow.workspace = true
 

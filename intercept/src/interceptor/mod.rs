@@ -1485,6 +1485,64 @@ mod tests {
         }
     }
 
+    /// Hook libc open() — its prologue on glibc/arm64 previously triggered false
+    /// positives in insn_uses_x16_x17 (SUB imm and LDR unsigned-offset have bits
+    /// 10-14 that look like X16/X17, but are not register fields).
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn attach_to_libc_open_syscall_wrapper() {
+        use core::sync::atomic::{AtomicU32, Ordering};
+
+        let _g = lock_hook_tests();
+
+        #[cfg(target_os = "macos")]
+        if !crate::code::patcher::can_execute_svc_from_dynamic_page() {
+            eprintln!("skipping: SVC #0x80 blocked from dynamic pages on this system");
+            return;
+        }
+
+        static OPEN_ENTER: AtomicU32 = AtomicU32::new(0);
+
+        unsafe extern "C" fn open_on_enter(_ctx: *mut InvocationContext, _ud: *mut c_void) {
+            OPEN_ENTER.fetch_add(1, Ordering::Relaxed);
+        }
+
+        OPEN_ENTER.store(0, Ordering::Relaxed);
+
+        let open_addr =
+            crate::module::find_global_export_by_name("open").expect("should find open");
+
+        let i = Interceptor::obtain();
+        let listener = CallListener {
+            on_enter: Some(open_on_enter),
+            on_leave: None,
+            user_data: core::ptr::null_mut(),
+        };
+
+        i.attach(open_addr as *mut c_void, listener).unwrap();
+
+        // Call open() — should trigger our hook.
+        let fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDONLY) };
+        assert!(fd >= 0, "open(/dev/null) should succeed");
+        unsafe {
+            libc::close(fd);
+        }
+
+        assert!(
+            OPEN_ENTER.load(Ordering::Relaxed) >= 1,
+            "hook should fire for open()"
+        );
+
+        i.detach(&listener);
+
+        // Verify open() still works after detach.
+        let fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDONLY) };
+        assert!(fd >= 0, "open() should still work after detach");
+        unsafe {
+            libc::close(fd);
+        }
+    }
+
     /// Hook connect() (another syscall wrapper) and verify error handling works.
     ///
     /// connect() to a bogus address should return ECONNREFUSED/-1, verifying
