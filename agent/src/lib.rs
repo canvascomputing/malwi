@@ -713,8 +713,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     // This may succeed even before Py_Initialize() on some builds (e.g.
     // python-build-standalone).  On builds where pre-init hooks are silently
     // lost, start_audit_registration_task() will hook Py_RunMain to
-    // re-register post-init (or fall back to direct registration for
-    // embedded Python that bypasses Py_RunMain).
+    // re-register post-init.
     if python::is_loaded() {
         info!("CPython detected, registering audit hook");
         let registered = python::register_audit_hook();

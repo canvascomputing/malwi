@@ -46,40 +46,9 @@ pub fn start_audit_registration_task() {
         return;
     }
 
-    // Python not ready yet; hook Py_RunMain (called after init) for
-    // deterministic post-init registration.
-    hook_post_init(); // best-effort, don't return on success
-
-    // Always spawn polling thread as safety net.
-    // If on_post_init_enter fires first (code patching works), the polling
-    // thread sees AUDIT_HOOK_REGISTERED=true and becomes a no-op.
-    // If code patching is silently non-functional, the polling thread
-    // provides backup registration.
-    std::thread::Builder::new()
-        .name("malwi-audit-poll".into())
-        .spawn(|| {
-            // Register immediately, pre-init.  On standard CPython the
-            // hook survives Py_Initialize and is active before user code.
-            register_audit_hook();
-
-            // Poll for init completion.
-            for _ in 0..5000 {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                if is_python_initialized() {
-                    // Give on_post_init_enter 10ms to fire first
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
-                        register_audit_hook();
-                    }
-                    return;
-                }
-            }
-            // Timeout fallback
-            if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
-                register_audit_hook();
-            }
-        })
-        .ok();
+    // Hook Py_RunMain for deterministic post-init registration.
+    // Capstone ensures code patching works reliably on ARM64.
+    hook_post_init();
 }
 
 /// Hook a post-init function so the audit hook is registered deterministically
