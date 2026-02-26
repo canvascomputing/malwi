@@ -705,6 +705,10 @@ unsafe extern "C" fn on_posix_spawn_enter(
     context: *mut InvocationContext,
     _user_data: *mut c_void,
 ) {
+    if crate::agent_debug_enabled() {
+        eprintln!("[malwi-agent] posix_spawn enter");
+    }
+
     // posix_spawn signature:
     // int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *file_actions,
     //                 const posix_spawnattr_t *attrp, char *const argv[], char *const envp[])
@@ -1375,6 +1379,10 @@ fn basename(path: &str) -> &str {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data: *mut c_void) {
+    if crate::agent_debug_enabled() {
+        eprintln!("[malwi-agent] execve enter");
+    }
+
     // execve signature: int execve(const char *path, char *const argv[], char *const envp[])
 
     // Skip if shell_execve already handled this (it calls execve internally)

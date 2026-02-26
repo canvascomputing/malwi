@@ -603,6 +603,7 @@ pub fn run_tracer_with_timeout_in_dir(args: &[&str], timeout: Duration, dir: &Pa
     cmd.args(args)
         .current_dir(dir)
         .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_child_process_group(&mut cmd);
@@ -667,6 +668,7 @@ pub fn run_tracer_with_timeout(args: &[&str], timeout: Duration) -> Output {
     cmd.args(args)
         .current_dir(fixtures_dir())
         .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_child_process_group(&mut cmd);
@@ -732,6 +734,7 @@ pub fn run_tracer_with_timeout_noninteractive(args: &[&str], timeout: Duration) 
     cmd.args(args)
         .current_dir(fixtures_dir())
         .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -910,6 +913,7 @@ pub fn run_tracer_with_stdin(args: &[&str], stdin_input: &str) -> Output {
         .args(args)
         .current_dir(fixtures_dir())
         .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -937,6 +941,7 @@ pub fn run_tracer_with_stdin_timeout(
     cmd.args(args)
         .current_dir(fixtures_dir())
         .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

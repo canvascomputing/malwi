@@ -315,6 +315,9 @@ pub(crate) unsafe extern "C" fn __fork_rebind_wrapper() -> libc::pid_t {
 
 /// Callback when fork is about to be called.
 unsafe extern "C" fn on_fork_enter(_context: *mut InvocationContext, _user_data: *mut c_void) {
+    if crate::agent_debug_enabled() {
+        eprintln!("[malwi-agent] fork enter");
+    }
     debug!("fork() enter");
     // Nothing to do on enter - we just need to track the call
 }
@@ -323,6 +326,9 @@ unsafe extern "C" fn on_fork_enter(_context: *mut InvocationContext, _user_data:
 unsafe extern "C" fn on_fork_leave(context: *mut InvocationContext, user_data: *mut c_void) {
     let result = malwi_intercept::invocation::get_return_value(context) as isize as i64;
 
+    if crate::agent_debug_enabled() {
+        eprintln!("[malwi-agent] fork leave, pid={}", result);
+    }
     debug!("fork() leave, result = {}", result);
 
     if user_data.is_null() {

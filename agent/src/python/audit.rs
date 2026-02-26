@@ -30,56 +30,51 @@ static AUDIT_REG_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 /// Otherwise, hooks `Py_RunMain` (called after init completes) and
 /// registers the audit hook in its on-enter callback.
 pub fn start_audit_registration_task() {
+    if AUDIT_REG_TASK_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
     // Reset the registered flag: an early (pre-Py_Initialize) registration may
     // have appeared to succeed but the hook can be silently lost during init on
     // some Python builds.  Force re-registration now that exec filters need it.
     AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
 
-    if AUDIT_REG_TASK_STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
     // If Python is already initialized, register directly.
     if is_python_initialized() {
+        AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
         register_audit_hook();
         return;
     }
 
     // Python not ready yet; hook Py_RunMain (called after init) for
     // deterministic post-init registration.
-    if hook_post_init() {
-        return;
-    }
+    hook_post_init(); // best-effort, don't return on success
 
-    // Fallback: code patching is unavailable (macOS hypervisor VMs, etc.).
-    //
-    // Strategy: register the audit hook IMMEDIATELY (pre-init), then
-    // poll as a safety net.  On standard CPython, PySys_AddAuditHook
-    // stores pre-init hooks in a global list that is migrated to the
-    // interpreter during Py_Initialize — so the hook is active before
-    // any user code runs.  The poll loop re-registers post-init only
-    // if the pre-init attempt failed (exotic builds where pre-init
-    // hooks are lost).
+    // Always spawn polling thread as safety net.
+    // If on_post_init_enter fires first (code patching works), the polling
+    // thread sees AUDIT_HOOK_REGISTERED=true and becomes a no-op.
+    // If code patching is silently non-functional, the polling thread
+    // provides backup registration.
     std::thread::Builder::new()
         .name("malwi-audit-poll".into())
         .spawn(|| {
             // Register immediately, pre-init.  On standard CPython the
             // hook survives Py_Initialize and is active before user code.
-            let registered = register_audit_hook();
+            register_audit_hook();
 
-            // Poll for init completion.  If already registered the hook
-            // is active; just confirm init completed normally.
-            // If registration failed, re-register post-init (inherent
-            // race on exotic builds — best effort).
+            // Poll for init completion.
             for _ in 0..5000 {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 if is_python_initialized() {
-                    if !registered {
+                    // Give on_post_init_enter 10ms to fire first
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
                         register_audit_hook();
                     }
                     return;
                 }
             }
+            // Timeout fallback
             if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
                 register_audit_hook();
             }
@@ -122,9 +117,10 @@ unsafe extern "C" fn on_post_init_enter(
     _ctx: *mut malwi_intercept::InvocationContext,
     _user_data: *mut c_void,
 ) {
-    if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
-        register_audit_hook();
-    }
+    // Unconditionally re-register: pre-init hooks may be silently lost
+    // during Py_Initialize on some builds.
+    AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
+    register_audit_hook();
 }
 
 /// Get the current Python frame, or null if PyEval_GetFrame is unavailable.
@@ -275,6 +271,12 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
             "Python API not available in audit hook for event '{}'",
             event_str
         );
+        if crate::agent_debug_enabled() {
+            eprintln!(
+                "[malwi-agent] audit: Python API init failed for '{}'",
+                event_str
+            );
+        }
     }
 
     // Exec filter integration for Python: treat subprocess.Popen as an exec event.
@@ -284,6 +286,9 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
             || event_str == "os.posix_spawn"
             || event_str == "os.posix_spawnp")
     {
+        if crate::agent_debug_enabled() {
+            eprintln!("[malwi-agent] audit callback: {}", event_str);
+        }
         let arguments = extract_tuple_arguments(args);
         if arguments.is_empty() {
             debug!("{} audit: no arguments extracted", event_str);
@@ -316,8 +321,17 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
             .or_else(|| argv.first().map(|s| s.as_str()));
         if cmd.is_none() {
             debug!("{} audit: could not extract command name", event_str);
+            if crate::agent_debug_enabled() {
+                eprintln!(
+                    "[malwi-agent] audit exec: no command extracted (args={})",
+                    arguments.len()
+                );
+            }
         }
         if let Some(cmd) = cmd {
+            if crate::agent_debug_enabled() {
+                eprintln!("[malwi-agent] audit exec: cmd={}", cmd);
+            }
             let (matches, capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
