@@ -147,11 +147,6 @@ struct HookEntry {
     #[allow(dead_code)] // Kept for removing hooks by pattern
     config: HookConfig,
     callback_data: *mut HookCallbackData,
-    // Fishhook-style rebinding fallback on macOS when inline patching fails
-    // (e.g., hardened shared-cache mappings like libSystem).
-    #[cfg(target_os = "macos")]
-    #[allow(dead_code)] // Used by restore_rebinds on unhook
-    rebind_patches: Option<Vec<(usize, usize)>>,
 }
 
 /// Data passed to hook callbacks via user_data pointer.
@@ -236,51 +231,18 @@ impl HookManager {
                 drop(Box::from_raw(callback_data));
             })?;
 
-        // Primary path: inline interceptor attach.
+        // Inline interceptor attach.
         self.interceptor.begin_transaction();
         let attach_res = self
             .interceptor
             .attach(export.address as *mut c_void, listener);
         self.interceptor.end_transaction();
 
-        // Fallback (macOS): rebind imported symbol pointers to an interceptor wrapper.
-        #[cfg(target_os = "macos")]
-        let (attach_ok, rebind_patches) = match attach_res {
-            Ok(()) => (true, None),
-            Err(e) => {
-                warn!(
-                    "Inline attach failed for {} ({:?}); trying import rebinding",
-                    export.name, e
-                );
-                // Build wrapper/trampoline but don't patch the target.
-                let wrapper = self
-                    .interceptor
-                    .attach_rebinding(export.address as *mut c_void, listener)
-                    .map_err(|e| anyhow!("Attach rebinding failed: {:?}", e))?;
-                let patched = unsafe {
-                    malwi_intercept::module::rebind_symbol(&export.name, wrapper)
-                        .map_err(|e| anyhow!("Rebind failed: {:?}", e))?
-                };
-                (true, Some(patched))
-            }
-        };
-
-        #[cfg(not(target_os = "macos"))]
-        let attach_ok = match attach_res {
-            Ok(()) => true,
-            Err(e) => {
-                unsafe {
-                    drop(Box::from_raw(callback_data));
-                }
-                return Err(anyhow!("Attach failed: {:?}", e));
-            }
-        };
-
-        if !attach_ok {
+        if let Err(e) = attach_res {
             unsafe {
                 drop(Box::from_raw(callback_data));
             }
-            return Err(anyhow!("Attach failed"));
+            return Err(anyhow!("Attach failed: {:?}", e));
         }
 
         self.hooks.lock().unwrap().insert(
@@ -290,8 +252,6 @@ impl HookManager {
                 listener,
                 config: config.clone(),
                 callback_data,
-                #[cfg(target_os = "macos")]
-                rebind_patches,
             },
         );
 
@@ -480,7 +440,12 @@ unsafe fn on_leave_inner(context: *mut InvocationContext, user_data: *mut c_void
     }
 }
 
-/// Capture a native backtrace using malwi-hook's backtracer.
+/// Capture a native backtrace using gum's fuzzy backtracer.
+///
+/// Passes the saved CPU context from the interceptor callback directly
+/// to `gum_backtracer_generate_with_limit`. The fuzzy backtracer reads
+/// lr/sp (arm64) or scans the stack (x86_64) for return addresses —
+/// it does not rely on .eh_frame, so trampoline contexts are safe.
 ///
 /// This is public so it can be called from spawn_monitor to capture
 /// the call stack leading to exec/spawn syscalls.
@@ -488,10 +453,11 @@ unsafe fn on_leave_inner(context: *mut InvocationContext, user_data: *mut c_void
 /// # Safety
 /// The caller must ensure `context` is a valid InvocationContext pointer.
 pub unsafe fn capture_backtrace(context: *mut InvocationContext) -> Vec<usize> {
-    unsafe {
-        let cpu = &*(*context).cpu_context;
-        malwi_intercept::backtrace::capture_backtrace(cpu, 64)
+    let cpu_ctx = (*context).cpu_context;
+    if cpu_ctx.is_null() {
+        return malwi_intercept::backtrace::capture_backtrace(None, 64);
     }
+    malwi_intercept::backtrace::capture_backtrace(Some(&*cpu_ctx), 64)
 }
 
 #[cfg(test)]

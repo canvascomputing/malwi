@@ -2,15 +2,17 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub mod arch;
+pub(crate) mod ffi;
+
 pub mod backtrace;
-pub mod code;
+mod gum;
 pub mod interceptor;
 pub mod module;
 pub mod types;
 
 // Re-exports for convenience (flattened imports)
-pub use code::ptrauth::query_ptrauth_support;
+pub use gum::query_ptrauth_support;
+pub use gum::strip_code_ptr;
 pub use interceptor::invocation;
 pub use interceptor::listener::CallListener;
 pub use interceptor::Interceptor;
@@ -27,11 +29,13 @@ pub fn hook_debug_enabled() -> bool {
 /// Initialize the intercept subsystem.
 ///
 /// Reads the `MALWI_HOOK_DEBUG` env var once and caches the result.
+/// Also initializes the interception runtime.
 pub fn init() {
     HOOK_DEBUG.store(
         std::env::var_os("MALWI_HOOK_DEBUG").is_some(),
         Ordering::Relaxed,
     );
+    gum::init_runtime();
 }
 
 /// Process-global lock for tests that modify executable code (interceptor + patcher).

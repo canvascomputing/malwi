@@ -439,14 +439,6 @@ impl Agent {
                 }
             }
         }
-
-        // Install dlsym override AFTER spawn monitor hooks are set up.
-        // This must happen after find_global_export_by_name() calls in SpawnMonitor::new(),
-        // because the override makes dlsym("posix_spawn") return our wrapper addresses.
-        #[cfg(target_os = "macos")]
-        unsafe {
-            exec::spawn::install_dlsym_override();
-        }
     }
 
     /// Send a child created notification to CLI.
@@ -705,10 +697,6 @@ pub extern "C" fn malwi_agent_init() -> i32 {
 
     // Initialize hook subsystems early.
     malwi_intercept::init();
-    // NOTE: dlsym override (exec::spawn::install_dlsym_override) is installed
-    // AFTER the spawn monitor hooks are set up, not here. Installing it early
-    // would poison dlsym("posix_spawn") to return our wrapper address instead
-    // of the real libc function, breaking find_global_export_by_name().
     // Register CPython audit hook if CPython is loaded.
     // This may succeed even before Py_Initialize() on some builds (e.g.
     // python-build-standalone).  On builds where pre-init hooks are silently

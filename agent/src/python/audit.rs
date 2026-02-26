@@ -115,43 +115,19 @@ fn capture_native_stack_for_exec(capture_stack: bool) -> Vec<usize> {
         let lr: u64;
         core::arch::asm!("mov {}, x29", out(reg) fp);
         core::arch::asm!("mov {}, x30", out(reg) lr);
-        let ctx = malwi_intercept::types::Arm64CpuContext {
-            pc: 0,
-            sp: 0,
-            nzcv: 0,
-            x: [0u64; 29],
-            fp,
-            lr,
-            v: [0u128; 32],
-        };
-        return malwi_intercept::backtrace::capture_backtrace(&ctx, 64);
+        let mut ctx = malwi_intercept::types::Arm64CpuContext::default();
+        ctx.fp = fp;
+        ctx.lr = lr;
+        return malwi_intercept::backtrace::capture_backtrace(Some(&ctx), 64);
     }
 
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let rbp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
-        let ctx = malwi_intercept::types::X86_64CpuContext {
-            rip: 0,
-            rsp: 0,
-            rflags: 0,
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-        };
-        return malwi_intercept::backtrace::capture_backtrace(&ctx, 64);
+        let mut ctx = malwi_intercept::types::X86_64CpuContext::default();
+        ctx.rbp = rbp;
+        return malwi_intercept::backtrace::capture_backtrace(Some(&ctx), 64);
     }
 
     Vec::new()

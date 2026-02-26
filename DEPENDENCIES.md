@@ -14,13 +14,16 @@ anstyle-parse v0.2.7
 anstyle-query v1.1.5
 anyhow v1.0.100
 autocfg v1.5.0
+bindgen v0.71.1
+bitflags v2.11.0
 bytes v1.11.1
 cast v0.3.0
-cc v1.2.56
+cexpr v0.6.0
 cfg-if v1.0.4
 ciborium v0.2.2
 ciborium-io v0.2.2
 ciborium-ll v0.2.2
+clang-sys v1.8.1
 clap v4.5.53
 clap_builder v4.5.53
 clap_derive v4.5.49
@@ -34,7 +37,7 @@ crossbeam-utils v0.8.21
 either v1.15.0
 env_filter v0.1.4
 env_logger v0.11.8
-find-msvc-tools v0.1.9
+glob v0.3.3
 half v2.7.1
 heck v0.5.0
 is_terminal_polyfill v1.70.2
@@ -42,10 +45,13 @@ is-terminal v0.4.17
 itertools v0.10.5
 itoa v1.0.17
 libc v0.2.178
+libloading v0.8.9
 log v0.4.29
 mach2 v0.4.3
 memchr v2.7.6
+minimal-lexical v0.2.1
 mio v1.1.1
+nom v7.1.3
 num-traits v0.2.19
 object v0.36.7
 once_cell v1.21.3
@@ -54,6 +60,7 @@ pin-project-lite v0.2.16
 plotters v0.3.7
 plotters-backend v0.3.7
 plotters-svg v0.3.7
+prettyplease v0.2.37
 proc-macro2 v1.0.103
 quote v1.0.42
 rayon v1.11.0
@@ -61,6 +68,7 @@ rayon-core v1.13.0
 regex v1.12.2
 regex-automata v0.4.13
 regex-syntax v0.8.8
+rustc-hash v2.1.1
 same-file v1.0.6
 serde v1.0.228
 serde_core v1.0.228
@@ -81,4 +89,4 @@ zerocopy-derive v0.8.39
 zmij v1.0.12
 ```
 
-Updated: 2026-02-26T20:32:35Z
+Updated: 2026-02-28T17:14:52Z

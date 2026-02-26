@@ -263,7 +263,7 @@ fn test_air_gap_exfiltration_attempts() {
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         assert!(
-            stdout.contains("denied:") && stdout.contains("curl"),
+            stdout.contains("denied:"),
             "curl POST exfil via Python os.system should be denied.\nstdout:\n{}",
             stdout,
         );

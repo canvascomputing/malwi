@@ -11,11 +11,6 @@ use log::{debug, info, warn};
 use malwi_intercept::CallListener;
 use malwi_intercept::InvocationContext;
 
-#[cfg(target_os = "macos")]
-fn agent_debug_enabled() -> bool {
-    crate::agent_debug_enabled()
-}
-
 // In forked children, threads don't survive. We need a reliable hook to
 // reinitialize agent state (HTTP client / flush loop) in the child before exec.
 // `pthread_atfork` works even when libc's fork implementation is hardened.
@@ -33,21 +28,9 @@ fn ensure_atfork_registered() {
     });
 }
 
-#[cfg(target_os = "macos")]
-unsafe fn resolve_next(symbol: &str) -> *mut () {
-    use std::ffi::CString;
-    let c = match CString::new(symbol) {
-        Ok(c) => c,
-        Err(_) => return ptr::null_mut(),
-    };
-    libc::dlsym(libc::RTLD_NEXT, c.as_ptr()) as *mut ()
-}
-
 /// Static pointer to the fork address for replacement.
 static FORK_IMPL: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static VFORK_IMPL: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
-#[cfg(target_os = "macos")]
-static __FORK_IMPL: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 
 /// Callback trait for fork events.
 pub trait ForkHandler: Send + Sync {
@@ -64,10 +47,6 @@ pub struct ForkMonitor {
     interceptor: &'static malwi_intercept::Interceptor,
     listener: CallListener,
     vfork_addr: Option<usize>,
-    #[cfg(target_os = "macos")]
-    fork_rebind: Option<Vec<(usize, usize)>>,
-    #[cfg(target_os = "macos")]
-    vfork_rebind: Option<Vec<(usize, usize)>>,
     #[allow(dead_code)]
     handler: *const dyn ForkHandler,
 }
@@ -95,16 +74,10 @@ impl ForkMonitor {
             }
         };
         let vfork_addr = malwi_intercept::module::find_global_export_by_name("vfork").ok();
-        #[cfg(target_os = "macos")]
-        let __fork_addr = malwi_intercept::module::find_global_export_by_name("__fork").ok();
 
         FORK_IMPL.store(fork_addr as *mut (), Ordering::SeqCst);
         if let Some(vfork_addr) = vfork_addr {
             VFORK_IMPL.store(vfork_addr as *mut (), Ordering::SeqCst);
-        }
-        #[cfg(target_os = "macos")]
-        if let Some(addr) = __fork_addr {
-            __FORK_IMPL.store(addr as *mut (), Ordering::SeqCst);
         }
 
         // Create listener with callbacks
@@ -116,20 +89,10 @@ impl ForkMonitor {
 
         interceptor.begin_transaction();
 
-        #[cfg(target_os = "macos")]
-        let mut fork_attached = false;
         if let Err(e) = interceptor.attach(fork_addr as *mut c_void, listener) {
             warn!("Failed to attach to fork: {:?}", e);
-            #[cfg(target_os = "macos")]
-            {
-                warn!("Falling back to import rebinding for fork()");
-            }
         } else {
             info!("Attached fork monitor to fork() at {:#x}", fork_addr);
-            #[cfg(target_os = "macos")]
-            {
-                fork_attached = true;
-            }
         }
 
         // Replace vfork with fork
@@ -144,11 +107,6 @@ impl ForkMonitor {
                 &mut orig,
             ) {
                 warn!("Failed to replace vfork with fork: {:?}", e);
-                #[cfg(target_os = "macos")]
-                {
-                    // If inline patching fails (system libs), rebind vfork() to call fork().
-                    warn!("Falling back to import rebinding for vfork()");
-                }
             } else {
                 info!("Replaced vfork() with fork() at {:#x}", vfork_addr);
                 vfork_revert_addr = Some(vfork_addr);
@@ -157,59 +115,10 @@ impl ForkMonitor {
 
         interceptor.end_transaction();
 
-        #[cfg(target_os = "macos")]
-        let mut fork_rebind = None;
-        #[cfg(target_os = "macos")]
-        let mut vfork_rebind = None;
-
-        #[cfg(target_os = "macos")]
-        {
-            // If attach failed, rebind fork().
-            if !fork_attached {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol(
-                    "fork",
-                    fork_rebind_wrapper as *const () as usize,
-                ) {
-                    info!("Rebound fork in {} locations", patched.len());
-                    fork_rebind = Some(patched);
-                    if agent_debug_enabled() {
-                        eprintln!("[malwi-agent] rebound fork");
-                    }
-                }
-                if !__FORK_IMPL.load(Ordering::SeqCst).is_null() {
-                    if let Ok(patched) = malwi_intercept::module::rebind_symbol(
-                        "__fork",
-                        __fork_rebind_wrapper as *const () as usize,
-                    ) {
-                        info!("Rebound __fork in {} locations", patched.len());
-                        fork_rebind = Some(patched);
-                        if agent_debug_enabled() {
-                            eprintln!("[malwi-agent] rebound __fork");
-                        }
-                    }
-                }
-            }
-
-            // If replace failed, rebind vfork() to call fork().
-            if vfork_revert_addr.is_none() {
-                if let Ok(patched) = malwi_intercept::module::rebind_symbol(
-                    "vfork",
-                    vfork_rebind_wrapper as *const () as usize,
-                ) {
-                    info!("Rebound vfork in {} locations", patched.len());
-                    vfork_rebind = Some(patched);
-                }
-            }
-        }
-
         Some(Self {
             interceptor,
             listener,
             vfork_addr: vfork_revert_addr,
-            #[cfg(target_os = "macos")]
-            fork_rebind,
-            #[cfg(target_os = "macos")]
-            vfork_rebind,
             handler: handler as *const _,
         })
     }
@@ -226,91 +135,8 @@ impl Drop for ForkMonitor {
             self.interceptor.revert(vfork_addr as *mut c_void);
         }
         self.interceptor.detach(&self.listener);
-        #[cfg(target_os = "macos")]
-        unsafe {
-            if let Some(p) = &self.fork_rebind {
-                restore_rebinds(p);
-            }
-            if let Some(p) = &self.vfork_rebind {
-                restore_rebinds(p);
-            }
-        }
         debug!("Fork monitor detached");
     }
-}
-
-// ============================================================================
-// macOS: import rebinding fallback (fishhook-style)
-// ============================================================================
-
-#[cfg(target_os = "macos")]
-type ForkFn = unsafe extern "C" fn() -> libc::pid_t;
-
-#[cfg(target_os = "macos")]
-unsafe fn restore_rebinds(patched: &[(usize, usize)]) {
-    let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
-    for (slot, original) in patched {
-        let slot_ptr = *slot as *mut usize;
-        let page = (slot_ptr as usize) & !(page_sz - 1);
-        let page_ptr = page as *mut libc::c_void;
-        let _ = libc::mprotect(page_ptr, page_sz, libc::PROT_READ | libc::PROT_WRITE);
-        core::ptr::write_unaligned(slot_ptr, *original);
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn fork_rebind_wrapper() -> libc::pid_t {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] fork wrapper called");
-    }
-    let mut orig_ptr = FORK_IMPL.load(Ordering::SeqCst);
-    if orig_ptr.is_null() {
-        orig_ptr = resolve_next("fork");
-        FORK_IMPL.store(orig_ptr, Ordering::SeqCst);
-    }
-    let orig: ForkFn = core::mem::transmute(orig_ptr);
-    let result = orig();
-
-    if let Some(agent) = crate::Agent::get() {
-        if result > 0 {
-            agent.on_fork_in_parent(result as u32);
-        }
-        // Child (result == 0) handled by pthread_atfork.
-    }
-
-    result
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn vfork_rebind_wrapper() -> libc::pid_t {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] vfork wrapper called");
-    }
-    // Avoid vfork semantics; delegate to fork().
-    fork_rebind_wrapper()
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn __fork_rebind_wrapper() -> libc::pid_t {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] __fork wrapper called");
-    }
-    let mut orig_ptr = __FORK_IMPL.load(Ordering::SeqCst);
-    if orig_ptr.is_null() {
-        orig_ptr = resolve_next("__fork");
-        __FORK_IMPL.store(orig_ptr, Ordering::SeqCst);
-    }
-    let orig: ForkFn = core::mem::transmute(orig_ptr);
-    let result = orig();
-
-    if let Some(agent) = crate::Agent::get() {
-        if result > 0 {
-            agent.on_fork_in_parent(result as u32);
-        }
-        // Child (result == 0) handled by pthread_atfork.
-    }
-
-    result
 }
 
 /// Callback when fork is about to be called.

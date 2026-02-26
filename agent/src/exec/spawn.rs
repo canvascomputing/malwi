@@ -12,7 +12,7 @@ use std::ffi::CString;
 use std::ffi::{c_char, CStr};
 use std::ptr;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
@@ -23,11 +23,6 @@ use log::{debug, info, warn};
 use malwi_intercept::CallListener;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use malwi_intercept::InvocationContext;
-
-#[cfg(target_os = "macos")]
-fn agent_debug_enabled() -> bool {
-    crate::agent_debug_enabled()
-}
 
 /// Whether environment variable monitoring is enabled (set by CLI via HookType::EnvVar config).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -61,24 +56,6 @@ thread_local! {
     /// Dedup set for native getenv — reports each variable once per thread lifetime.
     static GETENV_SEEN: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-static ORIGINAL_POSIX_SPAWN: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-static ORIGINAL_POSIX_SPAWNP: AtomicUsize = AtomicUsize::new(0);
-
-// When we hook `dlsym()` (fishhook-style), we store the original pointer here so
-// wrappers can call the real implementation without recursing through our own
-// rebinding/interposing layers.
-#[cfg(target_os = "macos")]
-static ORIGINAL_DLSYM: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-static ORIGINAL_EXECVE: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(target_os = "macos")]
-static ORIGINAL___EXECVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Saved DYLD_INSERT_LIBRARIES value for selective re-injection into compatible children.
 /// Set during agent init, before DYLD vars are stripped from the process environment.
@@ -263,13 +240,6 @@ pub struct SpawnMonitor {
     posix_spawn_listener: Option<CallListener>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     posix_spawnp_listener: Option<CallListener>,
-    // Fishhook-style rebinding fallback for hardened mappings where inline patching fails.
-    #[cfg(target_os = "macos")]
-    posix_spawn_rebind: Option<Vec<(usize, usize)>>,
-    #[cfg(target_os = "macos")]
-    posix_spawnp_rebind: Option<Vec<(usize, usize)>>,
-    #[cfg(target_os = "macos")]
-    execve_rebind: Option<Vec<(usize, usize)>>,
     /// Bash hook listeners (shell_execve, execute_command_internal, eval, source)
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     bash_listeners: crate::bash::BashHookListeners,
@@ -306,12 +276,6 @@ impl SpawnMonitor {
                 posix_spawn_listener: None,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 posix_spawnp_listener: None,
-                #[cfg(target_os = "macos")]
-                posix_spawn_rebind: None,
-                #[cfg(target_os = "macos")]
-                posix_spawnp_rebind: None,
-                #[cfg(target_os = "macos")]
-                execve_rebind: None,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 bash_listeners: Default::default(),
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -346,100 +310,7 @@ impl SpawnMonitor {
 
     #[cfg(target_os = "macos")]
     unsafe fn setup_macos_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
-        // On modern macOS, some runtimes call spawn/exec functions through:
-        // - regular symbol stubs (handled by import rebinding), and/or
-        // - function pointers resolved via dlsym() (requires inline attach).
-        //
-        // Install both strategies best-effort to maximize coverage.
-        let posix_spawn_addr =
-            malwi_intercept::module::find_global_export_by_name("posix_spawn").ok();
-        let mut posix_spawn_attached = false;
-        if let Some(addr) = posix_spawn_addr {
-            ORIGINAL_POSIX_SPAWN.store(addr, Ordering::SeqCst);
-            let listener = CallListener {
-                on_enter: Some(on_posix_spawn_enter),
-                on_leave: Some(on_posix_spawn_leave),
-                user_data: handler as *const _ as *mut c_void,
-            };
-            if self
-                .interceptor
-                .attach(addr as *mut c_void, listener)
-                .is_ok()
-            {
-                self.posix_spawn_listener = Some(listener);
-                posix_spawn_attached = true;
-                info!("Attached spawn monitor to posix_spawn() at {:#x}", addr);
-            }
-        }
-
-        // Only rebind if inline attach failed — rebind scans all modules and is slow.
-        if !posix_spawn_attached {
-            match malwi_intercept::module::rebind_symbol(
-                "posix_spawn",
-                posix_spawn_rebind_wrapper as *const () as usize,
-            ) {
-                Ok(patched) => {
-                    info!("Rebound posix_spawn in {} locations", patched.len());
-                    if agent_debug_enabled() {
-                        eprintln!("[malwi-agent] rebound posix_spawn: {} slots", patched.len());
-                    }
-                    self.posix_spawn_rebind = Some(patched);
-                }
-                Err(e) => {
-                    warn!("Failed to rebind posix_spawn: {e:?}");
-                    if posix_spawn_addr.is_none() {
-                        warn!("Could not find posix_spawn");
-                    }
-                }
-            }
-        }
-
-        // Hook posix_spawnp (PATH-searching variant used by many runtimes).
-        let posix_spawnp_addr =
-            malwi_intercept::module::find_global_export_by_name("posix_spawnp").ok();
-        let mut posix_spawnp_attached = false;
-        if let Some(addr) = posix_spawnp_addr {
-            ORIGINAL_POSIX_SPAWNP.store(addr, Ordering::SeqCst);
-            let listener = CallListener {
-                on_enter: Some(on_posix_spawn_enter),
-                on_leave: Some(on_posix_spawn_leave),
-                user_data: handler as *const _ as *mut c_void,
-            };
-            if self
-                .interceptor
-                .attach(addr as *mut c_void, listener)
-                .is_ok()
-            {
-                self.posix_spawnp_listener = Some(listener);
-                posix_spawnp_attached = true;
-                info!("Attached spawn monitor to posix_spawnp() at {:#x}", addr);
-            }
-        }
-        if !posix_spawnp_attached {
-            match malwi_intercept::module::rebind_symbol(
-                "posix_spawnp",
-                posix_spawnp_rebind_wrapper as *const () as usize,
-            ) {
-                Ok(patched) => {
-                    info!("Rebound posix_spawnp in {} locations", patched.len());
-                    if agent_debug_enabled() {
-                        eprintln!(
-                            "[malwi-agent] rebound posix_spawnp: {} slots",
-                            patched.len()
-                        );
-                    }
-                    self.posix_spawnp_rebind = Some(patched);
-                }
-                Err(e) => {
-                    warn!("Failed to rebind posix_spawnp: {e:?}");
-                    if posix_spawnp_addr.is_none() {
-                        debug!("Could not find posix_spawnp");
-                    }
-                }
-            }
-        }
-
-        // Hook execve
+        self.setup_posix_spawn_hooks(handler);
         self.setup_execve_hook(handler);
     }
 
@@ -449,13 +320,10 @@ impl SpawnMonitor {
         self.setup_execve_hook(handler);
     }
 
-    /// Hook posix_spawn/posix_spawnp via inline attach.
-    /// On modern Linux (glibc 2.34+), posix_spawn uses clone3+execveat which
-    /// bypasses execve, so we must hook it directly.
-    #[cfg(target_os = "linux")]
+    /// Hook posix_spawn/posix_spawnp via GumInterceptor attach.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     unsafe fn setup_posix_spawn_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
         if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("posix_spawn") {
-            ORIGINAL_POSIX_SPAWN.store(addr, Ordering::SeqCst);
             let listener = CallListener {
                 on_enter: Some(on_posix_spawn_enter),
                 on_leave: Some(on_posix_spawn_leave),
@@ -474,7 +342,6 @@ impl SpawnMonitor {
         }
 
         if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("posix_spawnp") {
-            ORIGINAL_POSIX_SPAWNP.store(addr, Ordering::SeqCst);
             let listener = CallListener {
                 on_enter: Some(on_posix_spawn_enter),
                 on_leave: Some(on_posix_spawn_leave),
@@ -505,64 +372,20 @@ impl SpawnMonitor {
         }
 
         if let Some(execve_addr) = execve_addr {
-            ORIGINAL_EXECVE.store(execve_addr, Ordering::SeqCst);
-
-            // Try inline attach first (fast), fall back to rebind (slow) if attach fails.
             let listener = CallListener {
                 on_enter: Some(on_execve_enter),
                 on_leave: Some(on_execve_leave),
                 user_data: handler as *const _ as *mut c_void,
             };
-            let execve_attached = self
+            if self
                 .interceptor
                 .attach(execve_addr as *mut c_void, listener)
-                .is_ok();
-            if execve_attached {
+                .is_ok()
+            {
                 self.execve_listener = Some(listener);
                 info!("Attached spawn monitor to execve() at {:#x}", execve_addr);
             } else {
                 warn!("Failed to attach to execve");
-            }
-
-            #[cfg(target_os = "macos")]
-            if !execve_attached {
-                // Only rebind if inline attach failed — rebind scans all modules and is slow.
-                match malwi_intercept::module::rebind_symbol(
-                    "execve",
-                    execve_rebind_wrapper as *const () as usize,
-                ) {
-                    Ok(patched) => {
-                        info!("Rebound execve in {} locations", patched.len());
-                        if agent_debug_enabled() {
-                            eprintln!("[malwi-agent] rebound execve: {} slots", patched.len());
-                        }
-                        self.execve_rebind = Some(patched);
-                    }
-                    Err(e) => warn!("Failed to rebind execve: {e:?}"),
-                }
-
-                // Some runtimes call __execve directly; hook it too when present.
-                if let Ok(addr) = malwi_intercept::module::find_global_export_by_name("__execve") {
-                    ORIGINAL___EXECVE.store(addr, Ordering::SeqCst);
-                    match malwi_intercept::module::rebind_symbol(
-                        "__execve",
-                        __execve_rebind_wrapper as *const () as usize,
-                    ) {
-                        Ok(patched) => {
-                            info!("Rebound __execve in {} locations", patched.len());
-                            if agent_debug_enabled() {
-                                eprintln!(
-                                    "[malwi-agent] rebound __execve: {} slots",
-                                    patched.len()
-                                );
-                            }
-                            if self.execve_rebind.is_none() {
-                                self.execve_rebind = Some(patched);
-                            }
-                        }
-                        Err(e) => warn!("Failed to rebind __execve: {e:?}"),
-                    }
-                }
             }
         } else {
             warn!("Could not find execve");
@@ -659,18 +482,6 @@ impl Drop for SpawnMonitor {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             if let Some(l) = &self.posix_spawnp_listener {
                 self.interceptor.detach(l);
-            }
-            #[cfg(target_os = "macos")]
-            unsafe {
-                if let Some(p) = &self.posix_spawn_rebind {
-                    restore_rebinds(p);
-                }
-                if let Some(p) = &self.posix_spawnp_rebind {
-                    restore_rebinds(p);
-                }
-                if let Some(p) = &self.execve_rebind {
-                    restore_rebinds(p);
-                }
             }
             if let Some(l) = &self.bash_listeners.shell_execve {
                 self.interceptor.detach(l);
@@ -822,495 +633,6 @@ unsafe extern "C" fn on_posix_spawn_leave(
             }
         });
     }
-}
-
-// ============================================================================
-// macOS: import rebinding fallback (fishhook-style)
-// ============================================================================
-
-#[cfg(target_os = "macos")]
-type PosixSpawnFn = unsafe extern "C" fn(
-    pid: *mut libc::pid_t,
-    path: *const c_char,
-    file_actions: *const libc::posix_spawn_file_actions_t,
-    attrp: *const libc::posix_spawnattr_t,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int;
-
-#[cfg(target_os = "macos")]
-type ExecveFn = unsafe extern "C" fn(
-    path: *const c_char,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int;
-
-#[cfg(target_os = "macos")]
-unsafe fn resolve_next(symbol: &str) -> usize {
-    use std::ffi::CString;
-    let c = match CString::new(symbol) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-
-    // Prefer calling the original `dlsym` directly if we have it, otherwise
-    // fall back to the libc symbol (which may be rebound/interposed).
-    let orig = ORIGINAL_DLSYM.load(Ordering::SeqCst);
-    let p = if orig != 0 {
-        type DlsymFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
-        let f: DlsymFn = core::mem::transmute(orig);
-        f(libc::RTLD_NEXT, c.as_ptr())
-    } else {
-        libc::dlsym(libc::RTLD_NEXT, c.as_ptr())
-    };
-
-    p as usize
-}
-
-// ============================================================================
-// macOS: dlsym rebinding (handles runtimes that resolve function pointers)
-// ============================================================================
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe fn install_dlsym_override() {
-    // Best-effort: if this fails, spawn/exec monitoring may still work via
-    // import rebinding / inline hooks in other places.
-    if ORIGINAL_DLSYM.load(Ordering::SeqCst) != 0 {
-        return;
-    }
-
-    if let Ok(patched) =
-        malwi_intercept::module::rebind_symbol("dlsym", dlsym_rebind_wrapper as *const () as usize)
-    {
-        if let Some((_, original)) = patched.first() {
-            ORIGINAL_DLSYM.store(*original, Ordering::SeqCst);
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn posix_spawn_dlsym_wrapper(
-    pid: *mut libc::pid_t,
-    path: *const c_char,
-    file_actions: *const libc::posix_spawn_file_actions_t,
-    attrp: *const libc::posix_spawnattr_t,
-    argv: *const *mut c_char,
-    envp: *const *mut c_char,
-) -> libc::c_int {
-    posix_spawn_rebind_wrapper(
-        pid,
-        path,
-        file_actions,
-        attrp,
-        argv as *const *const c_char,
-        envp as *const *const c_char,
-    )
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn posix_spawnp_dlsym_wrapper(
-    pid: *mut libc::pid_t,
-    path: *const c_char,
-    file_actions: *const libc::posix_spawn_file_actions_t,
-    attrp: *const libc::posix_spawnattr_t,
-    argv: *const *mut c_char,
-    envp: *const *mut c_char,
-) -> libc::c_int {
-    posix_spawnp_rebind_wrapper(
-        pid,
-        path,
-        file_actions,
-        attrp,
-        argv as *const *const c_char,
-        envp as *const *const c_char,
-    )
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn execve_dlsym_wrapper(
-    path: *const c_char,
-    argv: *const *mut c_char,
-    envp: *const *mut c_char,
-) -> libc::c_int {
-    execve_rebind_wrapper(
-        path,
-        argv as *const *const c_char,
-        envp as *const *const c_char,
-    )
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn __execve_dlsym_wrapper(
-    path: *const c_char,
-    argv: *const *mut c_char,
-    envp: *const *mut c_char,
-) -> libc::c_int {
-    __execve_rebind_wrapper(
-        path,
-        argv as *const *const c_char,
-        envp as *const *const c_char,
-    )
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn dlsym_rebind_wrapper(
-    handle: *mut c_void,
-    symbol: *const c_char,
-) -> *mut c_void {
-    // Return our spawn/exec wrappers for runtimes that resolve via dlsym.
-    if !symbol.is_null() {
-        let name = CStr::from_ptr(symbol).to_bytes();
-        match name {
-            b"posix_spawn" | b"_posix_spawn" => return posix_spawn_dlsym_wrapper as *mut c_void,
-            b"posix_spawnp" | b"_posix_spawnp" => return posix_spawnp_dlsym_wrapper as *mut c_void,
-            b"execve" | b"_execve" => return execve_dlsym_wrapper as *mut c_void,
-            b"__execve" | b"___execve" => return __execve_dlsym_wrapper as *mut c_void,
-            _ => {}
-        }
-    }
-
-    let orig = ORIGINAL_DLSYM.load(Ordering::SeqCst);
-    if orig == 0 {
-        // If we failed to save it (unexpected), fall back to libc.
-        return libc::dlsym(handle, symbol);
-    }
-
-    type DlsymFn = unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void;
-    let f: DlsymFn = core::mem::transmute(orig);
-    f(handle, symbol)
-}
-
-#[cfg(target_os = "macos")]
-#[allow(unreachable_code)]
-unsafe fn capture_exec_stack(path: &Option<String>, argv: &Option<Vec<String>>) -> Vec<usize> {
-    // Only capture when a matching exec filter requests it (set by CLI --st / filter flags).
-    let cmd = if let Some(args) = argv.as_ref() {
-        malwi_protocol::exec::unwrap_shell_command(args)
-            .or_else(|| args.first().map(|s| basename(s)))
-    } else {
-        path.as_ref().map(|p| basename(p))
-    };
-
-    let Some(cmd) = cmd else {
-        return Vec::new();
-    };
-
-    let (_matches, capture_stack) = super::filter::check_filter(cmd);
-    if !capture_stack {
-        return Vec::new();
-    }
-
-    // Capture a best-effort native stack from the current frame.
-    #[cfg(target_arch = "aarch64")]
-    {
-        let fp: u64;
-        let lr: u64;
-        unsafe {
-            core::arch::asm!("mov {}, x29", out(reg) fp);
-            core::arch::asm!("mov {}, x30", out(reg) lr);
-        }
-        let ctx = malwi_intercept::types::Arm64CpuContext {
-            pc: 0,
-            sp: 0,
-            nzcv: 0,
-            x: [0u64; 29],
-            fp,
-            lr,
-            v: [0u128; 32],
-        };
-        return malwi_intercept::backtrace::capture_backtrace(&ctx, 64);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        let rbp: u64;
-        unsafe {
-            core::arch::asm!("mov {}, rbp", out(reg) rbp);
-        }
-        let ctx = malwi_intercept::types::X86_64CpuContext {
-            rip: 0,
-            rsp: 0,
-            rflags: 0,
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-        };
-        return malwi_intercept::backtrace::capture_backtrace(&ctx, 64);
-    }
-
-    Vec::new()
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn restore_rebinds(patched: &[(usize, usize)]) {
-    let page_sz = libc::sysconf(libc::_SC_PAGESIZE) as usize;
-    for (slot, original) in patched {
-        let slot_ptr = *slot as *mut usize;
-        let page = (slot_ptr as usize) & !(page_sz - 1);
-        let page_ptr = page as *mut libc::c_void;
-        let _ = libc::mprotect(page_ptr, page_sz, libc::PROT_READ | libc::PROT_WRITE);
-        core::ptr::write_unaligned(slot_ptr, *original);
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn posix_spawn_rebind_wrapper(
-    pid: *mut libc::pid_t,
-    path: *const c_char,
-    file_actions: *const libc::posix_spawn_file_actions_t,
-    attrp: *const libc::posix_spawnattr_t,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] posix_spawn wrapper called");
-    }
-    let mut original = ORIGINAL_POSIX_SPAWN.load(Ordering::SeqCst);
-    if original == 0 {
-        original = resolve_next("posix_spawn");
-        ORIGINAL_POSIX_SPAWN.store(original, Ordering::SeqCst);
-    }
-    let original: PosixSpawnFn = core::mem::transmute(original);
-
-    let path_s = if !path.is_null() {
-        Some(CStr::from_ptr(path).to_string_lossy().into_owned())
-    } else {
-        None
-    };
-    let argv_v = parse_argv(argv);
-
-    if !check_exec_review(&path_s, &argv_v, None, None) {
-        return libc::EACCES;
-    }
-
-    // Selectively re-inject DYLD vars for compatible children.
-    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
-        match build_injected_envp(envp) {
-            Some(injected) => {
-                let ptr = injected.ptrs.as_ptr();
-                (Some(injected), ptr)
-            }
-            None => (None, envp),
-        }
-    } else {
-        (None, envp)
-    };
-
-    let rc = original(pid, path, file_actions, attrp, argv, envp);
-    if rc == 0 {
-        if let Some(agent) = crate::Agent::get() {
-            let child_pid = if !pid.is_null() { *pid as u32 } else { 0 };
-            let native_stack = capture_exec_stack(&path_s, &argv_v);
-            agent.on_spawn_created(SpawnInfo {
-                child_pid,
-                path: path_s,
-                argv: argv_v,
-                native_stack,
-                source_file: None,
-                source_line: None,
-                runtime_stack: None,
-            });
-        }
-    }
-    rc
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn posix_spawnp_rebind_wrapper(
-    pid: *mut libc::pid_t,
-    path: *const c_char,
-    file_actions: *const libc::posix_spawn_file_actions_t,
-    attrp: *const libc::posix_spawnattr_t,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] posix_spawnp wrapper called");
-    }
-    let mut original = ORIGINAL_POSIX_SPAWNP.load(Ordering::SeqCst);
-    if original == 0 {
-        original = resolve_next("posix_spawnp");
-        ORIGINAL_POSIX_SPAWNP.store(original, Ordering::SeqCst);
-    }
-    let original: PosixSpawnFn = core::mem::transmute(original);
-
-    let path_s = if !path.is_null() {
-        Some(CStr::from_ptr(path).to_string_lossy().into_owned())
-    } else {
-        None
-    };
-    let argv_v = parse_argv(argv);
-
-    if !check_exec_review(&path_s, &argv_v, None, None) {
-        return libc::EACCES;
-    }
-
-    // Selectively re-inject DYLD vars for compatible children.
-    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
-        match build_injected_envp(envp) {
-            Some(injected) => {
-                let ptr = injected.ptrs.as_ptr();
-                (Some(injected), ptr)
-            }
-            None => (None, envp),
-        }
-    } else {
-        (None, envp)
-    };
-
-    let rc = original(pid, path, file_actions, attrp, argv, envp);
-    if rc == 0 {
-        if let Some(agent) = crate::Agent::get() {
-            let child_pid = if !pid.is_null() { *pid as u32 } else { 0 };
-            let native_stack = capture_exec_stack(&path_s, &argv_v);
-            agent.on_spawn_created(SpawnInfo {
-                child_pid,
-                path: path_s,
-                argv: argv_v,
-                native_stack,
-                source_file: None,
-                source_line: None,
-                runtime_stack: None,
-            });
-        }
-    }
-    rc
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn execve_rebind_wrapper(
-    path: *const c_char,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] execve wrapper called");
-    }
-    // Skip if shell_execve already handled this (it calls execve internally).
-    if crate::bash::hooks::IN_SHELL_EXECVE.with(|f| f.get()) {
-        crate::bash::hooks::IN_SHELL_EXECVE.with(|f| f.set(false));
-    } else {
-        let path_s = if !path.is_null() {
-            Some(CStr::from_ptr(path).to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let argv_v = parse_argv(argv);
-
-        if !check_exec_review(&path_s, &argv_v, None, None) {
-            *libc::__error() = libc::EACCES;
-            return -1;
-        }
-
-        if let Some(agent) = crate::Agent::get() {
-            let pid = std::process::id();
-            let native_stack = capture_exec_stack(&path_s, &argv_v);
-            agent.on_exec_imminent(SpawnInfo {
-                child_pid: pid,
-                path: path_s,
-                argv: argv_v,
-                native_stack,
-                source_file: None,
-                source_line: None,
-                runtime_stack: None,
-            });
-        }
-    }
-
-    // Selectively re-inject DYLD vars for compatible children.
-    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
-        match build_injected_envp(envp) {
-            Some(injected) => {
-                let ptr = injected.ptrs.as_ptr();
-                (Some(injected), ptr)
-            }
-            None => (None, envp),
-        }
-    } else {
-        (None, envp)
-    };
-
-    let mut original = ORIGINAL_EXECVE.load(Ordering::SeqCst);
-    if original == 0 {
-        original = resolve_next("execve");
-        ORIGINAL_EXECVE.store(original, Ordering::SeqCst);
-    }
-    let original: ExecveFn = core::mem::transmute(original);
-    original(path, argv, envp)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) unsafe extern "C" fn __execve_rebind_wrapper(
-    path: *const c_char,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-) -> libc::c_int {
-    if agent_debug_enabled() {
-        eprintln!("[malwi-agent] __execve wrapper called");
-    }
-    // Same behavior as execve_rebind_wrapper, but calls the original __execve.
-    if crate::bash::hooks::IN_SHELL_EXECVE.with(|f| f.get()) {
-        crate::bash::hooks::IN_SHELL_EXECVE.with(|f| f.set(false));
-    } else {
-        let path_s = if !path.is_null() {
-            Some(CStr::from_ptr(path).to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let argv_v = parse_argv(argv);
-
-        if !check_exec_review(&path_s, &argv_v, None, None) {
-            *libc::__error() = libc::EACCES;
-            return -1;
-        }
-
-        if let Some(agent) = crate::Agent::get() {
-            let pid = std::process::id();
-            let native_stack = capture_exec_stack(&path_s, &argv_v);
-            agent.on_exec_imminent(SpawnInfo {
-                child_pid: pid,
-                path: path_s,
-                argv: argv_v,
-                native_stack,
-                source_file: None,
-                source_line: None,
-                runtime_stack: None,
-            });
-        }
-    }
-
-    // Selectively re-inject DYLD vars for compatible children.
-    let (_envp_owner, envp) = if !path.is_null() && !is_arm64e_binary(path) {
-        match build_injected_envp(envp) {
-            Some(injected) => {
-                let ptr = injected.ptrs.as_ptr();
-                (Some(injected), ptr)
-            }
-            None => (None, envp),
-        }
-    } else {
-        (None, envp)
-    };
-
-    let mut original = ORIGINAL___EXECVE.load(Ordering::SeqCst);
-    if original == 0 {
-        original = resolve_next("__execve");
-        ORIGINAL___EXECVE.store(original, Ordering::SeqCst);
-    }
-    let original: ExecveFn = core::mem::transmute(original);
-    original(path, argv, envp)
 }
 
 // ============================================================================

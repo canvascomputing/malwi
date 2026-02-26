@@ -66,11 +66,17 @@ pub struct SymbolInfo {
 pub fn find_symbol(module_name: &str, symbol: &str) -> Result<usize> {
     let symbols = malwi_intercept::module::enumerate_symbols(module_name)
         .map_err(|_| anyhow!("Module not found: {}", module_name))?;
-    for s in symbols {
+    for s in &symbols {
         // Mach-O symbol names are typically prefixed with '_' (e.g. _malloc).
         // Most of malwi's filters use the unprefixed name.
         // Use strip_prefix (not trim_start_matches) to strip exactly one '_'.
-        if s.name == symbol || s.name.strip_prefix('_').is_some_and(|n| n == symbol) {
+        // Also handle the reverse case: gum may strip the Mach-O prefix, and
+        // enumerate_symbols strips another, so C++ mangled _ZN... becomes ZN...
+        // while the caller still searches for _ZN...
+        if s.name == symbol
+            || s.name.strip_prefix('_').is_some_and(|n| n == symbol)
+            || symbol.strip_prefix('_').is_some_and(|n| n == s.name)
+        {
             return Ok(s.address);
         }
     }

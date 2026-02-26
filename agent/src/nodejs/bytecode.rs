@@ -179,8 +179,9 @@ fn find_v8_symbol(module_name: &str, symbol: &str) -> Option<usize> {
     }
 
     // Fall back to local symbol enumeration
-    if let Ok(addr) = native::find_symbol(module_name, symbol) {
-        return Some(addr);
+    match native::find_symbol(module_name, symbol) {
+        Ok(addr) => return Some(addr),
+        Err(e) => debug!("find_symbol({}, {}) failed: {}", module_name, symbol, e),
     }
 
     None
@@ -217,7 +218,7 @@ pub fn install_trace_hooks() -> bool {
 
     interceptor.begin_transaction();
 
-    // Replace Runtime_TraceEnter (preferred), otherwise fall back to pointer-table rebinding.
+    // Replace Runtime_TraceEnter
     if let Some(addr) = find_v8_symbol(&v8_module, RUNTIME_TRACE_ENTER) {
         let mut original_ptr: *const c_void = ptr::null();
         let result = interceptor.replace(
@@ -231,34 +232,24 @@ pub fn install_trace_hooks() -> bool {
             info!("Replaced Runtime_TraceEnter at {:#x}", addr);
             hooks_installed += 1;
         } else {
-            debug!("Failed to replace Runtime_TraceEnter: {:?}", result.err());
-
-            // On some macOS configurations inline patching of __TEXT is not possible.
-            // V8 dispatches runtime calls through tables stored in __DATA; patch those.
+            warn!("Failed to replace Runtime_TraceEnter: {:?}", result.err());
+            // Fallback: patch pointer tables in DATA segments
             let replacement = replacement_trace_enter as *const () as usize;
             match unsafe {
                 malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
             } {
-                Ok(n) if n > 0 => {
-                    info!(
-                        "Rebound {} pointer(s) for Runtime_TraceEnter ({:#x} -> {:#x})",
-                        n, addr, replacement
-                    );
+                Ok(n) => {
+                    info!("Rebound {} pointer(s) for Runtime_TraceEnter", n);
                     hooks_installed += 1;
                 }
-                Ok(_) => {
-                    debug!("No pointers found to rebind for Runtime_TraceEnter");
-                }
-                Err(e) => {
-                    debug!("Pointer rebinding for Runtime_TraceEnter failed: {:?}", e);
-                }
+                Err(e) => warn!("rebind_pointers_by_value failed for TraceEnter: {:?}", e),
             }
         }
     } else {
         debug!("Runtime_TraceEnter not found (tried export and local symbols)");
     }
 
-    // Replace Runtime_TraceExit (preferred), otherwise fall back to pointer-table rebinding.
+    // Replace Runtime_TraceExit
     if let Some(addr) = find_v8_symbol(&v8_module, RUNTIME_TRACE_EXIT) {
         let mut original_ptr: *const c_void = ptr::null();
         let result = interceptor.replace(
@@ -272,25 +263,17 @@ pub fn install_trace_hooks() -> bool {
             info!("Replaced Runtime_TraceExit at {:#x}", addr);
             hooks_installed += 1;
         } else {
-            debug!("Failed to replace Runtime_TraceExit: {:?}", result.err());
-
+            warn!("Failed to replace Runtime_TraceExit: {:?}", result.err());
+            // Fallback: patch pointer tables in DATA segments
             let replacement = replacement_trace_exit as *const () as usize;
             match unsafe {
                 malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
             } {
-                Ok(n) if n > 0 => {
-                    info!(
-                        "Rebound {} pointer(s) for Runtime_TraceExit ({:#x} -> {:#x})",
-                        n, addr, replacement
-                    );
+                Ok(n) => {
+                    info!("Rebound {} pointer(s) for Runtime_TraceExit", n);
                     hooks_installed += 1;
                 }
-                Ok(_) => {
-                    debug!("No pointers found to rebind for Runtime_TraceExit");
-                }
-                Err(e) => {
-                    debug!("Pointer rebinding for Runtime_TraceExit failed: {:?}", e);
-                }
+                Err(e) => warn!("rebind_pointers_by_value failed for TraceExit: {:?}", e),
             }
         }
     } else {
@@ -314,6 +297,18 @@ pub fn install_trace_hooks() -> bool {
             hooks_installed += 1;
         } else {
             debug!("Failed to replace PrintF: {:?}", result.err());
+            // Fallback: patch pointer tables in DATA segments
+            let replacement = replacement_printf as *const () as usize;
+            match unsafe {
+                malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
+            } {
+                Ok(n) => {
+                    PRINTF_HOOKED.store(true, Ordering::SeqCst);
+                    info!("Rebound {} pointer(s) for PrintF", n);
+                    hooks_installed += 1;
+                }
+                Err(e) => debug!("rebind_pointers_by_value failed for PrintF: {:?}", e),
+            }
         }
     } else {
         debug!("v8::internal::PrintF not found");
@@ -332,6 +327,17 @@ pub fn install_trace_hooks() -> bool {
             hooks_installed += 1;
         } else {
             debug!("Failed to replace PrintF(FILE*): {:?}", result.err());
+            // Fallback: patch pointer tables in DATA segments
+            let replacement = replacement_printf_file as *const () as usize;
+            match unsafe {
+                malwi_intercept::module::rebind_pointers_by_value(&v8_module, addr, replacement)
+            } {
+                Ok(n) => {
+                    info!("Rebound {} pointer(s) for PrintF(FILE*)", n);
+                    hooks_installed += 1;
+                }
+                Err(e) => debug!("rebind_pointers_by_value failed for PrintF(FILE*): {:?}", e),
+            }
         }
     } else {
         debug!("v8::internal::PrintF(FILE*) not found");
