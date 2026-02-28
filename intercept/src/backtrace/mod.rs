@@ -80,8 +80,10 @@ mod tests {
                 core::arch::asm!(
                     "lea {rip}, [rip]",
                     "mov {rbp}, rbp",
+                    "mov {rsp_val}, rsp",
                     rip = out(reg) c.rip,
                     rbp = out(reg) c.rbp,
+                    rsp_val = out(reg) c.rsp,
                 );
             }
             c
@@ -123,17 +125,21 @@ mod tests {
         crate::gum::init_runtime();
         let rbp: u64;
         let rip: u64;
+        let rsp_val: u64;
         unsafe {
             core::arch::asm!(
                 "lea {rip}, [rip]",
                 "mov {rbp}, rbp",
+                "mov {rsp_val}, rsp",
                 rip = out(reg) rip,
                 rbp = out(reg) rbp,
+                rsp_val = out(reg) rsp_val,
             );
         }
         let mut ctx = CpuContext::default();
         ctx.rip = rip;
         ctx.rbp = rbp;
+        ctx.rsp = rsp_val;
         let bt = capture_backtrace(Some(&ctx), 16);
         assert!(!bt.is_empty(), "expected at least one frame");
     }

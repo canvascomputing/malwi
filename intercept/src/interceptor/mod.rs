@@ -264,8 +264,8 @@ mod tests {
             let w = w.as_mut_ptr();
             gum_x86_writer_put_mov_reg_reg(
                 w,
-                x86_reg_X86_REG_RDI as u32,
                 x86_reg_X86_REG_RAX as u32,
+                x86_reg_X86_REG_RDI as u32,
             );
             gum_x86_writer_put_add_reg_imm(w, x86_reg_X86_REG_RAX as u32, c as i64);
             for _ in 0..8 {
