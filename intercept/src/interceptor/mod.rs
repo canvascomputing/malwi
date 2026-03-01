@@ -256,18 +256,17 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     fn make_add_const(c: u32) -> (CodeSlice, extern "C" fn(i64) -> i64) {
         use gum::*;
+        // GumX86Reg enum values (from frida-gum's _GumX86Reg, not Capstone's x86_reg)
+        const GUM_X86_RAX: GumX86Reg = 17;
+        const GUM_X86_RDI: GumX86Reg = 24;
         let mut alloc = CodeAllocator::default();
         let slice = alloc.alloc_any().expect("alloc");
         unsafe {
             let mut w = MaybeUninit::<GumX86Writer>::uninit();
             gum_x86_writer_init(w.as_mut_ptr(), slice.data as *mut c_void);
             let w = w.as_mut_ptr();
-            gum_x86_writer_put_mov_reg_reg(
-                w,
-                x86_reg_X86_REG_RAX as u32,
-                x86_reg_X86_REG_RDI as u32,
-            );
-            gum_x86_writer_put_add_reg_imm(w, x86_reg_X86_REG_RAX as u32, c as i64);
+            gum_x86_writer_put_mov_reg_reg(w, GUM_X86_RAX, GUM_X86_RDI);
+            gum_x86_writer_put_add_reg_imm(w, GUM_X86_RAX, c as i64);
             for _ in 0..8 {
                 gum_x86_writer_put_nop(w);
             }
