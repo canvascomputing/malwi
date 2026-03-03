@@ -37,7 +37,7 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-26
             lib: dylib
             platform: darwin-arm64
           - target: x86_64-unknown-linux-gnu
