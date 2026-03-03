@@ -17,7 +17,7 @@ use super::ffi::{
     init_python_api, PyAuditHookFunction, PySys_AddAuditHookFn, Py_IsInitializedFn, PYTHON_API,
 };
 use super::filters::{has_any_filters, matches_filter};
-use super::helpers::{cstr_to_string, extract_tuple_arguments};
+use super::helpers::{cstr_to_string, extract_tuple_arguments, strip_python_repr_quotes};
 use super::profile::{do_register_profile_hook, set_thread_created, PROFILE_HOOK_REGISTERED};
 use super::stack::capture_current_python_stack;
 
@@ -235,7 +235,8 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
     if crate::exec::filter::has_filters()
         && (event_str == "subprocess.Popen"
             || event_str == "os.posix_spawn"
-            || event_str == "os.posix_spawnp")
+            || event_str == "os.posix_spawnp"
+            || event_str == "os.system")
     {
         if crate::agent_debug_enabled() {
             eprintln!("[malwi-agent] audit callback: {}", event_str);
@@ -244,27 +245,46 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
         if arguments.is_empty() {
             debug!("{} audit: no arguments extracted", event_str);
         }
-        // Python audit args for subprocess.Popen look like:
-        // ('executable', ['argv0', ...], cwd, env)
-        // Prefer the argv list at index 1.
-        let argv = arguments
-            .get(1)
-            .and_then(|a| a.display.as_deref())
-            .and_then(parse_python_list_repr)
-            .or_else(|| {
-                arguments
-                    .get(1)
-                    .and_then(|a| a.display.as_deref())
-                    .map(|s| s.split_whitespace().map(|p| p.to_string()).collect())
-            })
-            .or_else(|| {
-                // Fallback to executable string at index 0.
-                arguments
-                    .first()
-                    .and_then(|a| a.display.as_deref())
-                    .map(|s| vec![s.to_string()])
-            })
-            .unwrap_or_default();
+        // os.system audit event: args = (command_string,)
+        // PyObject_Repr gives b'cmd ...' (bytes) or 'cmd ...' (str).
+        // Strip the Python repr wrapper, then split into shell tokens.
+        // subprocess.Popen / os.posix_spawn: args = (executable, [argv], ...)
+        let argv = if event_str == "os.system" {
+            arguments
+                .first()
+                .and_then(|a| a.display.as_deref())
+                .map(|s| {
+                    let s = strip_python_repr_quotes(s);
+                    // Intentionally naive: split_whitespace doesn't handle shell
+                    // quoting, but we only need argv[0]'s basename for command
+                    // filtering. Later args may be mis-tokenized in display but
+                    // a full shell parser would be overkill here.
+                    s.split_whitespace()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            // Prefer the argv list at index 1.
+            arguments
+                .get(1)
+                .and_then(|a| a.display.as_deref())
+                .and_then(parse_python_list_repr)
+                .or_else(|| {
+                    arguments
+                        .get(1)
+                        .and_then(|a| a.display.as_deref())
+                        .map(|s| s.split_whitespace().map(|p| p.to_string()).collect())
+                })
+                .or_else(|| {
+                    // Fallback to executable string at index 0.
+                    arguments
+                        .first()
+                        .and_then(|a| a.display.as_deref())
+                        .map(|s| vec![s.to_string()])
+                })
+                .unwrap_or_default()
+        };
 
         let cmd = argv
             .first()

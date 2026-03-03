@@ -386,6 +386,20 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     result
 }
 
+/// Strip CPython `PyObject_Repr` quoting from a string or bytes repr.
+///
+/// Handles `b'...'`, `b"..."`, `'...'`, and `"..."` wrappers that CPython
+/// adds when repr()-ing `str` and `bytes` objects.  Returns the inner
+/// content, or the original slice if no wrapper matched.
+pub fn strip_python_repr_quotes(s: &str) -> &str {
+    s.strip_prefix("b'")
+        .and_then(|s| s.strip_suffix('\''))
+        .or_else(|| s.strip_prefix("b\"").and_then(|s| s.strip_suffix('"')))
+        .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .or_else(|| s.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        .unwrap_or(s)
+}
+
 /// Simplify Python object repr by extracting meaningful names from `<type name at 0x...>` format.
 ///
 /// Simple values (strings, numbers, lists, dicts) pass through unchanged.
@@ -796,5 +810,36 @@ mod tests {
         assert_eq!(simplify_object_repr("{'k': 'v'}"), "{'k': 'v'}");
         assert_eq!(simplify_object_repr("None"), "None");
         assert_eq!(simplify_object_repr("True"), "True");
+    }
+
+    #[test]
+    fn test_strip_python_repr_quotes_bytes_single() {
+        assert_eq!(
+            strip_python_repr_quotes("b'curl http://example.com'"),
+            "curl http://example.com"
+        );
+    }
+
+    #[test]
+    fn test_strip_python_repr_quotes_bytes_double() {
+        assert_eq!(
+            strip_python_repr_quotes("b\"curl http://example.com\""),
+            "curl http://example.com"
+        );
+    }
+
+    #[test]
+    fn test_strip_python_repr_quotes_str_single() {
+        assert_eq!(strip_python_repr_quotes("'ls -la'"), "ls -la");
+    }
+
+    #[test]
+    fn test_strip_python_repr_quotes_str_double() {
+        assert_eq!(strip_python_repr_quotes("\"ls -la\""), "ls -la");
+    }
+
+    #[test]
+    fn test_strip_python_repr_quotes_bare_string() {
+        assert_eq!(strip_python_repr_quotes("curl"), "curl");
     }
 }
