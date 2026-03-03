@@ -589,22 +589,11 @@ impl ForkHandler for Agent {
     }
 
     fn on_fork_in_child(&self) {
-        let child_pid = std::process::id();
-        let parent_pid = unsafe { libc::getppid() } as u32;
-
-        info!(
-            "Fork detected in child process (PID {}), notifying CLI...",
-            child_pid
-        );
-
-        if let Err(e) = self.http.child_reconnect(parent_pid, child_pid) {
-            warn!("Failed to notify CLI of fork: {}", e);
-        } else {
-            info!(
-                "Successfully notified CLI of fork (child PID {})",
-                child_pid
-            );
-        }
+        // Drop inherited TCP connection safely. try_lock avoids deadlock
+        // if the conn mutex was held by a now-dead thread at fork time.
+        // No proactive reconnect — the next send() call will lazily
+        // establish a fresh connection via ensure_connected().
+        self.http.mark_forked_child();
     }
 }
 

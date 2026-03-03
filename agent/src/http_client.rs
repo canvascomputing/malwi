@@ -6,17 +6,17 @@
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
+
+use crate::tracing::ForkSafeMutex;
 
 use anyhow::Result;
 use log::debug;
 
 use malwi_protocol::wire::{read_frame, write_frame, BinaryCodec, Codec};
 use malwi_protocol::{
-    protocol::ModuleInfo, AgentMessage, ChildReconnectRequest, CliMessage, ConfigureRequest,
-    ConfigureResponse, HostChildInfo, ReadyRequest, ReviewDecision, RuntimeInfoRequest,
-    ShutdownRequest, TraceEvent,
+    protocol::ModuleInfo, AgentMessage, CliMessage, ConfigureRequest, ConfigureResponse,
+    HostChildInfo, ReadyRequest, ReviewDecision, RuntimeInfoRequest, ShutdownRequest, TraceEvent,
 };
 
 /// Maximum number of retries for initial connection.
@@ -25,10 +25,11 @@ const INIT_MAX_RETRIES: u32 = 5;
 /// TCP client for communicating with the CLI server.
 ///
 /// Maintains a persistent TCP connection. The connection is
-/// wrapped in a Mutex to allow shared access from multiple threads.
+/// wrapped in a `ForkSafeMutex` to allow shared access from multiple
+/// threads and safe operation after `fork()`.
 pub struct HttpClient {
     addr: String,
-    conn: Mutex<Option<TcpStream>>,
+    conn: ForkSafeMutex<Option<TcpStream>>,
     next_review_id: AtomicU32,
     codec: BinaryCodec,
 }
@@ -41,10 +42,19 @@ impl HttpClient {
 
         HttpClient {
             addr,
-            conn: Mutex::new(None),
+            conn: ForkSafeMutex::new(None),
             next_review_id: AtomicU32::new(1),
             codec: BinaryCodec,
         }
+    }
+
+    /// Mark this client as running in a forked child process.
+    ///
+    /// Drops the inherited TCP connection and switches the internal mutex
+    /// to non-blocking mode. No proactive reconnect — the next `send()`
+    /// will lazily connect via `ensure_connected()`.
+    pub fn mark_forked_child(&self) {
+        self.conn.mark_forked();
     }
 
     /// Establish a TCP connection with retry.
@@ -56,7 +66,7 @@ impl HttpClient {
             }
             match self.try_connect() {
                 Ok(stream) => {
-                    *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = Some(stream);
+                    *self.conn.lock()? = Some(stream);
                     return Ok(());
                 }
                 Err(e) => {
@@ -79,7 +89,7 @@ impl HttpClient {
 
     /// Ensure a connection exists, connecting if needed.
     fn ensure_connected(&self) -> Result<()> {
-        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.conn.lock()?;
         if guard.is_some() {
             return Ok(());
         }
@@ -92,7 +102,7 @@ impl HttpClient {
         let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
 
-        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lock = self.conn.lock()?;
         let stream = lock
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("not connected"))?;
@@ -109,7 +119,7 @@ impl HttpClient {
         let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
 
-        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lock = self.conn.lock()?;
         let stream = lock
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("not connected"))?;
@@ -193,7 +203,10 @@ impl HttpClient {
     /// Check if the TCP connection is still alive.
     /// Returns true if connected, false if connection is dead or absent.
     pub fn is_connected(&self) -> bool {
-        let mut lock = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lock = match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
         if let Some(stream) = lock.as_mut() {
             // Try a non-blocking peek to detect closed connection
             let _ = stream.set_nonblocking(true);
@@ -223,19 +236,5 @@ impl HttpClient {
     /// Notify CLI of agent shutdown.
     pub fn shutdown(&self, pid: u32) -> Result<()> {
         self.send(&AgentMessage::Shutdown(ShutdownRequest { pid }))
-    }
-
-    /// Notify CLI of child reconnection after fork.
-    /// Drops the inherited connection and creates a fresh one.
-    pub fn child_reconnect(&self, parent_pid: u32, child_pid: u32) -> Result<()> {
-        // Drop inherited connection from parent (avoid shared socket state)
-        *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        // Establish fresh TCP connection
-        self.connect_with_retry(INIT_MAX_RETRIES)?;
-        // Send reconnect message
-        self.send(&AgentMessage::Reconnect(ChildReconnectRequest {
-            parent_pid,
-            child_pid,
-        }))
     }
 }
