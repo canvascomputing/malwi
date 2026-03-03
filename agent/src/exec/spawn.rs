@@ -560,9 +560,14 @@ unsafe extern "C" fn on_posix_spawn_enter(
     // Selectively re-inject DYLD vars for compatible (non-arm64e) children.
     // The agent stripped DYLD from the process environment at init to prevent
     // automatic propagation to arm64e children (which would crash).
+    // Only inject after configuration is complete — runtime-internal spawns
+    // (e.g. Python 3.14 _osx_support probes) during init must not get the agent.
     #[cfg(target_os = "macos")]
     {
-        if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
+        if crate::CONFIGURATION_COMPLETE.load(Ordering::Relaxed)
+            && !path_ptr.is_null()
+            && !is_arm64e_binary(path_ptr)
+        {
             let envp_ptr =
                 malwi_intercept::invocation::get_nth_argument(context, 5) as *const *const c_char;
             if let Some(injected) = build_injected_envp(envp_ptr) {
@@ -741,9 +746,16 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
     }
 
     // Selectively re-inject DYLD vars for compatible (non-arm64e) children.
+    // The agent stripped DYLD from the process environment at init to prevent
+    // automatic propagation to arm64e children (which would crash).
+    // Only inject after configuration is complete — runtime-internal spawns
+    // (e.g. Python 3.14 _osx_support probes) during init must not get the agent.
     #[cfg(target_os = "macos")]
     {
-        if !path_ptr.is_null() && !is_arm64e_binary(path_ptr) {
+        if crate::CONFIGURATION_COMPLETE.load(Ordering::Relaxed)
+            && !path_ptr.is_null()
+            && !is_arm64e_binary(path_ptr)
+        {
             let envp_ptr =
                 malwi_intercept::invocation::get_nth_argument(context, 2) as *const *const c_char;
             if let Some(injected) = build_injected_envp(envp_ptr) {

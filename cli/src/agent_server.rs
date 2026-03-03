@@ -360,7 +360,10 @@ async fn handle_message(
 
             // Suppress duplicates from libc PATH iteration
             let cmd_name = extract_cmd_name(&info);
-            {
+
+            // Only dedup events with a real child_pid. Audit-sourced events
+            // (child_pid == 0) don't have PATH iteration duplicates.
+            if info.child_pid != 0 {
                 let mut seen = shared.seen_events.lock().unwrap_or_else(|e| e.into_inner());
                 if !seen.insert((info.child_pid, cmd_name.clone())) {
                     return Ok(());

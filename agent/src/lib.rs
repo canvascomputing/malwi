@@ -25,6 +25,11 @@ use std::time::Duration;
 /// Whether agent debug output is enabled (from MALWI_AGENT_DEBUG env var at init).
 static AGENT_DEBUG: AtomicBool = AtomicBool::new(false);
 
+/// Set after wait_for_configuration() succeeds. Guards DYLD re-injection in
+/// spawn hooks so that runtime-internal posix_spawn calls (e.g. Python 3.14
+/// _osx_support probes during init) don't create phantom agent connections.
+pub(crate) static CONFIGURATION_COMPLETE: AtomicBool = AtomicBool::new(false);
+
 /// Check if agent debug output is enabled.
 pub fn agent_debug_enabled() -> bool {
     AGENT_DEBUG.load(Ordering::Relaxed)
@@ -726,6 +731,8 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 error!("Failed during hook configuration: {}", e);
                 return -1;
             }
+
+            CONFIGURATION_COMPLETE.store(true, Ordering::SeqCst);
 
             info!(
                 "Configuration complete, {} hooks installed",

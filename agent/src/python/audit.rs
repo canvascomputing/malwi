@@ -34,14 +34,15 @@ pub fn start_audit_registration_task() {
         return;
     }
 
-    // Reset the registered flag: an early (pre-Py_Initialize) registration may
-    // have appeared to succeed but the hook can be silently lost during init on
-    // some Python builds.  Force re-registration now that exec filters need it.
-    AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
+    // Only register if the early pre-init registration didn't already succeed.
+    // On Python 3.14+, pre-init hooks survive Py_Initialize, so re-registering
+    // would create a duplicate callback.
+    if AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
+        return;
+    }
 
     // If Python is already initialized, register directly.
     if is_python_initialized() {
-        AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
         register_audit_hook();
         return;
     }
@@ -86,10 +87,12 @@ unsafe extern "C" fn on_post_init_enter(
     _ctx: *mut malwi_intercept::InvocationContext,
     _user_data: *mut c_void,
 ) {
-    // Unconditionally re-register: pre-init hooks may be silently lost
-    // during Py_Initialize on some builds.
-    AUDIT_HOOK_REGISTERED.store(false, Ordering::SeqCst);
-    register_audit_hook();
+    // Only register if the early pre-init hook was lost during Py_Initialize.
+    // On Python 3.14+, pre-init hooks survive init, so re-registering would
+    // create a duplicate callback.
+    if !AUDIT_HOOK_REGISTERED.load(Ordering::SeqCst) {
+        register_audit_hook();
+    }
 }
 
 /// Get the current Python frame, or null if PyEval_GetFrame is unavailable.
