@@ -113,20 +113,26 @@ fn capture_native_stack_for_exec(capture_stack: bool) -> Vec<usize> {
     unsafe {
         let fp: u64;
         let lr: u64;
+        let sp: u64;
         core::arch::asm!("mov {}, x29", out(reg) fp);
         core::arch::asm!("mov {}, x30", out(reg) lr);
+        core::arch::asm!("mov {}, sp", out(reg) sp);
         let mut ctx = malwi_intercept::types::Arm64CpuContext::default();
         ctx.fp = fp;
         ctx.lr = lr;
+        ctx.sp = sp;
         return malwi_intercept::backtrace::capture_backtrace(Some(&ctx), 64);
     }
 
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let rbp: u64;
+        let rsp: u64;
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
         let mut ctx = malwi_intercept::types::X86_64CpuContext::default();
         ctx.rbp = rbp;
+        ctx.rsp = rsp;
         return malwi_intercept::backtrace::capture_backtrace(Some(&ctx), 64);
     }
 
@@ -263,7 +269,8 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
         let cmd = argv
             .first()
             .and_then(|s| std::path::Path::new(s).file_name().and_then(|p| p.to_str()))
-            .or_else(|| argv.first().map(|s| s.as_str()));
+            .or_else(|| argv.first().map(|s| s.as_str()))
+            .map(|s| s.to_string());
         if cmd.is_none() {
             debug!("{} audit: could not extract command name", event_str);
             if crate::agent_debug_enabled() {
@@ -273,28 +280,43 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
                 );
             }
         }
-        if let Some(cmd) = cmd {
+        if let Some(ref cmd) = cmd {
             if crate::agent_debug_enabled() {
                 eprintln!("[malwi-agent] audit exec: cmd={}", cmd);
             }
             let (matches, capture_stack) = crate::exec::filter::check_filter(cmd);
             if matches {
                 if let Some(agent) = crate::Agent::get() {
-                    let native_stack = capture_native_stack_for_exec(capture_stack);
-                    let (source_file, source_line) = {
-                        let frame = get_current_frame();
-                        super::helpers::extract_frame_location(frame)
-                    };
+                    // Wrap each stack capture in its own catch_unwind so a panic
+                    // (e.g. from Python 3.14 frame walking changes) doesn't
+                    // silently swallow the entire trace event.
+                    let native_stack =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            capture_native_stack_for_exec(capture_stack)
+                        }))
+                        .unwrap_or_default();
+
+                    let (source_file, source_line) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let frame = get_current_frame();
+                            super::helpers::extract_frame_location(frame)
+                        }))
+                        .unwrap_or((None, None));
+
                     let runtime_stack = if capture_stack {
-                        let frames = capture_current_python_stack();
-                        if frames.is_empty() {
-                            None
-                        } else {
-                            Some(malwi_protocol::RuntimeStack::Python(frames))
-                        }
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let frames = capture_current_python_stack();
+                            if frames.is_empty() {
+                                None
+                            } else {
+                                Some(malwi_protocol::RuntimeStack::Python(frames))
+                            }
+                        }))
+                        .unwrap_or(None)
                     } else {
                         None
                     };
+
                     agent.on_spawn_created(crate::exec::SpawnInfo {
                         child_pid: 0,
                         path: None,
@@ -304,6 +326,9 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
                         source_line,
                         runtime_stack,
                     });
+                    if crate::agent_debug_enabled() {
+                        eprintln!("[malwi-agent] audit exec: event dispatched for {}", cmd);
+                    }
                 }
             }
         }

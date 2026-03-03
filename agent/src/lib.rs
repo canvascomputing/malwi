@@ -486,6 +486,9 @@ impl Agent {
 
         if let Err(e) = self.http.send_child(&info) {
             warn!("Failed to send child created notification: {}", e);
+            if agent_debug_enabled() {
+                eprintln!("[malwi-agent] send_child failed: {}", e);
+            }
         }
     }
 }
