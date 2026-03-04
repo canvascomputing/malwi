@@ -965,7 +965,8 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
 
     let mut loop_state = EventLoopState {
         output_writer,
-        seen_root: false,
+        root_agent_ready: false,
+        process_exit_status: None,
         all_pids: HashMap::new(),
         root_dead_since: None,
         symbol_resolver: symbol_resolver::SymbolResolver::new(),
@@ -1017,9 +1018,10 @@ struct EventLoopConfig<'a> {
 /// Mutable state owned by the event loop.
 struct EventLoopState {
     output_writer: Option<Box<dyn Write>>,
-    seen_root: bool,
+    root_agent_ready: bool,
     all_pids: HashMap<u32, bool>,
     root_dead_since: Option<std::time::Instant>,
+    process_exit_status: Option<i32>,
     symbol_resolver: symbol_resolver::SymbolResolver,
     /// Broadcast sender for enriched events (external WS clients).
     broadcast_tx: Option<tokio::sync::broadcast::Sender<Arc<TraceEvent>>>,
@@ -1027,22 +1029,26 @@ struct EventLoopState {
     next_seq: u64,
 }
 
-/// Check if a process is still running using waitpid with WNOHANG.
-/// Returns true if still running, false if exited.
+/// Attempt a non-blocking waitpid. Returns `Some(exit_code)` if the process
+/// has terminated, `None` if it is still running.
 #[cfg(unix)]
-fn is_process_alive(pid: i32) -> bool {
+fn try_reap(pid: i32) -> Option<i32> {
     let mut status: libc::c_int = 0;
     let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-    // waitpid returns:
-    // - 0 if child is still running
-    // - pid if child exited
-    // - -1 on error (e.g., not our child)
-    result == 0
+    if result > 0 {
+        Some(if libc::WIFEXITED(status) {
+            libc::WEXITSTATUS(status)
+        } else {
+            -1
+        })
+    } else {
+        None
+    }
 }
 
 #[cfg(not(unix))]
-fn is_process_alive(_pid: i32) -> bool {
-    true // Assume alive on non-Unix platforms
+fn try_reap(_pid: i32) -> Option<i32> {
+    None // Cannot reap on non-Unix platforms
 }
 
 /// Main event loop - receives events from all agents and prints them.
@@ -1067,8 +1073,14 @@ async fn run_main_event_loop(
                 // been processed first. This eliminates the shutdown drain race.
                 if is_disconnect {
                     active_agents.fetch_sub(1, Ordering::SeqCst);
-                    if state.seen_root && active_agents.load(Ordering::SeqCst) == 0 {
-                        break;
+                    let all_gone = state.root_agent_ready && active_agents.load(Ordering::SeqCst) == 0;
+                    if all_gone {
+                        // Check if root truly exited (vs mid-exec reconnect)
+                        state.process_exit_status = state.process_exit_status.or_else(|| try_reap(config.root_pid));
+                        if state.process_exit_status.is_some() {
+                            break;
+                        }
+                        debug!("All agents gone but root {} still alive, awaiting reconnect", config.root_pid);
                     }
                 }
             }
@@ -1080,13 +1092,21 @@ async fn run_main_event_loop(
                     debug!("Server task exited unexpectedly");
                     break;
                 }
+                // Reap root process once per tick
+                if state.process_exit_status.is_none() {
+                    state.process_exit_status = try_reap(config.root_pid);
+                }
+                let root_dead = state.process_exit_status.is_some();
                 // Check if all agents disconnected
-                if active_agents.load(Ordering::SeqCst) == 0 && state.seen_root {
-                    break;
+                if active_agents.load(Ordering::SeqCst) == 0 && state.root_agent_ready {
+                    if root_dead {
+                        break;
+                    }
+                    // Root still alive (exec/reconnect case) — handled by root_dead_since timer below
                 }
                 // Check if root process exited without ever connecting
                 // This handles cases like non-existent programs or immediate crashes
-                if !state.seen_root && !is_process_alive(config.root_pid) {
+                if !state.root_agent_ready && root_dead {
                     debug!(
                         "Root process {} exited before agent connected",
                         config.root_pid
@@ -1097,7 +1117,7 @@ async fn run_main_event_loop(
                 // sent Disconnected (e.g., forked children that died without cleanup),
                 // wait up to 500ms then exit gracefully. With WebSocket EOF detection,
                 // this path is rarely needed.
-                if state.seen_root && !is_process_alive(config.root_pid) {
+                if state.root_agent_ready && root_dead {
                     match state.root_dead_since {
                         None => {
                             state.root_dead_since = Some(std::time::Instant::now());
@@ -1119,7 +1139,10 @@ async fn run_main_event_loop(
         }
     }
 
-    // Get exit code via waitpid
+    // Use saved exit code if root was already reaped
+    if let Some(code) = state.process_exit_status {
+        return Ok(Some(code));
+    }
     #[cfg(unix)]
     {
         let mut status: libc::c_int = 0;
@@ -1182,7 +1205,7 @@ fn process_event(
             }
             state.all_pids.insert(pid, true);
             if pid == config.root_pid as u32 {
-                state.seen_root = true;
+                state.root_agent_ready = true;
 
                 // Print each detected runtime immediately.
                 // Node.js version typically arrives later via RuntimeInfo.
