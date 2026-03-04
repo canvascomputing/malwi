@@ -370,7 +370,8 @@ async fn handle_message(
                 }
             }
 
-            let event = child_info_to_trace_event(info, cmd_name);
+            let event = child_info_to_trace_event(info, cmd_name.clone());
+            debug!("Child event queued: cmd={}", cmd_name);
             let _ = shared.event_tx.send(AgentEvent::Trace(event)).await;
         }
         AgentMessage::Reconnect(req) => {

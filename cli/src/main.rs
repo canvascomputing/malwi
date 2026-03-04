@@ -1219,6 +1219,10 @@ fn process_event(
             eprintln!("{}[malwi] Detected {} {}{}", DIM, name, version, RESET);
         }
         AgentEvent::Trace(mut trace_event) => {
+            debug!(
+                "Processing trace event: {} (hook={:?})",
+                trace_event.function, trace_event.hook_type
+            );
             let is_manual = is_manual_function(&trace_event.function, config.manual_functions);
 
             // Determine disposition label for fan-out (set by policy eval)

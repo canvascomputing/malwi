@@ -349,9 +349,6 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
                         source_line,
                         runtime_stack,
                     });
-                    if crate::agent_debug_enabled() {
-                        eprintln!("[malwi-agent] audit exec: event dispatched for {}", cmd);
-                    }
                 }
             }
         }

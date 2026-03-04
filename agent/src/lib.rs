@@ -456,6 +456,9 @@ impl Agent {
         // Only show child events if exec filters are configured
         if !exec::filter::has_filters() {
             debug!("No exec filters configured, hiding child event");
+            if agent_debug_enabled() {
+                eprintln!("[malwi-agent] notify_child: no exec filters, dropping");
+            }
             return;
         }
 
@@ -481,6 +484,9 @@ impl Agent {
                 .unwrap_or(false);
             if !matches && !unwrap_matches {
                 debug!("Command '{}' does not match exec filter, hiding", cmd);
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] notify_child: '{}' filtered out", cmd);
+                }
                 return;
             }
         } else if info.operation == ChildOperation::Fork {
@@ -489,10 +495,18 @@ impl Agent {
             return;
         }
 
-        if let Err(e) = self.http.send_child(&info) {
-            warn!("Failed to send child created notification: {}", e);
-            if agent_debug_enabled() {
-                eprintln!("[malwi-agent] send_child failed: {}", e);
+        let cmd_label = raw_command.unwrap_or("?");
+        match self.http.send_child(&info) {
+            Ok(()) => {
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] send_child ok: {}", cmd_label);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to send child created notification: {}", e);
+                if agent_debug_enabled() {
+                    eprintln!("[malwi-agent] send_child failed for {}: {}", cmd_label, e);
+                }
             }
         }
     }
