@@ -4,10 +4,10 @@
 //! top-level `evaluate_trace()` dispatch. Phase-specific evaluation methods
 //! (network, files, commands) are in sibling modules.
 
-use malwi_policy::{
+use crate::policy::{
     EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
 };
-use malwi_protocol::{HookConfig, HookType, TraceEvent};
+use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
 /// Resolve an `includes:` name to a YAML string using the embedded policy templates.
 fn include_resolver(name: &str) -> Option<String> {
@@ -405,7 +405,7 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
 
 #[cfg(test)]
 pub(super) mod test_helpers {
-    use malwi_protocol::{Argument, EventType, HookType, NetworkInfo, TraceEvent};
+    use malwi_intercept::{Argument, EventType, HookType, NetworkInfo, TraceEvent};
 
     pub fn make_trace_event(hook_type: HookType, function: &str, args: &[&str]) -> TraceEvent {
         TraceEvent {
@@ -447,8 +447,8 @@ pub(super) mod test_helpers {
 mod tests {
     use super::test_helpers::*;
     use super::*;
-    use malwi_policy::PolicyEngine;
-    use malwi_protocol::HookType;
+    use crate::policy::PolicyEngine;
+    use malwi_intercept::HookType;
 
     #[test]
     fn test_default_security_loads() {

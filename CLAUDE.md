@@ -14,30 +14,47 @@ The tool injects an agent library into target processes to intercept function ca
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                           CLI (cli/)                            │
+│                       CLI — malwi (cli/)                        │
 │  - Spawns processes with tracing                                │
-│  - Receives trace events via HTTP                                │
-│  - Handles review mode prompts                                  │
+│  - Receives trace events via HTTP                               │
+│  - Policy engine + evaluation                                   │
+│  - Depends on malwi-intercept (default-features = false)        │
 └─────────────────────────────────────────────────────────────────┘
                               │ HTTP (localhost)
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Agent (agent/)                           │
+│             Agent cdylib — malwi-agent (agent/)                 │
+│  - Thin wrapper: constructor statics + pub use malwi_intercept  │
 │  - Injected via DYLD_INSERT_LIBRARIES / LD_PRELOAD              │
-│  - Manages hooks for native/Python/Node.js                      │
-│  - Sends TraceEvents to CLI                                     │
+└─────────────────────────────────────────────────────────────────┘
+                              │ links
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Library — malwi-intercept (intercept/)             │
+│  - Native interception engine (frida-gum)                       │
+│  - Agent runtime (python/nodejs/bash/exec hooks)                │
+│  - Re-exports malwi-protocol types                              │
+│  - Sends TraceEvents to CLI via HTTP                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │ depends on
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Library — malwi-protocol (protocol/)               │
+│  - Wire protocol types (TraceEvent, messages, codec)            │
+│  - Glob pattern matching, platform utilities                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Workspace Crates
 
-| Crate | Path | Purpose |
-|-------|------|---------|
-| `malwi` | cli/ | CLI binary (includes process spawning) |
-| `malwi-agent` | agent/ | Injected agent library (cdylib) |
-| `malwi-protocol` | protocol/ | Wire protocol types (TraceEvent, messages) |
-| `malwi-intercept` | intercept/ | Native function interception (code patching, module enumeration) |
-| `malwi-policy` | policy/ | Policy engine (YAML parsing, compilation, evaluation) |
+| Crate | Path | Purpose | Published |
+|-------|------|---------|-----------|
+| `malwi` | cli/ | CLI binary + policy engine | Yes |
+| `malwi-intercept` | intercept/ | Interception, agent runtime (re-exports malwi-protocol) | Yes |
+| `malwi-protocol` | protocol/ | Wire protocol types, codec, glob matching, platform utils | No |
+| `malwi-agent` | agent/ | Thin cdylib wrapper (constructor statics + re-exports) | No |
+
+`malwi-protocol` contains shared wire types (TraceEvent, AgentMessage, CliMessage, binary codec) and utilities (glob matching, platform detection). `malwi-intercept` depends on it and re-exports all its types, so existing `malwi_intercept::TraceEvent` imports continue to work. The `malwi-agent` crate is just a cdylib entry point that re-exports `malwi_intercept::*` and defines `__mod_init_func`/`.init_array` constructors.
 
 Policy YAML templates live in `cli/src/policy/presets/` and are embedded at compile time via `include_str!`.
 
@@ -137,8 +154,20 @@ cli/src/
 ├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
 ├── shell_format.rs     # Shell output formatting
 │
-└── policy/             # Policy subsystem
+└── policy/             # Policy subsystem (includes absorbed policy engine)
     ├── mod.rs          # Module root + re-exports
+    │
+    │  # Policy engine (absorbed from former malwi-policy crate)
+    ├── engine.rs       # PolicyEngine, HookSpecKind, PolicyDecision
+    ├── compiler.rs     # Policy compilation (YAML → CompiledPolicy)
+    ├── compiled.rs     # CompiledPolicy, CompiledRule, SectionKey, EnforcementMode
+    ├── parser.rs       # YAML policy parsing
+    ├── pattern.rs      # Glob pattern compilation
+    ├── validate.rs     # Policy validation
+    ├── yaml.rs         # Lightweight YAML parser
+    ├── error.rs        # Policy error types
+    │
+    │  # Policy evaluation (CLI-specific)
     ├── active.rs       # ActivePolicy struct, evaluate_trace dispatch, hook derivation
     ├── network.rs      # Network policy evaluation (URL, domain, endpoint, protocol)
     ├── files.rs        # File access policy evaluation
@@ -161,11 +190,41 @@ cli/src/
         └── taxonomy.yaml   # Command taxonomy data
 ```
 
-## Agent Module Structure
+## Protocol Module Structure
+
+Wire protocol types live in `protocol/src/` (the `malwi-protocol` crate). `malwi-intercept` re-exports all types from this crate, so existing `malwi_intercept::TraceEvent` imports continue to work.
 
 ```
-agent/src/
-├── lib.rs              # Agent entry point, global state
+protocol/src/
+├── lib.rs              # Crate root, module declarations, re-exports
+├── event.rs            # TraceEvent, EventType, Argument, NativeFrame
+├── exec.rs             # Command unwrapping utilities
+├── glob.rs             # Glob pattern matching
+├── message.rs          # AgentMessage, CliMessage
+├── platform.rs         # Platform detection, agent_lib_name()
+├── protocol.rs         # HookType, FilterSpec
+└── wire.rs             # Length-prefixed wire encoding
+```
+
+## Intercept Module Structure
+
+All agent runtime code lives in `intercept/src/` alongside the interception engine.
+
+```
+intercept/src/
+├── lib.rs              # Crate root, module declarations, re-exports from malwi-protocol
+│
+├── interceptor/        # Native function interception engine
+│   ├── mod.rs          # Interceptor struct
+│   ├── listener.rs     # CallListener trait
+│   └── invocation.rs   # InvocationContext
+├── module.rs           # Module enumeration
+├── backtrace.rs        # Native backtrace capture
+├── types.rs            # Shared types (InvocationContext)
+├── gum.rs              # Frida-gum FFI wrapper
+├── ffi.rs              # FFI bindings
+│
+├── agent.rs            # Agent struct, malwi_agent_init(), global state
 ├── http_client.rs      # CLI communication
 │
 ├── native/             # Infrastructure (HookManager, find_export, capture_backtrace)
@@ -216,6 +275,13 @@ agent/src/
 └── syscall/            # Direct syscall detection (scan+patch)
 ```
 
+The `agent/` crate is a thin cdylib wrapper:
+
+```
+agent/src/
+└── lib.rs              # Constructor statics + `pub use malwi_intercept::*;`
+```
+
 ### Runtime Module Convention
 
 Each language runtime module (`python/`, `nodejs/`, `bash/`, future runtimes) follows a standard convention for file naming and public API. The `native/` module is **infrastructure** consumed by all runtimes and does not follow this convention.
@@ -250,7 +316,7 @@ pub fn is_envvar_monitoring_enabled() -> bool;
 ## Key Types
 
 ```rust
-// protocol/src/event.rs
+// intercept/src/protocol/event.rs
 TraceEvent {
     timestamp_ns: u64,
     thread_id: u64,

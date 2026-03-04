@@ -3,7 +3,7 @@
 use super::active::{
     decision_to_disposition, pick_stricter, pick_stricter_opt, ActivePolicy, EventDisposition,
 };
-use malwi_protocol::{NetworkInfo, TraceEvent};
+use malwi_intercept::{NetworkInfo, TraceEvent};
 
 impl ActivePolicy {
     /// Evaluate networking policy (URL, domain, endpoint, protocol) against a trace event.
@@ -268,8 +268,8 @@ fn extract_url_from_arg(arg: &str) -> Option<String> {
 mod tests {
     use super::super::active::test_helpers::*;
     use super::*;
-    use malwi_policy::PolicyEngine;
-    use malwi_protocol::{HookType, Protocol};
+    use crate::policy::PolicyEngine;
+    use malwi_intercept::{HookType, Protocol};
 
     #[test]
     fn test_extract_url_from_formatted_arg() {

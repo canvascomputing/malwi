@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use log::debug;
-use malwi_protocol::protocol::ModuleInfo;
-use malwi_protocol::NativeFrame;
+use malwi_intercept::protocol::ModuleInfo;
+use malwi_intercept::NativeFrame;
 
 /// Cached symbol table for a single binary file.
 struct ModuleSymbols {

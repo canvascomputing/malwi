@@ -7,7 +7,6 @@ mod policy;
 mod shell_format;
 mod spawn;
 mod symbol_resolver;
-mod ws_server;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -18,8 +17,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use log::{debug, warn};
-use malwi_protocol::glob::{matches_glob, matches_glob_ci};
-use malwi_protocol::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEvent};
+use malwi_intercept::glob::{matches_glob, matches_glob_ci};
+use malwi_intercept::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEvent};
 
 use std::path::Path;
 
@@ -230,10 +229,6 @@ enum Commands {
         #[arg(long, default_value = "9123", help_heading = "Output")]
         monitor_port: u16,
 
-        /// WebSocket port for live event streaming to browsers (disabled if not set)
-        #[arg(long = "ws", value_name = "PORT", help_heading = "Output")]
-        ws_port: Option<u16>,
-
         /// Program and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         program: Vec<String>,
@@ -279,7 +274,6 @@ async fn main() -> Result<()> {
             output,
             monitor,
             monitor_port,
-            ws_port,
             program,
         } => {
             let trace_config = TraceConfig {
@@ -293,7 +287,6 @@ async fn main() -> Result<()> {
                 output,
                 use_monitor: monitor,
                 monitor_port,
-                ws_port,
             };
             spawn_and_trace(trace_config, program).await?;
         }
@@ -577,7 +570,6 @@ struct TraceConfig {
     output: Option<PathBuf>,
     use_monitor: bool,
     monitor_port: u16,
-    ws_port: Option<u16>,
 }
 
 /// Detect `malwi x curl ... | bash` and transform to `malwi x -- bash <tempfile>`.
@@ -829,7 +821,7 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         let mut block_eval = false;
         let mut block_source = false;
         if let Some(ref policy) = active_policy {
-            use malwi_protocol::{EventType, HookType as EvHookType, TraceEvent};
+            use malwi_intercept::{EventType, HookType as EvHookType, TraceEvent};
 
             let eval_event = TraceEvent {
                 hook_type: EvHookType::Exec,
@@ -931,16 +923,6 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         client.start_session(&program, root_pid as u32)?;
     }
 
-    // Broadcast channel for external WS subscribers
-    let (broadcast_tx, _) = tokio::sync::broadcast::channel::<Arc<TraceEvent>>(256);
-
-    let _ws_broadcast_handle = if let Some(ws_port) = config.ws_port {
-        let ws = ws_server::WsServer::new(ws_port, broadcast_tx.clone())?;
-        Some(tokio::spawn(async move { ws.run().await }))
-    } else {
-        None
-    };
-
     // Build event loop config and state
     let loop_config = EventLoopConfig {
         root_pid,
@@ -970,12 +952,6 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         all_pids: HashMap::new(),
         root_dead_since: None,
         symbol_resolver: symbol_resolver::SymbolResolver::new(),
-        broadcast_tx: if config.ws_port.is_some() {
-            Some(broadcast_tx)
-        } else {
-            None
-        },
-        next_seq: 0,
     };
 
     // Main event loop - process events and print output
@@ -1023,10 +999,6 @@ struct EventLoopState {
     root_dead_since: Option<std::time::Instant>,
     process_exit_status: Option<i32>,
     symbol_resolver: symbol_resolver::SymbolResolver,
-    /// Broadcast sender for enriched events (external WS clients).
-    broadcast_tx: Option<tokio::sync::broadcast::Sender<Arc<TraceEvent>>>,
-    /// Monotonic sequence number for enriched events.
-    next_seq: u64,
 }
 
 /// Attempt a non-blocking waitpid. Returns `Some(exit_code)` if the process
@@ -1224,7 +1196,7 @@ fn process_event(
                 // the runtime-specific subsystems and aren't reported in the
                 // agent's hook list.
                 for hc in config.requested_hooks {
-                    if hc.hook_type == malwi_protocol::HookType::Native
+                    if hc.hook_type == malwi_intercept::HookType::Native
                         && config.manual_functions.contains(&hc.symbol)
                         && !hooks
                             .iter()
@@ -1241,15 +1213,12 @@ fn process_event(
             let name = display_runtime_name(&runtime);
             eprintln!("{}[malwi] Detected {} {}{}", DIM, name, version, RESET);
         }
-        AgentEvent::Trace(mut trace_event) => {
+        AgentEvent::Trace(trace_event) => {
             debug!(
                 "Processing trace event: {} (hook={:?})",
                 trace_event.function, trace_event.hook_type
             );
             let is_manual = is_manual_function(&trace_event.function, config.manual_functions);
-
-            // Determine disposition label for fan-out (set by policy eval)
-            let mut disp_label = "display";
 
             // For manual -c functions: use ArgFilter as before
             if is_manual {
@@ -1269,14 +1238,13 @@ fn process_event(
                             config.monitor_client,
                             state.output_writer.as_deref_mut(),
                         );
-                        fan_out(&mut trace_event, state, config, "block");
+
                         return Ok(());
                     }
                     policy::EventDisposition::Warn {
                         rule: _,
                         section: _,
                     } => {
-                        disp_label = "warn";
                         emit_warning(
                             &trace_event,
                             config.monitor_client,
@@ -1285,7 +1253,6 @@ fn process_event(
                         // For exec events, the warning line already contains the full command.
                         // For function calls, fall through to also print the call details.
                         if trace_event.hook_type == HookType::Exec {
-                            fan_out(&mut trace_event, state, config, "warn");
                             return Ok(());
                         }
                     }
@@ -1320,9 +1287,6 @@ fn process_event(
                     config.stack_trace_enabled,
                 )?;
             }
-
-            // Enrich and fan out to WS subscribers
-            fan_out(&mut trace_event, state, config, disp_label);
         }
         AgentEvent::Disconnected { pid } => {
             debug!("Agent {} disconnected", pid);
@@ -1373,38 +1337,6 @@ fn process_event(
         }
     }
     Ok(())
-}
-
-/// Derive event category from hook type.
-fn category_from_hook_type(hook_type: &HookType) -> malwi_protocol::EventCategory {
-    use malwi_protocol::EventCategory;
-    match hook_type {
-        HookType::Exec => EventCategory::CommandExec,
-        HookType::EnvVar => EventCategory::EnvVarAccess,
-        _ => EventCategory::FunctionCall,
-    }
-}
-
-/// Enrich a trace event with CLI-side fields and fan out to broadcast subscribers.
-fn fan_out(
-    trace_event: &mut TraceEvent,
-    state: &mut EventLoopState,
-    config: &EventLoopConfig,
-    disposition: &str,
-) {
-    let broadcast_tx = match &state.broadcast_tx {
-        Some(tx) => tx,
-        None => return,
-    };
-    state.next_seq += 1;
-    trace_event.seq = state.next_seq;
-    trace_event.source = Some(malwi_protocol::EventSource::Agent {
-        pid: config.root_pid as u32,
-    });
-    trace_event.category = Some(category_from_hook_type(&trace_event.hook_type));
-    trace_event.disposition = Some(disposition.to_string());
-
-    let _ = broadcast_tx.send(Arc::new(trace_event.clone()));
 }
 
 /// Emit a "[malwi] denied:" message for a blocked event.
@@ -1644,7 +1576,7 @@ fn print_review_details(event: &TraceEvent) {
 }
 
 /// Format a native stack frame for display.
-fn format_native_frame(frame: &malwi_protocol::NativeFrame) -> String {
+fn format_native_frame(frame: &malwi_intercept::NativeFrame) -> String {
     match (&frame.symbol, &frame.module, frame.offset) {
         (Some(sym), Some(module), Some(off)) if off > 0 => {
             format!("{}+{:#x} ({})", sym, off, module)
@@ -1683,11 +1615,11 @@ pub fn format_source_location(source_file: &Option<String>, source_line: Option<
 
 fn print_trace_event(
     event: &TraceEvent,
-    resolved_stack: &[malwi_protocol::NativeFrame],
+    resolved_stack: &[malwi_intercept::NativeFrame],
     output: &mut Box<dyn Write>,
     stack_trace_enabled: bool,
 ) -> Result<()> {
-    use malwi_protocol::EventType;
+    use malwi_intercept::EventType;
 
     // Only print ENTER events - skip LEAVE entirely
     if !matches!(event.event_type, EventType::Enter) {
@@ -1787,7 +1719,7 @@ fn print_trace_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use malwi_protocol::{Argument, EventType};
+    use malwi_intercept::{Argument, EventType};
 
     fn make_trace_event(function: &str, args: &[&str]) -> TraceEvent {
         TraceEvent {

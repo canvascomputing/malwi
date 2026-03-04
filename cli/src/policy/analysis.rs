@@ -14,7 +14,7 @@
 
 use super::files::normalize_path;
 use super::taxonomy::{self, Category};
-use malwi_protocol::glob::matches_glob;
+use malwi_intercept::glob::matches_glob;
 
 /// Result of command analysis when a suspicious pattern is detected.
 #[allow(dead_code)]

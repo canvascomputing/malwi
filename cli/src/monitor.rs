@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use malwi_protocol::{EventType, HookType, RuntimeStack, TraceEvent};
+use malwi_intercept::{EventType, HookType, RuntimeStack, TraceEvent};
 
 use crate::{display_name, DIM, LIGHT_BLUE, RED, RESET, YELLOW};
 

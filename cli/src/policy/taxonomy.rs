@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use malwi_policy::{parse_yaml, YamlValue};
+use crate::policy::{parse_yaml, YamlValue};
 
 // ---------------------------------------------------------------------------
 // Public types

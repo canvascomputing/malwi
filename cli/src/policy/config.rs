@@ -37,7 +37,7 @@ pub(crate) fn ensure_default_policy(path: &Path) -> Result<()> {
     if path.exists() {
         // Try to load — if it fails validation, the file is stale.
         let contents = std::fs::read_to_string(path)?;
-        if malwi_policy::PolicyEngine::from_yaml(&contents).is_ok() {
+        if super::PolicyEngine::from_yaml(&contents).is_ok() {
             return Ok(());
         }
         log::debug!("Regenerating stale default policy at {}", path.display());

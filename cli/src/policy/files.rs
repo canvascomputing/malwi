@@ -1,8 +1,8 @@
 //! File access policy evaluation — checks file paths against the `files:` policy section.
 
 use super::active::{decision_to_disposition, pick_stricter, ActivePolicy, EventDisposition};
-use malwi_policy::{Category, SectionKey};
-use malwi_protocol::{HookType, TraceEvent};
+use crate::policy::{Category, SectionKey};
+use malwi_intercept::{HookType, TraceEvent};
 
 impl ActivePolicy {
     /// Evaluate file access against the `files:` policy section.
@@ -127,7 +127,7 @@ fn strip_quotes(s: &str) -> Option<&str> {
 mod tests {
     use super::super::active::test_helpers::*;
     use super::*;
-    use malwi_policy::PolicyEngine;
+    use crate::policy::PolicyEngine;
 
     #[test]
     fn test_exec_cat_ssh_key_blocked_by_files() {

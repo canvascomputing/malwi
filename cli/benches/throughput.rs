@@ -7,12 +7,12 @@ use std::time::Duration;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use malwi::agent_server::AgentServer;
-use malwi_protocol::wire::{write_frame, BinaryCodec, Codec};
-use malwi_protocol::{AgentMessage, Argument, EventType, HookConfig, TraceEvent};
+use malwi_intercept::wire::{write_frame, BinaryCodec, Codec};
+use malwi_intercept::{AgentMessage, Argument, EventType, HookConfig, TraceEvent};
 
 fn make_event(_i: u64) -> TraceEvent {
     TraceEvent {
-        hook_type: malwi_protocol::HookType::Native,
+        hook_type: malwi_intercept::HookType::Native,
         event_type: EventType::Enter,
         function: "malloc".to_string(),
         arguments: vec![Argument {
@@ -26,7 +26,7 @@ fn make_event(_i: u64) -> TraceEvent {
 
 fn make_hook_configs() -> Vec<HookConfig> {
     vec![HookConfig {
-        hook_type: malwi_protocol::HookType::Native,
+        hook_type: malwi_intercept::HookType::Native,
         symbol: "malloc".to_string(),
         arg_count: Some(1),
         capture_return: false,

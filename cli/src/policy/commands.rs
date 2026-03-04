@@ -1,8 +1,8 @@
 //! Command triage — integrates the deterministic command analysis engine.
 
 use super::active::{pick_stricter, ActivePolicy, EventDisposition};
-use malwi_policy::{Category, SectionKey};
-use malwi_protocol::{HookType, TraceEvent};
+use crate::policy::{Category, SectionKey};
+use malwi_intercept::{HookType, TraceEvent};
 
 impl ActivePolicy {
     /// Collect command deny/warn/log patterns from the `commands:` policy section.
@@ -55,7 +55,7 @@ impl ActivePolicy {
 mod tests {
     use super::super::active::test_helpers::*;
     use super::super::active::{ActivePolicy, EventDisposition};
-    use malwi_policy::PolicyEngine;
+    use crate::policy::PolicyEngine;
 
     #[test]
     fn test_command_analysis_ln_sensitive_warns() {

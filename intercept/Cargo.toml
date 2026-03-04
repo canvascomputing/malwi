@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+publish = false
 links = "frida-gum"
 build = "build.rs"
 
 [dependencies]
 libc.workspace = true
 log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+malwi-protocol.workspace = true
 
 [build-dependencies]
 bindgen = "0.71"
@@ -18,4 +22,8 @@ bindgen = "0.71"
 mach2.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "filter"
+harness = false

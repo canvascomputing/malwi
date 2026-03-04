@@ -117,7 +117,7 @@ fn resolve_env_shebang(program: &str) -> Option<(String, String)> {
 
 /// Find the agent library path.
 fn find_agent_library() -> Result<String> {
-    use malwi_protocol::platform::{agent_lib_name, installed_lib_paths};
+    use malwi_intercept::platform::{agent_lib_name, installed_lib_paths};
     use std::path::PathBuf;
 
     let lib_name = agent_lib_name();

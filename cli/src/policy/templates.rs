@@ -36,7 +36,8 @@ pub fn embedded_policy(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use malwi_policy::{EnforcementMode, PolicyAction, PolicyEngine, Runtime};
+    use crate::policy::compiled::{EnforcementMode, Runtime};
+    use crate::policy::engine::{PolicyAction, PolicyEngine};
 
     // =====================================================================
     // ComfyUI auto-policy: attack scenario tests

@@ -3,10 +3,8 @@ resolver = "2"
 members = [
     "cli",
     "agent",
-    "protocol",
-    "websocket",
     "intercept",
-    "policy",
+    "protocol",
 ]
 
 [workspace.package]
@@ -37,8 +35,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros",
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # Internal crates
-malwi-protocol = { path = "protocol" }
-malwi-websocket = { path = "websocket" }
 malwi-agent = { path = "agent" }
-malwi-policy = { path = "policy" }
-malwi-intercept = { path = "intercept" }
+malwi-intercept = { path = "intercept", default-features = false }
+malwi-protocol = { path = "protocol" }

@@ -12,8 +12,8 @@ use anyhow::Result;
 use log::debug;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use malwi_protocol::wire::{BinaryCodec, Codec};
-use malwi_protocol::{
+use malwi_intercept::wire::{BinaryCodec, Codec};
+use malwi_intercept::{
     AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookConfig,
     HookType, HostChildInfo, ReviewDecision, TraceEvent,
 };
@@ -27,7 +27,7 @@ pub enum AgentEvent {
         nodejs_version: Option<u32>,
         python_version: Option<String>,
         bash_version: Option<String>,
-        modules: Vec<malwi_protocol::ModuleInfo>,
+        modules: Vec<malwi_intercept::ModuleInfo>,
     },
     /// Trace event from agent
     Trace(TraceEvent),
