@@ -21,24 +21,14 @@ pub struct ActivePolicy {
     /// Cache: (hook_type discriminant, function_name) → function-level disposition.
     /// Only caches results for functions without arg-filter constraints.
     pub(super) fn_cache:
-        std::cell::RefCell<std::collections::HashMap<(u8, String), CachedDisposition>>,
+        std::cell::RefCell<std::collections::HashMap<(u8, String), EventDisposition>>,
     /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
     /// Computed once at construction time since the policy is immutable after load.
     has_network_allow: bool,
 }
 
-/// Compact representation of a cached function-level disposition.
-#[derive(Clone)]
-pub(super) enum CachedDisposition {
-    Display,
-    Suppress,
-    Warn { rule: String, section: String },
-    Block { rule: String, section: String },
-    Review { rule: String, section: String },
-}
-
 /// The disposition of a trace event after policy evaluation.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum EventDisposition {
     /// Matched a deny rule with Log mode — display the event.
@@ -68,46 +58,6 @@ impl EventDisposition {
     /// Whether this event should be blocked.
     pub fn is_blocked(&self) -> bool {
         matches!(self, EventDisposition::Block { .. })
-    }
-
-    pub(super) fn to_cached(&self) -> CachedDisposition {
-        match self {
-            EventDisposition::Display => CachedDisposition::Display,
-            EventDisposition::Suppress => CachedDisposition::Suppress,
-            EventDisposition::Warn { rule, section } => CachedDisposition::Warn {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-            EventDisposition::Block { rule, section } => CachedDisposition::Block {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-            EventDisposition::Review { rule, section } => CachedDisposition::Review {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-        }
-    }
-}
-
-impl CachedDisposition {
-    pub(super) fn to_disposition(&self) -> EventDisposition {
-        match self {
-            CachedDisposition::Display => EventDisposition::Display,
-            CachedDisposition::Suppress => EventDisposition::Suppress,
-            CachedDisposition::Warn { rule, section } => EventDisposition::Warn {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-            CachedDisposition::Block { rule, section } => EventDisposition::Block {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-            CachedDisposition::Review { rule, section } => EventDisposition::Review {
-                rule: rule.clone(),
-                section: section.clone(),
-            },
-        }
     }
 }
 
@@ -180,12 +130,12 @@ impl ActivePolicy {
         let cache_key = if !matches!(event.hook_type, HookType::Exec | HookType::EnvVar) {
             let key = (hook_type_discriminant(&event.hook_type), func.to_string());
             if let Some(cached) = self.fn_cache.borrow().get(&key) {
-                let disp = cached.to_disposition();
+                let disp = cached.clone();
                 if let Some(disp) = self.apply_network_passthrough(event, disp) {
                     return disp;
                 }
                 // Blocked and not a passthrough — return immediately
-                return cached.to_disposition();
+                return cached.clone();
             }
             Some(key)
         } else {
@@ -221,16 +171,15 @@ impl ActivePolicy {
         let disp = decision_to_disposition(decision);
 
         // Cache the function-level result
-        let cached = disp.to_cached();
         if let Some(key) = cache_key {
-            self.fn_cache.borrow_mut().insert(key, cached.clone());
+            self.fn_cache.borrow_mut().insert(key, disp.clone());
         }
 
         // Apply network passthrough: if blocked but eligible, downgrade to Display
         // and continue to network phase. Otherwise return the block immediately.
-        let disp = match self.apply_network_passthrough(event, disp) {
+        let disp = match self.apply_network_passthrough(event, disp.clone()) {
             Some(disp) => disp,
-            None => return cached.to_disposition(), // Blocked, not a passthrough
+            None => return disp, // Blocked, not a passthrough
         };
 
         let disp = self.evaluate_file_phase(event, disp);

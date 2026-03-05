@@ -3,7 +3,16 @@
 use super::active::{
     decision_to_disposition, pick_stricter, pick_stricter_opt, ActivePolicy, EventDisposition,
 };
+use crate::policy::PolicyDecision;
 use malwi_intercept::{NetworkInfo, TraceEvent};
+
+/// Evaluate a policy decision and merge into the running strictest disposition.
+fn merge_decision(strictest: &mut Option<EventDisposition>, decision: PolicyDecision) {
+    let disp = decision_to_disposition(decision);
+    if disp.should_display() {
+        *strictest = Some(pick_stricter_opt(strictest.take(), disp));
+    }
+}
 
 impl ActivePolicy {
     /// Evaluate networking policy (URL, domain, endpoint, protocol) against a trace event.
@@ -42,19 +51,17 @@ impl ActivePolicy {
 
     /// Evaluate structured networking metadata against all networking policy sections.
     fn evaluate_network_info(&self, info: &NetworkInfo) -> Option<EventDisposition> {
-        let mut strictest: Option<EventDisposition> = None;
+        let mut s: Option<EventDisposition> = None;
 
         // HTTP URL rules (network section, URL patterns)
         if let Some(ref url) = info.url {
             if url.contains("://") {
                 if let Some(parsed) = ParsedUrl::parse(url) {
-                    let full_url = parsed.full_url();
-                    let no_scheme_url = parsed.url_without_scheme();
-                    let decision = self.engine.evaluate_http_url(&full_url, &no_scheme_url);
-                    let disp = decision_to_disposition(decision);
-                    if disp.should_display() {
-                        strictest = Some(pick_stricter_opt(strictest, disp));
-                    }
+                    merge_decision(
+                        &mut s,
+                        self.engine
+                            .evaluate_http_url(&parsed.full_url(), &parsed.url_without_scheme()),
+                    );
                 }
             }
         }
@@ -62,52 +69,29 @@ impl ActivePolicy {
         // Host-only NetworkInfo: bridge to URL patterns by constructing "{host}/".
         // e.g. socket.create_connection("pypi.org", 443) has host="pypi.org" but no URL.
         // Synthetic "pypi.org/" matches pattern "pypi.org/**" → Allow.
-        //
-        // Note: the same schemeless string is passed as both `full_url` and
-        // `no_scheme_url`. This works because current policies use schemeless
-        // patterns (e.g. "pypi.org/**"). A pattern like "https://evil.com/**"
-        // would not match the synthetic URL even if the host were "evil.com" —
-        // the scheme-based match path is effectively bypassed. This is acceptable
-        // because host-only NetworkInfo lacks scheme information by definition.
         if info.url.is_none() {
             if let Some(ref host) = info.host {
                 let synthetic = format!("{}/", host);
-                let decision = self.engine.evaluate_http_url(&synthetic, &synthetic);
-                let disp = decision_to_disposition(decision);
-                if disp.should_display() {
-                    strictest = Some(pick_stricter_opt(strictest, disp));
-                }
+                merge_decision(
+                    &mut s,
+                    self.engine.evaluate_http_url(&synthetic, &synthetic),
+                );
             }
         }
 
-        // network domains
         if let Some(ref host) = info.host {
-            let decision = self.engine.evaluate_domain(host);
-            let disp = decision_to_disposition(decision);
-            if disp.should_display() {
-                strictest = Some(pick_stricter_opt(strictest, disp));
-            }
+            merge_decision(&mut s, self.engine.evaluate_domain(host));
         }
 
-        // network endpoints
         if let (Some(ref host), Some(port)) = (&info.host, info.port) {
-            let decision = self.engine.evaluate_endpoint(host, port);
-            let disp = decision_to_disposition(decision);
-            if disp.should_display() {
-                strictest = Some(pick_stricter_opt(strictest, disp));
-            }
+            merge_decision(&mut s, self.engine.evaluate_endpoint(host, port));
         }
 
-        // network protocols
         if let Some(ref protocol) = info.protocol {
-            let decision = self.engine.evaluate_protocol(protocol.as_str());
-            let disp = decision_to_disposition(decision);
-            if disp.should_display() {
-                strictest = Some(pick_stricter_opt(strictest, disp));
-            }
+            merge_decision(&mut s, self.engine.evaluate_protocol(protocol.as_str()));
         }
 
-        strictest
+        s
     }
 
     /// Extract URL from arguments and evaluate against network URL rules.

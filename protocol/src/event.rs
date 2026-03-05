@@ -93,6 +93,30 @@ pub struct NetworkInfo {
     pub protocol: Option<Protocol>,
 }
 
+impl NetworkInfo {
+    /// NetworkInfo with only a host (DNS lookups, gethostbyname).
+    pub fn host_only(host: String) -> Self {
+        Self {
+            host: Some(host),
+            ..Default::default()
+        }
+    }
+
+    /// NetworkInfo with host and port (connect, bind, sendto).
+    pub fn endpoint(host: String, port: u16) -> Self {
+        Self {
+            host: Some(host),
+            port: Some(port),
+            ..Default::default()
+        }
+    }
+
+    /// True if all fields are None.
+    pub fn is_empty(&self) -> bool {
+        self.url.is_none() && self.host.is_none() && self.port.is_none() && self.protocol.is_none()
+    }
+}
+
 /// Origin of a trace event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventSource {

@@ -411,7 +411,7 @@ fn format_connect(args: &mut [Argument]) -> Option<NetworkInfo> {
         let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
         args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
-        return info.as_ref().map(network_info_from_sockaddr);
+        return info.as_ref().map(NetworkInfo::from);
     }
     None
 }
@@ -423,7 +423,7 @@ fn format_bind(args: &mut [Argument]) -> Option<NetworkInfo> {
         let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
         args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
-        return info.as_ref().map(network_info_from_sockaddr);
+        return info.as_ref().map(NetworkInfo::from);
     }
     None
 }
@@ -447,7 +447,7 @@ fn format_sendto(args: &mut [Argument]) -> Option<NetworkInfo> {
         let info = unsafe { parse_sockaddr_info(args[4].raw_value, args[5].raw_value) };
         args[4].display = format_sockaddr(args[4].raw_value, args[5].raw_value);
         args[5].display = Some(format!("addrlen={}", args[5].raw_value));
-        ni = info.as_ref().map(network_info_from_sockaddr);
+        ni = info.as_ref().map(NetworkInfo::from);
     }
     ni
 }
@@ -604,7 +604,7 @@ fn format_accept(args: &mut [Argument]) -> Option<NetworkInfo> {
         if args[1].raw_value != 0 {
             let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
             args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
-            ni = info.as_ref().map(network_info_from_sockaddr);
+            ni = info.as_ref().map(NetworkInfo::from);
         } else {
             args[1].display = Some("NULL".to_string());
         }
@@ -622,7 +622,7 @@ fn format_accept4(args: &mut [Argument]) -> Option<NetworkInfo> {
         if args[1].raw_value != 0 {
             let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
             args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
-            ni = info.as_ref().map(network_info_from_sockaddr);
+            ni = info.as_ref().map(NetworkInfo::from);
         } else {
             args[1].display = Some("NULL".to_string());
         }
@@ -832,10 +832,7 @@ fn format_gethostbyname(args: &mut [Argument]) -> Option<NetworkInfo> {
     if !args.is_empty() {
         if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
-            return Some(NetworkInfo {
-                host: Some(host),
-                ..Default::default()
-            });
+            return Some(NetworkInfo::host_only(host));
         }
     }
     None
@@ -848,10 +845,7 @@ fn format_gethostbyname2(args: &mut [Argument]) -> Option<NetworkInfo> {
     if !args.is_empty() {
         if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
-            ni = Some(NetworkInfo {
-                host: Some(host),
-                ..Default::default()
-            });
+            ni = Some(NetworkInfo::host_only(host));
         }
     }
     // arg1: address family (int)
@@ -869,7 +863,7 @@ fn format_getnameinfo(args: &mut [Argument]) -> Option<NetworkInfo> {
         let info = unsafe { parse_sockaddr_info(args[0].raw_value, args[1].raw_value) };
         args[0].display = format_sockaddr(args[0].raw_value, args[1].raw_value);
         args[1].display = Some(format!("salen={}", args[1].raw_value));
-        ni = info.as_ref().map(network_info_from_sockaddr);
+        ni = info.as_ref().map(NetworkInfo::from);
     }
     // arg2-6: output buffers and flags — just show pointers
     if args.len() >= 3 {
@@ -1234,12 +1228,9 @@ fn format_sockaddr(addr_ptr: usize, len: usize) -> Option<String> {
     }
 }
 
-/// Build NetworkInfo from a parsed SockaddrInfo.
-fn network_info_from_sockaddr(info: &SockaddrInfo) -> NetworkInfo {
-    NetworkInfo {
-        host: Some(info.host.clone()),
-        port: Some(info.port),
-        ..Default::default()
+impl From<&SockaddrInfo> for NetworkInfo {
+    fn from(info: &SockaddrInfo) -> Self {
+        NetworkInfo::endpoint(info.host.clone(), info.port)
     }
 }
 

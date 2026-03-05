@@ -315,11 +315,7 @@ pub fn format_python_arguments(
 
 /// Return Some only if NetworkInfo has at least one field populated.
 fn non_empty_network_info(ni: NetworkInfo) -> Option<NetworkInfo> {
-    if ni.url.is_some() || ni.host.is_some() || ni.port.is_some() || ni.protocol.is_some() {
-        Some(ni)
-    } else {
-        None
-    }
+    Some(ni).filter(|n| !n.is_empty())
 }
 
 /// Parse a simple URL into NetworkInfo components.
