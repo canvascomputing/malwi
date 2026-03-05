@@ -362,7 +362,7 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
     }
 
     // Format display values for known functions (e.g., show paths instead of pointers)
-    format_native_arguments(&function, &mut arguments);
+    let network_info = format_native_arguments(&function, &mut arguments);
 
     // Only capture backtrace if enabled for this hook
     let native_stack = if capture_stack {
@@ -376,6 +376,7 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
         .hook_type(crate::HookType::Native)
         .arguments(arguments)
         .native_stack(native_stack)
+        .network_info(network_info)
         .build();
 
     // Send to CLI

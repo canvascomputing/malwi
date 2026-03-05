@@ -6,7 +6,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::Argument;
+use crate::{Argument, NetworkInfo};
 
 use crate::tracing::format::truncate;
 
@@ -17,75 +17,216 @@ const MAX_BUFFER_PREVIEW: usize = 64;
 ///
 /// Sets the `display` field on arguments based on the function being called.
 /// Unknown functions are left unchanged (raw hex values).
-pub fn format_native_arguments(function: &str, arguments: &mut [Argument]) {
+///
+/// Returns `Some(NetworkInfo)` for networking functions with structured
+/// metadata for direct policy evaluation.
+pub fn format_native_arguments(function: &str, arguments: &mut [Argument]) -> Option<NetworkInfo> {
     match function {
-        "open" | "_open" => format_open(arguments),
-        "openat" | "_openat" => format_openat(arguments),
-        "read" | "_read" => format_read(arguments),
-        "write" | "_write" => format_write(arguments),
-        "close" | "_close" => format_close(arguments),
-        "stat" | "stat64" | "_stat" | "$INODE64" => format_stat(arguments),
-        "lstat" | "lstat64" | "_lstat" => format_stat(arguments),
-        "fstat" | "fstat64" | "_fstat" => format_fstat(arguments),
-        "access" | "_access" => format_access(arguments),
-        "unlink" | "_unlink" => format_path_arg(arguments, 0),
-        "rename" | "_rename" => format_rename(arguments),
-        "mkdir" | "_mkdir" => format_mkdir(arguments),
-        "rmdir" | "_rmdir" => format_path_arg(arguments, 0),
-        "socket" | "_socket" => format_socket(arguments),
+        "open" | "_open" => {
+            format_open(arguments);
+            None
+        }
+        "openat" | "_openat" => {
+            format_openat(arguments);
+            None
+        }
+        "read" | "_read" => {
+            format_read(arguments);
+            None
+        }
+        "write" | "_write" => {
+            format_write(arguments);
+            None
+        }
+        "close" | "_close" => {
+            format_close(arguments);
+            None
+        }
+        "stat" | "stat64" | "_stat" | "$INODE64" => {
+            format_stat(arguments);
+            None
+        }
+        "lstat" | "lstat64" | "_lstat" => {
+            format_stat(arguments);
+            None
+        }
+        "fstat" | "fstat64" | "_fstat" => {
+            format_fstat(arguments);
+            None
+        }
+        "access" | "_access" => {
+            format_access(arguments);
+            None
+        }
+        "unlink" | "_unlink" => {
+            format_path_arg(arguments, 0);
+            None
+        }
+        "rename" | "_rename" => {
+            format_rename(arguments);
+            None
+        }
+        "mkdir" | "_mkdir" => {
+            format_mkdir(arguments);
+            None
+        }
+        "rmdir" | "_rmdir" => {
+            format_path_arg(arguments, 0);
+            None
+        }
+        "socket" | "_socket" => {
+            format_socket(arguments);
+            None
+        }
         "connect" | "_connect" => format_connect(arguments),
         "bind" | "_bind" => format_bind(arguments),
         "sendto" | "_sendto" => format_sendto(arguments),
-        "recvfrom" | "_recvfrom" => format_recvfrom(arguments),
-        "execve" | "_execve" => format_execve(arguments),
-        "dlopen" => format_dlopen(arguments),
-        "mmap" | "_mmap" => format_mmap(arguments),
-        "munmap" | "_munmap" => format_munmap(arguments),
-        "dup" | "_dup" => format_fd_arg(arguments, 0),
-        "dup2" | "_dup2" => format_dup2(arguments),
-        "pipe" | "_pipe" => {} // Array of int, hard to format
-        "fcntl" | "_fcntl" => format_fcntl(arguments),
-        "ioctl" | "_ioctl" => format_ioctl(arguments),
-        "getpid" | "_getpid" | "getppid" | "_getppid" => {} // No args
-        "fork" | "_fork" | "vfork" | "_vfork" => {}         // No args
-        "chdir" | "_chdir" => format_path_arg(arguments, 0),
-        "getcwd" | "_getcwd" => {} // Returns path, hard to preview
-        "link" | "_link" | "symlink" | "_symlink" => format_link(arguments),
-        "readlink" | "_readlink" => format_path_arg(arguments, 0),
-        "chmod" | "_chmod" => format_chmod(arguments),
-        "chown" | "_chown" => format_chown(arguments),
+        "recvfrom" | "_recvfrom" => {
+            format_recvfrom(arguments);
+            None
+        }
+        "execve" | "_execve" => {
+            format_execve(arguments);
+            None
+        }
+        "dlopen" => {
+            format_dlopen(arguments);
+            None
+        }
+        "mmap" | "_mmap" => {
+            format_mmap(arguments);
+            None
+        }
+        "munmap" | "_munmap" => {
+            format_munmap(arguments);
+            None
+        }
+        "dup" | "_dup" => {
+            format_fd_arg(arguments, 0);
+            None
+        }
+        "dup2" | "_dup2" => {
+            format_dup2(arguments);
+            None
+        }
+        "pipe" | "_pipe" => None, // Array of int, hard to format
+        "fcntl" | "_fcntl" => {
+            format_fcntl(arguments);
+            None
+        }
+        "ioctl" | "_ioctl" => {
+            format_ioctl(arguments);
+            None
+        }
+        "getpid" | "_getpid" | "getppid" | "_getppid" => None, // No args
+        "fork" | "_fork" | "vfork" | "_vfork" => None,         // No args
+        "chdir" | "_chdir" => {
+            format_path_arg(arguments, 0);
+            None
+        }
+        "getcwd" | "_getcwd" => None, // Returns path, hard to preview
+        "link" | "_link" | "symlink" | "_symlink" => {
+            format_link(arguments);
+            None
+        }
+        "readlink" | "_readlink" => {
+            format_path_arg(arguments, 0);
+            None
+        }
+        "chmod" | "_chmod" => {
+            format_chmod(arguments);
+            None
+        }
+        "chown" | "_chown" => {
+            format_chown(arguments);
+            None
+        }
 
         // DNS resolution functions
         "getaddrinfo" | "_getaddrinfo" => format_getaddrinfo(arguments),
-        "gethostbyname" | "_gethostbyname" => format_path_arg(arguments, 0),
+        "gethostbyname" | "_gethostbyname" => format_gethostbyname(arguments),
         "gethostbyname2" | "_gethostbyname2" => format_gethostbyname2(arguments),
         "getnameinfo" | "_getnameinfo" => format_getnameinfo(arguments),
 
         // Network functions
-        "listen" | "_listen" => format_listen(arguments),
+        "listen" | "_listen" => {
+            format_listen(arguments);
+            None
+        }
         "accept" | "_accept" => format_accept(arguments),
         "accept4" => format_accept4(arguments),
-        "shutdown" | "_shutdown" => format_shutdown(arguments),
-        "getsockopt" | "_getsockopt" => format_getsockopt(arguments),
-        "setsockopt" | "_setsockopt" => format_setsockopt(arguments),
-        "getpeername" | "_getpeername" => format_getpeername(arguments),
-        "getsockname" | "_getsockname" => format_getsockname(arguments),
-        "send" | "_send" => format_send(arguments),
-        "recv" | "_recv" => format_recv(arguments),
+        "shutdown" | "_shutdown" => {
+            format_shutdown(arguments);
+            None
+        }
+        "getsockopt" | "_getsockopt" => {
+            format_getsockopt(arguments);
+            None
+        }
+        "setsockopt" | "_setsockopt" => {
+            format_setsockopt(arguments);
+            None
+        }
+        "getpeername" | "_getpeername" => {
+            format_getpeername(arguments);
+            None
+        }
+        "getsockname" | "_getsockname" => {
+            format_getsockname(arguments);
+            None
+        }
+        "send" | "_send" => {
+            format_send(arguments);
+            None
+        }
+        "recv" | "_recv" => {
+            format_recv(arguments);
+            None
+        }
 
         // File I/O extensions
-        "pread" | "_pread" | "pread64" => format_pread(arguments),
-        "pwrite" | "_pwrite" | "pwrite64" => format_pwrite(arguments),
-        "lseek" | "_lseek" | "lseek64" => format_lseek(arguments),
-        "truncate" | "_truncate" | "truncate64" => format_truncate(arguments),
-        "ftruncate" | "_ftruncate" | "ftruncate64" => format_ftruncate(arguments),
-        "fsync" | "_fsync" => format_fd_arg(arguments, 0),
-        "fdatasync" | "_fdatasync" => format_fd_arg(arguments, 0),
-        "fchmod" | "_fchmod" => format_fchmod(arguments),
-        "fchown" | "_fchown" => format_fchown(arguments),
-        "fchdir" | "_fchdir" => format_fd_arg(arguments, 0),
+        "pread" | "_pread" | "pread64" => {
+            format_pread(arguments);
+            None
+        }
+        "pwrite" | "_pwrite" | "pwrite64" => {
+            format_pwrite(arguments);
+            None
+        }
+        "lseek" | "_lseek" | "lseek64" => {
+            format_lseek(arguments);
+            None
+        }
+        "truncate" | "_truncate" | "truncate64" => {
+            format_truncate(arguments);
+            None
+        }
+        "ftruncate" | "_ftruncate" | "ftruncate64" => {
+            format_ftruncate(arguments);
+            None
+        }
+        "fsync" | "_fsync" => {
+            format_fd_arg(arguments, 0);
+            None
+        }
+        "fdatasync" | "_fdatasync" => {
+            format_fd_arg(arguments, 0);
+            None
+        }
+        "fchmod" | "_fchmod" => {
+            format_fchmod(arguments);
+            None
+        }
+        "fchown" | "_fchown" => {
+            format_fchown(arguments);
+            None
+        }
+        "fchdir" | "_fchdir" => {
+            format_fd_arg(arguments, 0);
+            None
+        }
 
-        _ => {} // Unknown function - leave as raw
+        _ => None, // Unknown function - leave as raw
     }
 }
 
@@ -264,25 +405,31 @@ fn format_socket(args: &mut [Argument]) {
 }
 
 /// Format connect(fd, addr, addrlen) arguments.
-fn format_connect(args: &mut [Argument]) {
+fn format_connect(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 3 {
         args[0].display = Some(format!("fd={}", args[0].raw_value));
+        let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
         args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
+        return info.as_ref().map(network_info_from_sockaddr);
     }
+    None
 }
 
 /// Format bind(fd, addr, addrlen) arguments.
-fn format_bind(args: &mut [Argument]) {
+fn format_bind(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 3 {
         args[0].display = Some(format!("fd={}", args[0].raw_value));
+        let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
         args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
+        return info.as_ref().map(network_info_from_sockaddr);
     }
+    None
 }
 
 /// Format sendto(fd, buf, len, flags, dest_addr, addrlen) arguments.
-fn format_sendto(args: &mut [Argument]) {
+fn format_sendto(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 4 {
         args[0].display = Some(format!("fd={}", args[0].raw_value));
         // Preview buffer if possible
@@ -295,10 +442,14 @@ fn format_sendto(args: &mut [Argument]) {
         args[3].display = Some(format!("flags={:#x}", args[3].raw_value));
     }
     // Optional dest_addr
+    let mut ni = None;
     if args.len() >= 6 && args[4].raw_value != 0 {
+        let info = unsafe { parse_sockaddr_info(args[4].raw_value, args[5].raw_value) };
         args[4].display = format_sockaddr(args[4].raw_value, args[5].raw_value);
         args[5].display = Some(format!("addrlen={}", args[5].raw_value));
+        ni = info.as_ref().map(network_info_from_sockaddr);
     }
+    ni
 }
 
 /// Format recvfrom(fd, buf, len, flags, src_addr, addrlen) arguments.
@@ -446,32 +597,40 @@ fn format_listen(args: &mut [Argument]) {
 }
 
 /// Format accept(fd, addr, addrlen) arguments.
-fn format_accept(args: &mut [Argument]) {
+fn format_accept(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 3 {
         args[0].display = Some(format!("fd={}", args[0].raw_value));
-        // Try to format sockaddr if addr is not NULL
+        let mut ni = None;
         if args[1].raw_value != 0 {
+            let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
             args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
+            ni = info.as_ref().map(network_info_from_sockaddr);
         } else {
             args[1].display = Some("NULL".to_string());
         }
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
+        return ni;
     }
+    None
 }
 
 /// Format accept4(fd, addr, addrlen, flags) arguments.
-fn format_accept4(args: &mut [Argument]) {
+fn format_accept4(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 4 {
         args[0].display = Some(format!("fd={}", args[0].raw_value));
-        // Try to format sockaddr if addr is not NULL
+        let mut ni = None;
         if args[1].raw_value != 0 {
+            let info = unsafe { parse_sockaddr_info(args[1].raw_value, args[2].raw_value) };
             args[1].display = format_sockaddr(args[1].raw_value, args[2].raw_value);
+            ni = info.as_ref().map(network_info_from_sockaddr);
         } else {
             args[1].display = Some("NULL".to_string());
         }
         args[2].display = Some(format!("addrlen={}", args[2].raw_value));
         args[3].display = Some(format_accept4_flags(args[3].raw_value as i32));
+        return ni;
     }
+    None
 }
 
 /// Format shutdown(fd, how) arguments.
@@ -630,13 +789,15 @@ fn format_fchown(args: &mut [Argument]) {
 // ============================================================================
 
 /// Format getaddrinfo(node, service, hints, res) arguments.
-fn format_getaddrinfo(args: &mut [Argument]) {
+fn format_getaddrinfo(args: &mut [Argument]) -> Option<NetworkInfo> {
+    let mut ni = NetworkInfo::default();
     // arg0: node (const char* — hostname)
     if !args.is_empty() {
         if args[0].raw_value == 0 {
             args[0].display = Some("NULL".to_string());
         } else if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
+            ni.host = Some(host);
         }
     }
     // arg1: service (const char* — port/service name)
@@ -645,6 +806,10 @@ fn format_getaddrinfo(args: &mut [Argument]) {
             args[1].display = Some("NULL".to_string());
         } else if let Some(svc) = read_c_string(args[1].raw_value) {
             args[1].display = Some(format!("\"{}\"", svc));
+            // If service is numeric, populate port
+            if let Ok(port) = svc.parse::<u16>() {
+                ni.port = Some(port);
+            }
         }
     }
     // arg2: hints — just show pointer
@@ -655,28 +820,56 @@ fn format_getaddrinfo(args: &mut [Argument]) {
     if args.len() >= 4 {
         args[3].display = Some(format!("res={:#x}", args[3].raw_value));
     }
+    if ni.host.is_some() {
+        Some(ni)
+    } else {
+        None
+    }
+}
+
+/// Format gethostbyname(name) arguments.
+fn format_gethostbyname(args: &mut [Argument]) -> Option<NetworkInfo> {
+    if !args.is_empty() {
+        if let Some(host) = read_c_string(args[0].raw_value) {
+            args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
+            return Some(NetworkInfo {
+                host: Some(host),
+                ..Default::default()
+            });
+        }
+    }
+    None
 }
 
 /// Format gethostbyname2(name, af) arguments.
-fn format_gethostbyname2(args: &mut [Argument]) {
+fn format_gethostbyname2(args: &mut [Argument]) -> Option<NetworkInfo> {
+    let mut ni = None;
     // arg0: hostname (const char*)
     if !args.is_empty() {
         if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
+            ni = Some(NetworkInfo {
+                host: Some(host),
+                ..Default::default()
+            });
         }
     }
     // arg1: address family (int)
     if args.len() >= 2 {
         args[1].display = Some(format_socket_domain(args[1].raw_value as i32));
     }
+    ni
 }
 
 /// Format getnameinfo(sa, salen, host, hostlen, serv, servlen, flags) arguments.
-fn format_getnameinfo(args: &mut [Argument]) {
+fn format_getnameinfo(args: &mut [Argument]) -> Option<NetworkInfo> {
+    let mut ni = None;
     // arg0: sockaddr
     if args.len() >= 2 {
+        let info = unsafe { parse_sockaddr_info(args[0].raw_value, args[1].raw_value) };
         args[0].display = format_sockaddr(args[0].raw_value, args[1].raw_value);
         args[1].display = Some(format!("salen={}", args[1].raw_value));
+        ni = info.as_ref().map(network_info_from_sockaddr);
     }
     // arg2-6: output buffers and flags — just show pointers
     if args.len() >= 3 {
@@ -694,6 +887,7 @@ fn format_getnameinfo(args: &mut [Argument]) {
     if args.len() >= 7 {
         args[6].display = Some(format!("flags={:#x}", args[6].raw_value));
     }
+    ni
 }
 
 // ============================================================================
@@ -912,19 +1106,111 @@ fn format_socket_type(sock_type: i32) -> String {
     }
 }
 
-/// Format sockaddr structure.
-fn format_sockaddr(addr_ptr: usize, _len: usize) -> Option<String> {
+/// Parsed sockaddr with both display string and structured fields.
+struct SockaddrInfo {
+    display: String,
+    host: String,
+    port: u16,
+}
+
+/// Parse a sockaddr into structured fields (AF_INET and AF_INET6 only).
+/// Returns None for AF_UNIX, NULL, or unknown families.
+unsafe fn parse_sockaddr_info(addr_ptr: usize, _len: usize) -> Option<SockaddrInfo> {
+    if addr_ptr == 0 {
+        return None;
+    }
+
+    let family_ptr = addr_ptr as *const u16;
+    let family = {
+        #[cfg(target_os = "macos")]
+        {
+            (*family_ptr >> 8) as i32
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            *family_ptr as i32
+        }
+    };
+
+    match family {
+        2 => {
+            // AF_INET
+            let port = u16::from_be(*((addr_ptr + 2) as *const u16));
+            let ip_bytes = std::slice::from_raw_parts((addr_ptr + 4) as *const u8, 4);
+            let host = format!(
+                "{}.{}.{}.{}",
+                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]
+            );
+            let display = format!("{}:{}", host, port);
+            Some(SockaddrInfo {
+                display,
+                host,
+                port,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        10 => {
+            // AF_INET6 on Linux
+            let port = u16::from_be(*((addr_ptr + 2) as *const u16));
+            let ip6_bytes = std::slice::from_raw_parts((addr_ptr + 8) as *const u8, 16);
+            let host = format_ipv6(ip6_bytes);
+            let display = format!("[{}]:{}", host, port);
+            Some(SockaddrInfo {
+                display,
+                host,
+                port,
+            })
+        }
+        #[cfg(target_os = "macos")]
+        30 => {
+            // AF_INET6 on macOS
+            let port = u16::from_be(*((addr_ptr + 2) as *const u16));
+            let ip6_bytes = std::slice::from_raw_parts((addr_ptr + 8) as *const u8, 16);
+            let host = format_ipv6(ip6_bytes);
+            let display = format!("[{}]:{}", host, port);
+            Some(SockaddrInfo {
+                display,
+                host,
+                port,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Format an IPv6 address from 16 bytes.
+fn format_ipv6(bytes: &[u8]) -> String {
+    // Check for all-zero (::)
+    if bytes.iter().all(|&b| b == 0) {
+        return "::".to_string();
+    }
+    // Build 8 groups of u16
+    let mut groups = [0u16; 8];
+    for i in 0..8 {
+        groups[i] = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+    }
+    // Simple formatting (no :: compression for non-zero addresses)
+    let parts: Vec<String> = groups.iter().map(|g| format!("{:x}", g)).collect();
+    parts.join(":")
+}
+
+/// Format sockaddr structure for display.
+fn format_sockaddr(addr_ptr: usize, len: usize) -> Option<String> {
     if addr_ptr == 0 {
         return Some("NULL".to_string());
     }
 
+    // Try structured parse first (AF_INET / AF_INET6)
+    if let Some(info) = unsafe { parse_sockaddr_info(addr_ptr, len) } {
+        return Some(info.display);
+    }
+
+    // Fall back to AF_UNIX and unknown families
     unsafe {
-        // Read sa_family (first 2 bytes on most platforms)
         let family_ptr = addr_ptr as *const u16;
         let family = {
             #[cfg(target_os = "macos")]
             {
-                // macOS has sa_len + sa_family, so family is second byte
                 (*family_ptr >> 8) as i32
             }
             #[cfg(not(target_os = "macos"))]
@@ -934,27 +1220,6 @@ fn format_sockaddr(addr_ptr: usize, _len: usize) -> Option<String> {
         };
 
         match family {
-            2 => {
-                // AF_INET - struct sockaddr_in
-                let port = u16::from_be(*((addr_ptr + 2) as *const u16));
-                let ip_bytes = std::slice::from_raw_parts((addr_ptr + 4) as *const u8, 4);
-                Some(format!(
-                    "{}.{}.{}.{}:{}",
-                    ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3], port
-                ))
-            }
-            #[cfg(target_os = "linux")]
-            10 => {
-                // AF_INET6 on Linux
-                let port = u16::from_be(*((addr_ptr + 2) as *const u16));
-                Some(format!("[::]:{}]", port))
-            }
-            #[cfg(target_os = "macos")]
-            30 => {
-                // AF_INET6 on macOS
-                let port = u16::from_be(*((addr_ptr + 2) as *const u16));
-                Some(format!("[::]:{}]", port))
-            }
             1 => {
                 // AF_UNIX
                 let path_ptr = (addr_ptr + 2) as *const c_char;
@@ -966,6 +1231,15 @@ fn format_sockaddr(addr_ptr: usize, _len: usize) -> Option<String> {
             }
             _ => Some(format!("family={}", family)),
         }
+    }
+}
+
+/// Build NetworkInfo from a parsed SockaddrInfo.
+fn network_info_from_sockaddr(info: &SockaddrInfo) -> NetworkInfo {
+    NetworkInfo {
+        host: Some(info.host.clone()),
+        port: Some(info.port),
+        ..Default::default()
     }
 }
 
@@ -1806,5 +2080,233 @@ mod tests {
         format_native_arguments("gethostbyname", &mut args);
 
         assert_eq!(args[0].display, Some("\"evil.com\"".to_string()));
+    }
+
+    // ========================================================================
+    // NetworkInfo extraction tests
+    // ========================================================================
+
+    /// Build a fake AF_INET sockaddr_in in a byte buffer and return its pointer.
+    fn make_sockaddr_in(ip: [u8; 4], port: u16) -> Vec<u8> {
+        let mut buf = vec![0u8; 16]; // sockaddr_in is 16 bytes
+        #[cfg(target_os = "macos")]
+        {
+            buf[0] = 16; // sa_len
+            buf[1] = 2; // AF_INET
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            buf[0] = 2; // AF_INET (little-endian u16)
+            buf[1] = 0;
+        }
+        // sin_port (network byte order)
+        let port_be = port.to_be_bytes();
+        buf[2] = port_be[0];
+        buf[3] = port_be[1];
+        // sin_addr
+        buf[4] = ip[0];
+        buf[5] = ip[1];
+        buf[6] = ip[2];
+        buf[7] = ip[3];
+        buf
+    }
+
+    #[test]
+    fn test_format_connect_returns_network_info() {
+        let sa = make_sockaddr_in([93, 184, 216, 34], 443);
+        let mut args = make_args(&[3, sa.as_ptr() as usize, 16]);
+        let ni = format_connect(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("93.184.216.34"));
+        assert_eq!(ni.port, Some(443));
+        // Display should also be set
+        assert_eq!(args[1].display, Some("93.184.216.34:443".to_string()));
+    }
+
+    #[test]
+    fn test_format_bind_returns_network_info() {
+        let sa = make_sockaddr_in([0, 0, 0, 0], 8080);
+        let mut args = make_args(&[3, sa.as_ptr() as usize, 16]);
+        let ni = format_bind(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(ni.port, Some(8080));
+    }
+
+    #[test]
+    fn test_format_sendto_returns_network_info() {
+        let sa = make_sockaddr_in([8, 8, 8, 8], 53);
+        let mut args = make_args(&[3, 0, 100, 0, sa.as_ptr() as usize, 16]);
+        let ni = format_sendto(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("8.8.8.8"));
+        assert_eq!(ni.port, Some(53));
+    }
+
+    #[test]
+    fn test_format_sendto_null_dest_returns_none() {
+        let mut args = make_args(&[3, 0, 100, 0, 0, 0]);
+        let ni = format_sendto(&mut args);
+        assert!(ni.is_none());
+    }
+
+    #[test]
+    fn test_format_accept_returns_network_info() {
+        let sa = make_sockaddr_in([10, 0, 0, 5], 54321);
+        let mut args = make_args(&[3, sa.as_ptr() as usize, 16]);
+        let ni = format_accept(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("10.0.0.5"));
+        assert_eq!(ni.port, Some(54321));
+    }
+
+    #[test]
+    fn test_format_accept_null_returns_none() {
+        let mut args = make_args(&[3, 0, 0]);
+        let ni = format_accept(&mut args);
+        assert!(ni.is_none());
+    }
+
+    #[test]
+    fn test_format_accept4_returns_network_info() {
+        let sa = make_sockaddr_in([192, 168, 1, 1], 9090);
+        let mut args = make_args(&[3, sa.as_ptr() as usize, 16, 0]);
+        let ni = format_accept4(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("192.168.1.1"));
+        assert_eq!(ni.port, Some(9090));
+    }
+
+    #[test]
+    fn test_format_getaddrinfo_returns_network_info() {
+        let host = std::ffi::CString::new("pypi.org").unwrap();
+        let svc = std::ffi::CString::new("443").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize, svc.as_ptr() as usize, 0, 0]);
+        let ni = format_getaddrinfo(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("pypi.org"));
+        assert_eq!(ni.port, Some(443));
+    }
+
+    #[test]
+    fn test_format_getaddrinfo_non_numeric_service() {
+        let host = std::ffi::CString::new("example.com").unwrap();
+        let svc = std::ffi::CString::new("https").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize, svc.as_ptr() as usize, 0, 0]);
+        let ni = format_getaddrinfo(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.port, None); // "https" is not numeric
+    }
+
+    #[test]
+    fn test_format_getaddrinfo_null_node_returns_none() {
+        let svc = std::ffi::CString::new("80").unwrap();
+        let mut args = make_args(&[0, svc.as_ptr() as usize, 0, 0]);
+        let ni = format_getaddrinfo(&mut args);
+        assert!(ni.is_none());
+    }
+
+    #[test]
+    fn test_format_gethostbyname_returns_network_info() {
+        let host = std::ffi::CString::new("evil.com").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize]);
+        let ni = format_gethostbyname(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("evil.com"));
+        assert_eq!(ni.port, None);
+    }
+
+    #[test]
+    fn test_format_gethostbyname2_returns_network_info() {
+        let host = std::ffi::CString::new("example.com").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize, 2]);
+        let ni = format_gethostbyname2(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn test_format_getnameinfo_returns_network_info() {
+        let sa = make_sockaddr_in([1, 2, 3, 4], 80);
+        let mut args = make_args(&[sa.as_ptr() as usize, 16, 0, 0, 0, 0]);
+        let ni = format_getnameinfo(&mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("1.2.3.4"));
+        assert_eq!(ni.port, Some(80));
+    }
+
+    #[test]
+    fn test_format_non_network_returns_none() {
+        // open() should return None
+        let path = std::ffi::CString::new("/etc/passwd").unwrap();
+        let mut args = make_args(&[path.as_ptr() as usize, 0, 0]);
+        let ni = format_native_arguments("open", &mut args);
+        assert!(ni.is_none());
+
+        // read() should return None
+        let mut args = make_args(&[5, 0x12345678, 1024]);
+        let ni = format_native_arguments("read", &mut args);
+        assert!(ni.is_none());
+
+        // unknown should return None
+        let mut args = make_args(&[1, 2, 3]);
+        let ni = format_native_arguments("unknown_func", &mut args);
+        assert!(ni.is_none());
+    }
+
+    #[test]
+    fn test_format_native_arguments_connect_returns_network_info() {
+        let sa = make_sockaddr_in([127, 0, 0, 1], 8080);
+        let mut args = make_args(&[3, sa.as_ptr() as usize, 16]);
+        let ni = format_native_arguments("connect", &mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(ni.port, Some(8080));
+    }
+
+    #[test]
+    fn test_format_native_arguments_getaddrinfo_returns_network_info() {
+        let host = std::ffi::CString::new("registry.npmjs.org").unwrap();
+        let svc = std::ffi::CString::new("443").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize, svc.as_ptr() as usize, 0, 0]);
+        let ni = format_native_arguments("getaddrinfo", &mut args);
+
+        assert!(ni.is_some());
+        let ni = ni.unwrap();
+        assert_eq!(ni.host.as_deref(), Some("registry.npmjs.org"));
+        assert_eq!(ni.port, Some(443));
+    }
+
+    #[test]
+    fn test_format_native_arguments_gethostbyname_returns_network_info() {
+        let host = std::ffi::CString::new("evil.com").unwrap();
+        let mut args = make_args(&[host.as_ptr() as usize]);
+        let ni = format_native_arguments("gethostbyname", &mut args);
+
+        assert!(ni.is_some());
+        assert_eq!(ni.unwrap().host.as_deref(), Some("evil.com"));
     }
 }
