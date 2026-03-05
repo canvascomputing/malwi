@@ -5,7 +5,8 @@
 //! (network, files, commands) are in sibling modules.
 
 use crate::policy::{
-    EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
+    Category, EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
+    SectionKey,
 };
 use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
@@ -21,6 +22,9 @@ pub struct ActivePolicy {
     /// Only caches results for functions without arg-filter constraints.
     pub(super) fn_cache:
         std::cell::RefCell<std::collections::HashMap<(u8, String), CachedDisposition>>,
+    /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
+    /// Computed once at construction time since the policy is immutable after load.
+    has_network_allow: bool,
 }
 
 /// Compact representation of a cached function-level disposition.
@@ -108,26 +112,30 @@ impl CachedDisposition {
 }
 
 impl ActivePolicy {
+    /// Create an ActivePolicy from a PolicyEngine, computing cached fields.
+    pub(super) fn new(engine: PolicyEngine) -> Self {
+        let has_network_allow = compute_has_network_allow(&engine);
+        Self {
+            engine,
+            fn_cache: Default::default(),
+            has_network_allow,
+        }
+    }
+
     /// Load a policy from a YAML file, resolving `includes:` directives.
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
         let yaml = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Failed to read policy file '{}': {}", path, e))?;
         let engine = PolicyEngine::from_yaml_with_includes(&yaml, &include_resolver)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy file '{}': {}", path, e))?;
-        Ok(Self {
-            engine,
-            fn_cache: Default::default(),
-        })
+        Ok(Self::new(engine))
     }
 
     /// Load a policy from a YAML string, resolving `includes:` directives.
     pub fn from_yaml(yaml: &str) -> anyhow::Result<Self> {
         let engine = PolicyEngine::from_yaml_with_includes(yaml, &include_resolver)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy YAML: {}", e))?;
-        Ok(Self {
-            engine,
-            fn_cache: Default::default(),
-        })
+        Ok(Self::new(engine))
     }
 
     /// Load the built-in default security policy.
@@ -135,10 +143,7 @@ impl ActivePolicy {
     pub fn default_security() -> anyhow::Result<Self> {
         let engine = PolicyEngine::from_yaml(super::templates::DEFAULT_SECURITY_YAML)
             .map_err(|e| anyhow::anyhow!("Failed to parse default security policy: {}", e))?;
-        Ok(Self {
-            engine,
-            fn_cache: Default::default(),
-        })
+        Ok(Self::new(engine))
     }
 
     /// Derive hook configurations from policy rules.
@@ -176,12 +181,11 @@ impl ActivePolicy {
             let key = (hook_type_discriminant(&event.hook_type), func.to_string());
             if let Some(cached) = self.fn_cache.borrow().get(&key) {
                 let disp = cached.to_disposition();
-                // If blocked, return immediately; otherwise continue to network eval
-                if disp.is_blocked() {
+                if let Some(disp) = self.apply_network_passthrough(event, disp) {
                     return disp;
                 }
-                // Have cached function-level result — skip to network eval
-                return self.evaluate_network_phase(event, disp);
+                // Blocked and not a passthrough — return immediately
+                return cached.to_disposition();
             }
             Some(key)
         } else {
@@ -217,16 +221,18 @@ impl ActivePolicy {
         let disp = decision_to_disposition(decision);
 
         // Cache the function-level result
+        let cached = disp.to_cached();
         if let Some(key) = cache_key {
-            self.fn_cache.borrow_mut().insert(key, disp.to_cached());
+            self.fn_cache.borrow_mut().insert(key, cached.clone());
         }
 
-        // If the function itself is already blocked, no need to check further
-        if disp.is_blocked() {
-            return disp;
-        }
+        // Apply network passthrough: if blocked but eligible, downgrade to Display
+        // and continue to network phase. Otherwise return the block immediately.
+        let disp = match self.apply_network_passthrough(event, disp) {
+            Some(disp) => disp,
+            None => return cached.to_disposition(), // Blocked, not a passthrough
+        };
 
-        let disp = self.evaluate_network_phase(event, disp);
         let disp = self.evaluate_file_phase(event, disp);
         self.evaluate_command_phase(event, disp)
     }
@@ -239,6 +245,67 @@ impl ActivePolicy {
             .iter_sections()
             .any(|(_, section)| section.mode.is_blocking())
     }
+
+    /// Apply network passthrough logic to a disposition.
+    ///
+    /// If the disposition is not blocked, continues to the network evaluation phase
+    /// and returns `Some(disp)`. If blocked and the event is a native networking
+    /// symbol with network allow rules in the policy, downgrades to `Display` and
+    /// continues to network evaluation (returns `Some(disp)`). If blocked and not
+    /// eligible for passthrough, returns `None` to signal early exit.
+    ///
+    /// Native `socket`/`connect`/etc. are the low-level mechanism for all networking.
+    /// When the policy has `network: allow:` rules (e.g. pip-install allowing pypi.org),
+    /// blocking these symbols unconditionally prevents the allowed networking from working.
+    /// URL-level enforcement happens at the runtime level (Python/Node) where NetworkInfo
+    /// context is available.
+    fn apply_network_passthrough(
+        &self,
+        event: &TraceEvent,
+        disp: EventDisposition,
+    ) -> Option<EventDisposition> {
+        if !disp.is_blocked() {
+            return Some(self.evaluate_network_phase(event, disp));
+        }
+        // Blocked — check if eligible for passthrough
+        if matches!(event.hook_type, HookType::Native)
+            && is_networking_symbol(&event.function)
+            && self.has_network_allow
+        {
+            // Downgrade Block to Display so the network phase can decide
+            Some(self.evaluate_network_phase(event, EventDisposition::Display))
+        } else {
+            None // Stay blocked
+        }
+    }
+}
+
+/// Check if a native function name is a networking symbol.
+/// Uses the taxonomy's `symbols.networking` list as single source of truth.
+fn is_networking_symbol(name: &str) -> bool {
+    let tax = super::taxonomy::get();
+    tax.symbols.networking.iter().any(|s| s == name)
+}
+
+/// Check if a policy engine has any network allow rules (Http, Domains, or Endpoints).
+/// Called once at construction time; result is cached on `ActivePolicy`.
+///
+/// `Category::Protocols` is intentionally excluded: a protocol-only allowlist
+/// (e.g. `protocols: [https]`) constrains *how* connections are made, not *where*
+/// they go. Passthrough exists to let URL/domain allow rules work; a protocol
+/// allowlist alone doesn't express "allow specific hosts" and shouldn't unlock
+/// native socket passthrough.
+fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
+    let policy = engine.policy();
+    for cat in &[Category::Http, Category::Domains, Category::Endpoints] {
+        let key = SectionKey::global(*cat);
+        if let Some(section) = policy.get_section(&key) {
+            if section.has_allow_rules() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Severity ranking for dispositions (higher = stricter).
@@ -555,10 +622,7 @@ mod tests {
     #[test]
     fn test_disposition_block() {
         let engine = PolicyEngine::from_yaml("version: 1\npython:\n  deny:\n    - eval\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(HookType::Python, "eval", &[]);
         let disp = policy.evaluate_trace(&event);
@@ -605,10 +669,7 @@ commands:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("curl", &["example.com"]);
         let disp = policy.evaluate_trace(&event);
@@ -636,10 +697,7 @@ commands:
 "#,
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("curl", &["example.com"]);
         let disp = policy.evaluate_trace(&event);
@@ -758,5 +816,128 @@ commands:
             "should deduplicate to single 'curl' filter"
         );
         assert_eq!(exec_configs[0].symbol, "curl");
+    }
+
+    // =====================================================================
+    // pip-install: network passthrough tests (ActivePolicy level)
+    // =====================================================================
+
+    fn pip_install_policy() -> ActivePolicy {
+        ActivePolicy::from_yaml(
+            &crate::policy::templates::embedded_policy("pip-install")
+                .expect("pip-install policy must exist"),
+        )
+        .expect("pip-install policy must parse")
+    }
+
+    #[test]
+    fn test_pip_install_native_socket_not_blocked() {
+        let policy = pip_install_policy();
+
+        // Native socket() should NOT be blocked — the policy has network allow rules
+        // for pypi.org, so native networking symbols pass through to network phase.
+        let event = make_trace_event(HookType::Native, "socket", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "native socket should not be blocked when policy has network allow rules"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_native_connect_not_blocked() {
+        let policy = pip_install_policy();
+
+        let event = make_trace_event(HookType::Native, "connect", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "native connect should not be blocked when policy has network allow rules"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_native_getpass_still_blocked() {
+        let policy = pip_install_policy();
+
+        // Non-networking symbols should still be blocked
+        let event = make_trace_event(HookType::Native, "getpass", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "native getpass should still be blocked (not a networking symbol)"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_python_socket_pypi_allowed() {
+        let policy = pip_install_policy();
+
+        // Python socket.create_connection to pypi.org should be allowed
+        let net = malwi_intercept::NetworkInfo {
+            host: Some("pypi.org".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "socket.create_connection",
+            &["address=('pypi.org', 443)"],
+            net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "socket.create_connection to pypi.org should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_python_socket_evil_blocked() {
+        let policy = pip_install_policy();
+
+        // Python socket.create_connection to evil.com should be blocked
+        let net = malwi_intercept::NetworkInfo {
+            host: Some("evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "socket.create_connection",
+            &["address=('evil.com', 443)"],
+            net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "socket.create_connection to evil.com should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_no_network_allow_still_blocks_native_socket() {
+        // Policy denies socket but has NO network allow rules —
+        // native socket should remain blocked (no passthrough).
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - socket
+    - connect
+network:
+  deny:
+    - "*.evil.com"
+"#,
+        )
+        .unwrap();
+
+        let event = make_trace_event(HookType::Native, "socket", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "native socket should be blocked when no network allow rules exist"
+        );
     }
 }

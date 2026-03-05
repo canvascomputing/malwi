@@ -59,6 +59,27 @@ impl ActivePolicy {
             }
         }
 
+        // Host-only NetworkInfo: bridge to URL patterns by constructing "{host}/".
+        // e.g. socket.create_connection("pypi.org", 443) has host="pypi.org" but no URL.
+        // Synthetic "pypi.org/" matches pattern "pypi.org/**" → Allow.
+        //
+        // Note: the same schemeless string is passed as both `full_url` and
+        // `no_scheme_url`. This works because current policies use schemeless
+        // patterns (e.g. "pypi.org/**"). A pattern like "https://evil.com/**"
+        // would not match the synthetic URL even if the host were "evil.com" —
+        // the scheme-based match path is effectively bypassed. This is acceptable
+        // because host-only NetworkInfo lacks scheme information by definition.
+        if info.url.is_none() {
+            if let Some(ref host) = info.host {
+                let synthetic = format!("{}/", host);
+                let decision = self.engine.evaluate_http_url(&synthetic, &synthetic);
+                let disp = decision_to_disposition(decision);
+                if disp.should_display() {
+                    strictest = Some(pick_stricter_opt(strictest, disp));
+                }
+            }
+        }
+
         // network domains
         if let Some(ref host) = info.host {
             let decision = self.engine.evaluate_domain(host);
@@ -378,10 +399,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -404,10 +422,7 @@ mod tests {
     fn test_protocol_policy_denies_http() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  protocols: [https]\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -435,10 +450,7 @@ mod tests {
             "version: 1\nnetwork:\n  deny:\n    - \"*:22\"\n    - \"*:25\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Nodejs,
@@ -460,10 +472,7 @@ mod tests {
     #[test]
     fn test_function_deny_and_domain_deny_both_trigger() {
         let engine = PolicyEngine::from_yaml("version: 1\npython:\n  deny:\n    - \"requests.get\"\nnetwork:\n  deny:\n    - \"*.evil.com\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -479,10 +488,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -498,10 +504,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(HookType::Python, "json.loads", &["'{\"key\": \"value\"}'"]);
         let disp = policy.evaluate_trace(&event);
@@ -513,10 +516,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Nodejs,
@@ -532,10 +532,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com/**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -551,10 +548,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com/**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -570,10 +564,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"**/admin/**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -597,10 +588,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"http://**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -624,10 +612,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -663,10 +648,7 @@ mod tests {
             "version: 1\nnetwork:\n  deny:\n    - \"*.evil.com/**\"\n    - \"*.bad.com\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,
@@ -696,10 +678,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
             url: Some("https://malware.evil.com/payload".to_string()),
@@ -724,10 +703,7 @@ mod tests {
     fn test_network_info_endpoint_deny() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*:22\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
             host: Some("10.0.0.1".to_string()),
@@ -767,10 +743,7 @@ mod tests {
     fn test_network_info_protocol_deny() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  protocols: [https]\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
             url: Some("http://example.com/insecure".to_string()),
@@ -796,10 +769,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com/**\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
             url: Some("https://x.evil.com/payload".to_string()),
@@ -816,10 +786,7 @@ mod tests {
     fn test_network_info_socket_no_url_still_evaluates_endpoint() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*:6379\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
             host: Some("redis.internal".to_string()),
@@ -845,10 +812,7 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
                 .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Python,

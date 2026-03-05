@@ -63,10 +63,7 @@ mod tests {
             "version: 1\ncommands:\n  allow:\n    - ln\nfiles:\n  warn:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("ln", &["-s", "~/.ssh", "/tmp/x"]);
         let disp = policy.evaluate_trace(&event);
@@ -82,10 +79,7 @@ mod tests {
             "version: 1\ncommands:\n  deny:\n    - curl\nfiles:\n  warn:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("curl", &["file:///etc/passwd"]);
         let disp = policy.evaluate_trace(&event);
@@ -99,10 +93,7 @@ mod tests {
     fn test_command_analysis_curl_file_protocol_warns() {
         let engine =
             PolicyEngine::from_yaml("version: 1\ncommands:\n  log:\n    - curl\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("curl", &["file:///etc/passwd"]);
         let disp = policy.evaluate_trace(&event);

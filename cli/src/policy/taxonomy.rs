@@ -67,6 +67,9 @@ pub struct TaxonomyEnvvars {
 pub struct TaxonomySymbols {
     pub shared: Vec<String>,
     pub air_gap_extra: Vec<String>,
+    /// All networking-related symbols (socket, connect, send, etc.).
+    /// Single source of truth for `is_networking_symbol()` in active.rs.
+    pub networking: Vec<String>,
 }
 
 /// Network patterns for policy generation.
@@ -352,6 +355,7 @@ fn parse_symbols(root: &[(String, YamlValue)]) -> TaxonomySymbols {
     let mut symbols = TaxonomySymbols {
         shared: Vec::new(),
         air_gap_extra: Vec::new(),
+        networking: Vec::new(),
     };
 
     let sym_val = match find_key(root, "symbols") {
@@ -365,6 +369,9 @@ fn parse_symbols(root: &[(String, YamlValue)]) -> TaxonomySymbols {
     }
     if let Some(extra) = find_key(sym_map, "air_gap_extra") {
         symbols.air_gap_extra = as_string_list(extra);
+    }
+    if let Some(networking) = find_key(sym_map, "networking") {
+        symbols.networking = as_string_list(networking);
     }
 
     symbols

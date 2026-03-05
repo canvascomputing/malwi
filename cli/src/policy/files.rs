@@ -135,10 +135,7 @@ mod tests {
             "version: 1\ncommands:\n  allow:\n    - cat\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("cat", &["~/.ssh/id_rsa"]);
         let disp = policy.evaluate_trace(&event);
@@ -154,10 +151,7 @@ mod tests {
             "version: 1\ncommands:\n  allow:\n    - cat\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("cat", &["/tmp/ok.txt"]);
         let disp = policy.evaluate_trace(&event);
@@ -170,10 +164,7 @@ mod tests {
             "version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n    - \"*id_rsa*\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Native,
@@ -188,10 +179,7 @@ mod tests {
     fn test_native_openat_denied_file() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*.pem\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(
             HookType::Native,
@@ -206,10 +194,7 @@ mod tests {
     fn test_native_open_safe_file_suppressed() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(HookType::Native, "open", &["\"/tmp/ok.txt\"", "O_RDONLY"]);
         let disp = policy.evaluate_trace(&event);
@@ -253,10 +238,7 @@ mod tests {
             "version: 1\ncommands:\n  allow:\n    - cat\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("cat", &["-n", "/tmp/ok.txt"]);
         let disp = policy.evaluate_trace(&event);
@@ -269,10 +251,7 @@ mod tests {
             "version: 1\ncommands:\n  allow:\n    - cat\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n",
         )
         .unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_exec_event("cat", &["/tmp/../../home/user/.ssh/id_rsa"]);
         let disp = policy.evaluate_trace(&event);
@@ -286,10 +265,7 @@ mod tests {
     fn test_file_phase_skips_non_exec_non_native() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
-        let policy = ActivePolicy {
-            engine,
-            fn_cache: Default::default(),
-        };
+        let policy = ActivePolicy::new(engine);
 
         let event = make_trace_event(HookType::Python, "open", &["~/.ssh/id_rsa"]);
         let disp = policy.evaluate_trace(&event);

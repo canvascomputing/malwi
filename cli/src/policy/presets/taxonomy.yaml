@@ -439,6 +439,18 @@ symbols:
     - getaddrinfo
     - gethostbyname
     - gethostbyname2
+  networking:
+    - socket
+    - connect
+    - sendto
+    - bind
+    - send
+    - listen
+    - accept
+    - accept4
+    - getaddrinfo
+    - gethostbyname
+    - gethostbyname2
 
 network:
   deny:
