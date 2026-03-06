@@ -43,6 +43,19 @@ const FLUSH_DRAIN_TIMEOUT_MS: u64 = 500;
 /// At 10ms the thread wakes 100 times/second — negligible CPU impact.
 const FLUSH_RECV_TIMEOUT_MS: u64 = 10;
 
+/// Wait for the flush thread to drain pending events, with a bounded timeout.
+/// Used before sending /shutdown to ensure the CLI displays all events.
+fn wait_for_flush_complete() {
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
+    while !FLUSH_COMPLETE.load(Ordering::Acquire) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use malwi_protocol::{ChildOperation, HookConfig, HookType, HostChildInfo};
@@ -64,6 +77,8 @@ pub struct Agent {
     /// Channel sender for batched event delivery.
     event_tx: SyncSender<malwi_protocol::TraceEvent>,
     review_mode: AtomicBool,
+    /// True in forked child processes — bypass the dead batching channel.
+    forked: AtomicBool,
     /// Cache of functions already blocked in review mode — skip HTTP round-trip on retry.
     /// Keyed by (HookType, function_name) to avoid collisions between runtimes.
     review_blocked_cache: Mutex<HashSet<(HookType, String)>>,
@@ -93,6 +108,7 @@ impl Agent {
             http,
             event_tx,
             review_mode: AtomicBool::new(false),
+            forked: AtomicBool::new(false),
             review_blocked_cache: Mutex::new(HashSet::new()),
             #[cfg(unix)]
             fork_monitor: Mutex::new(None),
@@ -114,14 +130,7 @@ impl Agent {
             if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
                 // Wait for flush thread to drain pending events before sending
                 // /shutdown, otherwise the CLI may exit before displaying them.
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
-                while !FLUSH_COMPLETE.load(Ordering::Acquire) {
-                    if std::time::Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
+                wait_for_flush_complete();
                 if !SHUTDOWN_SENT.swap(true, Ordering::SeqCst) {
                     info!("Shutdown requested, notifying CLI");
                     let _ = self.http.shutdown(std::process::id());
@@ -236,8 +245,13 @@ impl Agent {
     /// Send a trace event to the CLI.
     ///
     /// Pushes to the batch channel for efficient delivery. Falls back to
-    /// direct HTTP if the channel is full (backpressure).
+    /// direct HTTP if the channel is full (backpressure) or after fork
+    /// (channel receiver thread is dead).
     pub fn send_event(&self, event: malwi_protocol::TraceEvent) -> Result<()> {
+        if self.forked.load(Ordering::Acquire) {
+            // Channel receiver is dead after fork — send directly via HTTP.
+            return self.http.send_event(&event);
+        }
         match self.event_tx.try_send(event) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(event)) => self.http.send_event(&event),
@@ -259,7 +273,11 @@ impl Agent {
     ) -> malwi_protocol::ReviewDecision {
         // Fast path: already blocked → skip HTTP round-trip
         let key = (event.hook_type.clone(), event.function.clone());
-        if let Ok(cache) = self.review_blocked_cache.lock() {
+        {
+            let cache = self
+                .review_blocked_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if cache.contains(&key) {
                 return malwi_protocol::ReviewDecision::Block;
             }
@@ -268,9 +286,10 @@ impl Agent {
         match self.http.review(&event) {
             Ok(decision) => {
                 if matches!(decision, malwi_protocol::ReviewDecision::Block) {
-                    if let Ok(mut cache) = self.review_blocked_cache.lock() {
-                        cache.insert(key);
-                    }
+                    self.review_blocked_cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(key);
                 }
                 decision
             }
@@ -594,11 +613,20 @@ impl ForkHandler for Agent {
     }
 
     fn on_fork_in_child(&self) {
+        // Mark as forked so send_event() bypasses the dead batching channel.
+        // The flush thread that owns the receiver doesn't survive fork, and
+        // the channel's internal mutex may be held by the dead thread.
+        self.forked.store(true, Ordering::SeqCst);
         // Drop inherited TCP connection safely. try_lock avoids deadlock
         // if the conn mutex was held by a now-dead thread at fork time.
         // No proactive reconnect — the next send() call will lazily
         // establish a fresh connection via ensure_connected().
         self.http.mark_forked_child();
+        // Register with CLI so active_agents is incremented before the parent
+        // can exit and decrement it, preventing premature CLI shutdown.
+        let _ = self
+            .http
+            .send_reconnect(unsafe { libc::getppid() } as u32, std::process::id());
     }
 }
 
@@ -758,14 +786,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 // decrement the CLI's active_agents counter via /shutdown.
                 // Bounded timeout in case flush thread is dead (e.g., in
                 // forked children where threads don't survive fork).
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
-                while !FLUSH_COMPLETE.load(Ordering::Acquire) {
-                    if std::time::Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
+                wait_for_flush_complete();
                 // Send shutdown (only once across atexit + bg thread)
                 if !SHUTDOWN_SENT.swap(true, Ordering::SeqCst) {
                     if let Some(agent) = Agent::get() {

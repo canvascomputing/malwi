@@ -26,7 +26,7 @@ else
 endif
 
 # All targets
-TARGETS = simple_target multithread spawner forker test_target malicious_target malicious_lib.$(SHLIB_EXT)
+TARGETS = simple_target multithread spawner forker test_target malicious_target malicious_lib.$(SHLIB_EXT) daemon_net
 
 # pac_target only on arm64 (requires -mbranch-protection=standard)
 ifeq ($(UNAME_M),arm64)
@@ -73,6 +73,9 @@ malicious_target: malicious_target.c
 
 pac_target: pac_target.c
 	$(CC) $(CFLAGS) -mbranch-protection=standard -o $@ $<
+
+daemon_net: daemon_net.c
+	$(CC) $(CFLAGS) $(INTERPOSABLE_FLAGS) -pthread -o $@ $<
 
 clean:
 	rm -f $(TARGETS)

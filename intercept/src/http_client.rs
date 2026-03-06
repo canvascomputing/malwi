@@ -15,8 +15,9 @@ use log::debug;
 
 use crate::wire::{read_frame, write_frame, BinaryCodec, Codec};
 use crate::{
-    protocol::ModuleInfo, AgentMessage, CliMessage, ConfigureRequest, ConfigureResponse,
-    HostChildInfo, ReadyRequest, ReviewDecision, RuntimeInfoRequest, ShutdownRequest, TraceEvent,
+    protocol::ModuleInfo, AgentMessage, ChildReconnectRequest, CliMessage, ConfigureRequest,
+    ConfigureResponse, HostChildInfo, ReadyRequest, ReviewDecision, RuntimeInfoRequest,
+    ShutdownRequest, TraceEvent,
 };
 
 /// Maximum number of retries for initial connection.
@@ -230,6 +231,14 @@ impl HttpClient {
             pid,
             runtime: runtime.to_string(),
             version: version.to_string(),
+        }))
+    }
+
+    /// Notify CLI that a forked child has reconnected.
+    pub fn send_reconnect(&self, parent_pid: u32, child_pid: u32) -> Result<()> {
+        self.send(&AgentMessage::Reconnect(ChildReconnectRequest {
+            parent_pid,
+            child_pid,
         }))
     }
 

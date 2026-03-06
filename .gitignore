@@ -30,6 +30,7 @@ Thumbs.db
 /tests/malicious_lib.dylib
 /tests/malicious_lib.so
 /tests/pac_target
+/tests/daemon_net
 /tests/*.dSYM/
 
 # Example programs - compiled binaries and debug symbols

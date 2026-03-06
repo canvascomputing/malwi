@@ -191,7 +191,12 @@ impl HookManager {
         };
 
         for export in exports {
-            if self.hooks.lock().unwrap().contains_key(&export.name) {
+            if self
+                .hooks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&export.name)
+            {
                 debug!("Skipping duplicate hook for {}", export.name);
                 continue;
             }
@@ -245,7 +250,7 @@ impl HookManager {
             return Err(anyhow!("Attach failed: {:?}", e));
         }
 
-        self.hooks.lock().unwrap().insert(
+        self.hooks.lock().unwrap_or_else(|e| e.into_inner()).insert(
             export.name.clone(),
             HookEntry {
                 address: export.address,
@@ -260,7 +265,7 @@ impl HookManager {
 
     /// Remove a hook by symbol name.
     pub fn remove_hook(&self, symbol: &str) -> Result<()> {
-        let mut hooks = self.hooks.lock().unwrap();
+        let mut hooks = self.hooks.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = hooks.remove(symbol) {
             self.interceptor.detach(&entry.listener);
@@ -288,7 +293,7 @@ impl HookManager {
 
     /// List all installed hook symbols.
     pub fn list_hooks(&self) -> Vec<String> {
-        let hooks = self.hooks.lock().unwrap();
+        let hooks = self.hooks.lock().unwrap_or_else(|e| e.into_inner());
         hooks.keys().cloned().collect()
     }
 }
@@ -296,7 +301,7 @@ impl HookManager {
 impl Drop for HookManager {
     fn drop(&mut self) {
         // Detach all hooks and free callback data
-        let hooks = self.hooks.lock().unwrap();
+        let hooks = self.hooks.lock().unwrap_or_else(|e| e.into_inner());
         for (_, entry) in hooks.iter() {
             self.interceptor.detach(&entry.listener);
             if !entry.callback_data.is_null() {
