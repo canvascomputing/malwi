@@ -36,7 +36,7 @@ struct NodejsScriptApi {
 static NODEJS_SCRIPT_API: OnceLock<NodejsScriptApi> = OnceLock::new();
 
 /// Flag to prevent repeated resolution attempts
-static NODEJS_SCRIPT_API_RESOLUTION_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static SCRIPT_API_RESOLUTION_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // API RESOLUTION
@@ -44,10 +44,10 @@ static NODEJS_SCRIPT_API_RESOLUTION_ATTEMPTED: AtomicBool = AtomicBool::new(fals
 
 /// Try to resolve Node.js Script Execution API functions.
 fn resolve_nodejs_script_api() -> Option<NodejsScriptApi> {
-    if NODEJS_SCRIPT_API_RESOLUTION_ATTEMPTED.load(Ordering::SeqCst) {
+    if SCRIPT_API_RESOLUTION_ATTEMPTED.load(Ordering::SeqCst) {
         return None;
     }
-    NODEJS_SCRIPT_API_RESOLUTION_ATTEMPTED.store(true, Ordering::SeqCst);
+    SCRIPT_API_RESOLUTION_ATTEMPTED.store(true, Ordering::SeqCst);
 
     debug!("Attempting to resolve Node.js Script Execution API...");
 

@@ -29,8 +29,8 @@ fn ensure_atfork_registered() {
 }
 
 /// Static pointer to the fork address for replacement.
-static FORK_IMPL: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
-static VFORK_IMPL: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+static ORIGINAL_FORK: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+static ORIGINAL_VFORK: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 
 /// Callback trait for fork events.
 pub trait ForkHandler: Send + Sync {
@@ -75,9 +75,9 @@ impl ForkMonitor {
         };
         let vfork_addr = crate::module::find_global_export_by_name("vfork").ok();
 
-        FORK_IMPL.store(fork_addr as *mut (), Ordering::SeqCst);
+        ORIGINAL_FORK.store(fork_addr as *mut (), Ordering::SeqCst);
         if let Some(vfork_addr) = vfork_addr {
-            VFORK_IMPL.store(vfork_addr as *mut (), Ordering::SeqCst);
+            ORIGINAL_VFORK.store(vfork_addr as *mut (), Ordering::SeqCst);
         }
 
         // Create listener with callbacks

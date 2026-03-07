@@ -14,10 +14,7 @@ use crate::{Argument, NetworkInfo, Protocol};
 ///
 /// Returns `Some(NetworkInfo)` for networking functions with extractable
 /// metadata, `None` for non-networking functions.
-pub fn format_nodejs_arguments(
-    function_name: &str,
-    arguments: &[Argument],
-) -> Option<NetworkInfo> {
+pub fn format_nodejs_arguments(function_name: &str, arguments: &[Argument]) -> Option<NetworkInfo> {
     match function_name {
         // http/https module
         "http.request" | "http.get" => extract_http_network_info(arguments, Protocol::Http),
@@ -68,15 +65,8 @@ fn extract_http_network_info(args: &[Argument], default_proto: Protocol) -> Opti
         // Reconstruct URL if we have host
         if let Some(ref host) = ni.host {
             let path = extract_object_string_field(first, "path").unwrap_or_default();
-            let port_suffix = ni
-                .port
-                .map(|p| format!(":{}", p))
-                .unwrap_or_default();
-            let scheme = ni
-                .protocol
-                .as_ref()
-                .map(|p| p.as_str())
-                .unwrap_or("http");
+            let port_suffix = ni.port.map(|p| format!(":{}", p)).unwrap_or_default();
+            let scheme = ni.protocol.as_ref().map(|p| p.as_str()).unwrap_or("http");
             ni.url = Some(format!("{}://{}{}{}", scheme, host, port_suffix, path));
         }
 
@@ -257,7 +247,9 @@ mod tests {
 
     #[test]
     fn test_format_nodejs_https_request_with_options() {
-        let args = vec![arg("{hostname: 'api.example.com', port: 443, path: '/v1/users'}")];
+        let args = vec![arg(
+            "{hostname: 'api.example.com', port: 443, path: '/v1/users'}",
+        )];
         let ni = format_nodejs_arguments("https.request", &args).unwrap();
         assert_eq!(ni.host.as_deref(), Some("api.example.com"));
         assert_eq!(ni.port, Some(443));

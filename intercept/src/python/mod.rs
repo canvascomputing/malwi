@@ -27,7 +27,7 @@ pub mod version;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether Python envvar monitoring is enabled.
-static PYTHON_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
+static ENVVAR_MONITORING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // Re-export items used by profile and filters modules internally
 pub(crate) use profile::PROFILE_HOOK_REGISTERED;
@@ -95,7 +95,7 @@ pub fn start_audit_registration_task() {
 /// hook directly and `has_any_filters()` checks the envvar monitoring
 /// flag separately.
 pub fn enable_envvar_monitoring() {
-    if PYTHON_ENVVAR_MONITORING.swap(true, Ordering::SeqCst) {
+    if ENVVAR_MONITORING_ENABLED.swap(true, Ordering::SeqCst) {
         return; // Already enabled
     }
     // Register the profile hook directly — not via add_filter.
@@ -107,7 +107,7 @@ pub fn enable_envvar_monitoring() {
 
 /// Check if Python envvar monitoring is enabled.
 pub fn is_envvar_monitoring_enabled() -> bool {
-    PYTHON_ENVVAR_MONITORING.load(Ordering::SeqCst)
+    ENVVAR_MONITORING_ENABLED.load(Ordering::SeqCst)
 }
 
 // =============================================================================

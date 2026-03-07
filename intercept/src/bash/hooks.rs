@@ -163,7 +163,7 @@ pub(crate) unsafe extern "C" fn on_execute_command_internal_enter(
     }
 
     // Use find_shell_builtin to check if it's a builtin
-    let find_builtin_addr = BASH_FIND_SHELL_BUILTIN.load(Ordering::SeqCst);
+    let find_builtin_addr = BASH_FIND_SHELL_BUILTIN.load(Ordering::Acquire);
     if find_builtin_addr != 0 {
         let name_cstr = CString::new(first_word.as_str()).ok();
         if let Some(name_cstr) = name_cstr {

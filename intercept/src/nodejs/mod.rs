@@ -53,7 +53,7 @@ pub use crate::NodejsFrame;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether Node.js envvar monitoring is enabled.
-static NODEJS_ENVVAR_MONITORING: AtomicBool = AtomicBool::new(false);
+static ENVVAR_MONITORING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // SUBMODULES
@@ -171,12 +171,12 @@ pub fn capture_stack() -> Vec<NodejsFrame> {
 /// (the Proxy checks `addon.checkEnvVar` at load time; this flag
 /// is for the native getenv hook to skip when Node.js handles it).
 pub fn enable_envvar_monitoring() {
-    NODEJS_ENVVAR_MONITORING.store(true, Ordering::SeqCst);
+    ENVVAR_MONITORING_ENABLED.store(true, Ordering::SeqCst);
 }
 
 /// Check if Node.js envvar monitoring is enabled.
 pub fn is_envvar_monitoring_enabled() -> bool {
-    NODEJS_ENVVAR_MONITORING.load(Ordering::SeqCst)
+    ENVVAR_MONITORING_ENABLED.load(Ordering::SeqCst)
 }
 
 // =============================================================================

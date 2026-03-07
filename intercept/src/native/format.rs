@@ -402,8 +402,8 @@ fn format_socket(args: &mut [Argument]) -> Option<NetworkInfo> {
         // Populate NetworkInfo with protocol (TCP/UDP) from socket type
         let base_type = sock_type & 0xf;
         let protocol = match base_type {
-            1 => Some(Protocol::Tcp),  // SOCK_STREAM
-            2 => Some(Protocol::Udp),  // SOCK_DGRAM
+            1 => Some(Protocol::Tcp), // SOCK_STREAM
+            2 => Some(Protocol::Udp), // SOCK_DGRAM
             _ => None,
         };
         if protocol.is_some() {

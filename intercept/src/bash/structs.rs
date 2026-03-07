@@ -45,8 +45,8 @@ pub(crate) const ATT_EXPORTED: i32 = 0x1;
 /// Returns (script_path, line_number).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) unsafe fn get_bash_source_location() -> (Option<String>, Option<u32>) {
-    let line_addr = BASH_LINE_NUMBER.load(Ordering::SeqCst);
-    let vars_addr = BASH_DOLLAR_VARS.load(Ordering::SeqCst);
+    let line_addr = BASH_LINE_NUMBER.load(Ordering::Acquire);
+    let vars_addr = BASH_DOLLAR_VARS.load(Ordering::Acquire);
 
     let line = if line_addr != 0 {
         let n = *(line_addr as *const i32);
@@ -82,7 +82,7 @@ pub(crate) unsafe fn get_bash_source_location() -> (Option<String>, Option<u32>)
 pub(crate) unsafe fn get_bash_command_source_location(
     cmd_ptr: *const u8,
 ) -> (Option<String>, Option<u32>) {
-    let vars_addr = BASH_DOLLAR_VARS.load(Ordering::SeqCst);
+    let vars_addr = BASH_DOLLAR_VARS.load(Ordering::Acquire);
 
     let line = if !cmd_ptr.is_null() {
         let n = *(cmd_ptr.add(BASH_COMMAND_LINE_OFFSET) as *const i32);
@@ -90,7 +90,7 @@ pub(crate) unsafe fn get_bash_command_source_location(
             Some(n as u32)
         } else {
             // Fallback: global line_number (COMMAND.line is 0 for some builtins)
-            let line_addr = BASH_LINE_NUMBER.load(Ordering::SeqCst);
+            let line_addr = BASH_LINE_NUMBER.load(Ordering::Acquire);
             if line_addr != 0 {
                 let g = *(line_addr as *const i32);
                 if g > 0 {

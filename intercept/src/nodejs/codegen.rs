@@ -19,7 +19,7 @@ const MODIFY_CODEGEN_FROM_STRINGS: &str =
     "_ZN4node31ModifyCodeGenerationFromStringsEN2v85LocalINS0_7ContextEEENS1_INS0_5ValueEEEb";
 
 /// Whether the codegen hook has been installed.
-static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static CODEGEN_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// C++ `v8::ModifyCodeGenerationFromStringsResult` ABI.
 /// bool + padding + MaybeLocal<String> (pointer-sized).
@@ -75,7 +75,7 @@ fn find_symbol(module_name: &str, symbol: &str) -> Option<usize> {
 
 /// Install the synchronous Node codegen hook.
 pub fn initialize() -> bool {
-    if HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+    if CODEGEN_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
         return true;
     }
 
@@ -88,7 +88,7 @@ pub fn initialize() -> bool {
             Some(name) => name,
             None => {
                 warn!("Node module not found; skipping codegen gate hook");
-                HOOK_INSTALLED.store(false, Ordering::SeqCst);
+                CODEGEN_HOOK_INSTALLED.store(false, Ordering::SeqCst);
                 return false;
             }
         };
@@ -96,7 +96,7 @@ pub fn initialize() -> bool {
             Some(a) => a,
             None => {
                 debug!("ModifyCodeGenerationFromStrings not found");
-                HOOK_INSTALLED.store(false, Ordering::SeqCst);
+                CODEGEN_HOOK_INSTALLED.store(false, Ordering::SeqCst);
                 return false;
             }
         }
@@ -116,7 +116,7 @@ pub fn initialize() -> bool {
     if let Err(e) = result {
         interceptor.end_transaction();
         warn!("Failed to install Node codegen gate hook: {:?}", e);
-        HOOK_INSTALLED.store(false, Ordering::SeqCst);
+        CODEGEN_HOOK_INSTALLED.store(false, Ordering::SeqCst);
         return false;
     }
 

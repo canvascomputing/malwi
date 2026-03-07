@@ -136,17 +136,17 @@ pub(crate) unsafe fn setup_bash_hooks(
     // Store find_shell_builtin address for use in execute_command_internal hook
     let find_builtin_addr = find_bash_symbol(&bash_symbols, "find_shell_builtin").unwrap_or(0);
     if find_builtin_addr != 0 {
-        BASH_FIND_SHELL_BUILTIN.store(find_builtin_addr as usize, Ordering::SeqCst);
+        BASH_FIND_SHELL_BUILTIN.store(find_builtin_addr as usize, Ordering::Release);
         debug!("Found find_shell_builtin at {:#x}", find_builtin_addr);
     }
 
     // Resolve line_number and dollar_vars for source location tracking
     if let Some(addr) = find_bash_symbol(&bash_symbols, "line_number") {
-        BASH_LINE_NUMBER.store(addr, Ordering::SeqCst);
+        BASH_LINE_NUMBER.store(addr, Ordering::Release);
         debug!("Found bash line_number at {:#x}", addr);
     }
     if let Some(addr) = find_bash_symbol(&bash_symbols, "dollar_vars") {
-        BASH_DOLLAR_VARS.store(addr, Ordering::SeqCst);
+        BASH_DOLLAR_VARS.store(addr, Ordering::Release);
         debug!("Found bash dollar_vars at {:#x}", addr);
     }
 

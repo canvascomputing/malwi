@@ -47,14 +47,14 @@ static PENDING_C_HOOKS: LazyLock<Mutex<Vec<PendingCHook>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Fast check: are there any pending hooks left to resolve?
-static HAS_PENDING: AtomicBool = AtomicBool::new(false);
+static HAS_PENDING_C_HOOKS: AtomicBool = AtomicBool::new(false);
 
 /// Whether Python is fully initialized (set once, never cleared).
-static PY_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static PYTHON_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Check whether there are pending C hooks awaiting resolution.
 pub fn has_pending() -> bool {
-    HAS_PENDING.load(Ordering::Relaxed)
+    HAS_PENDING_C_HOOKS.load(Ordering::Relaxed)
 }
 
 // =============================================================================
@@ -109,14 +109,14 @@ pub fn register_pending_hooks(filters: &[Filter]) {
             "Registered {} pending C function hooks for eager resolution",
             pending.len()
         );
-        HAS_PENDING.store(true, Ordering::Release);
+        HAS_PENDING_C_HOOKS.store(true, Ordering::Release);
     }
 }
 
 /// Try to resolve pending hooks by importing modules and looking up functions.
 ///
 /// Called on each profile event until all pending hooks are resolved.
-/// Guarded by the HAS_PENDING atomic so this is ~1ns no-op when empty.
+/// Guarded by the HAS_PENDING_C_HOOKS atomic so this is ~1ns no-op when empty.
 ///
 /// # Safety
 /// Must be called with GIL held (from profile hook context).
@@ -124,14 +124,14 @@ pub unsafe fn try_resolve_pending() {
     // Don't attempt imports during Python bootstrap — the import system
     // isn't ready yet and re-entrant imports crash the interpreter.
     // Py_IsInitialized returns 0 until _Py_InitializeMain completes.
-    if !PY_INITIALIZED.load(Ordering::Relaxed) {
+    if !PYTHON_INITIALIZED.load(Ordering::Relaxed) {
         match native::find_export(None, "Py_IsInitialized") {
             Ok(addr) => {
                 let is_initialized: Py_IsInitializedFn = std::mem::transmute(addr);
                 if is_initialized() == 0 {
                     return;
                 }
-                PY_INITIALIZED.store(true, Ordering::Relaxed);
+                PYTHON_INITIALIZED.store(true, Ordering::Relaxed);
             }
             Err(_) => return, // Not found yet — retry next time
         }
@@ -146,7 +146,7 @@ pub unsafe fn try_resolve_pending() {
         (Some(im), Some(gf)) => (im, gf),
         _ => {
             // Can't do eager resolution without these APIs
-            HAS_PENDING.store(false, Ordering::Release);
+            HAS_PENDING_C_HOOKS.store(false, Ordering::Release);
             return;
         }
     };
@@ -219,7 +219,7 @@ pub unsafe fn try_resolve_pending() {
     }
 
     if pending.is_empty() {
-        HAS_PENDING.store(false, Ordering::Release);
+        HAS_PENDING_C_HOOKS.store(false, Ordering::Release);
     }
 }
 

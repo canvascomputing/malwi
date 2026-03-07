@@ -22,7 +22,7 @@ use super::profile::{do_register_profile_hook, set_thread_created, PROFILE_HOOK_
 use super::stack::capture_current_python_stack;
 
 static AUDIT_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
-static AUDIT_REG_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+static AUDIT_REGISTRATION_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Register the audit hook deterministically after Python initialization.
 ///
@@ -30,7 +30,7 @@ static AUDIT_REG_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 /// Otherwise, hooks `Py_RunMain` (called after init completes) and
 /// registers the audit hook in its on-enter callback.
 pub fn start_audit_registration_task() {
-    if AUDIT_REG_TASK_STARTED.swap(true, Ordering::SeqCst) {
+    if AUDIT_REGISTRATION_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
 

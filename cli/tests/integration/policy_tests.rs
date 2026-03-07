@@ -132,7 +132,8 @@ symbols:
     assert!(
         stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
         "Expected denied socket(AF_INET, SOCK_STREAM) message. stdout: {}, stderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 
     // The process should have exited (not been killed by timeout).
