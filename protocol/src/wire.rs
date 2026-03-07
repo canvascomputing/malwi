@@ -326,6 +326,7 @@ fn encode_trace_event(w: &mut WireWriter, event: &TraceEvent) {
     encode_opt_network_info(w, &event.network_info);
     w.put_opt_str(event.source_file.as_deref());
     w.put_opt_u32(event.source_line);
+    w.put_u64(event.timestamp_ns);
     // seq, source, category, disposition are CLI-only — not sent on wire
 }
 
@@ -347,6 +348,7 @@ fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
     let network_info = decode_opt_network_info(r)?;
     let source_file = r.get_opt_string()?;
     let source_line = r.get_opt_u32()?;
+    let timestamp_ns = r.get_u64()?;
     Ok(TraceEvent {
         hook_type,
         event_type,
@@ -357,6 +359,7 @@ fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
         network_info,
         source_file,
         source_line,
+        timestamp_ns,
         // CLI-only fields default to zero/None
         seq: 0,
         source: None,
@@ -390,6 +393,14 @@ fn encode_child_info(w: &mut WireWriter, info: &HostChildInfo) {
     w.put_opt_str(info.source_file.as_deref());
     w.put_opt_u32(info.source_line);
     encode_opt_runtime_stack(w, &info.runtime_stack);
+    // hook_type: Option<HookType> — 0 = None, 1+ = Some(type+1)
+    match &info.hook_type {
+        None => w.put_u8(0),
+        Some(ht) => {
+            w.put_u8(1);
+            encode_hook_type(w, ht);
+        }
+    }
 }
 
 fn decode_child_info(r: &mut WireReader) -> io::Result<HostChildInfo> {
@@ -415,6 +426,16 @@ fn decode_child_info(r: &mut WireReader) -> io::Result<HostChildInfo> {
     let source_file = r.get_opt_string()?;
     let source_line = r.get_opt_u32()?;
     let runtime_stack = decode_opt_runtime_stack(r)?;
+    let hook_type = match r.get_u8()? {
+        0 => None,
+        1 => Some(decode_hook_type(r)?),
+        t => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid hook_type tag: {}", t),
+            ))
+        }
+    };
     Ok(HostChildInfo {
         parent_pid,
         child_pid,
@@ -425,6 +446,7 @@ fn decode_child_info(r: &mut WireReader) -> io::Result<HostChildInfo> {
         source_file,
         source_line,
         runtime_stack,
+        hook_type,
     })
 }
 
@@ -439,6 +461,7 @@ fn encode_hook_type(w: &mut WireWriter, ht: &HookType) {
         HookType::Nodejs => 2,
         HookType::Exec => 3,
         HookType::EnvVar => 4,
+        HookType::Bash => 5,
     });
 }
 
@@ -449,6 +472,7 @@ fn decode_hook_type(r: &mut WireReader) -> io::Result<HookType> {
         2 => Ok(HookType::Nodejs),
         3 => Ok(HookType::Exec),
         4 => Ok(HookType::EnvVar),
+        5 => Ok(HookType::Bash),
         t => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid HookType tag: {}", t),
@@ -1037,6 +1061,7 @@ mod tests {
             network_info: None,
             source_file: Some("app.js".to_string()),
             source_line: Some(7),
+            timestamp_ns: 123456789,
             ..Default::default()
         };
         let msg = AgentMessage::Event(event);
@@ -1053,6 +1078,7 @@ mod tests {
                 assert!(matches!(e.runtime_stack, Some(RuntimeStack::Nodejs(_))));
                 assert_eq!(e.source_file, Some("app.js".to_string()));
                 assert_eq!(e.source_line, Some(7));
+                assert_eq!(e.timestamp_ns, 123456789);
                 // CLI-only fields should be default
                 assert_eq!(e.seq, 0);
                 assert!(e.source.is_none());
@@ -1120,6 +1146,7 @@ mod tests {
             source_file: None,
             source_line: None,
             runtime_stack: None,
+            hook_type: None,
         };
         let msg = AgentMessage::Child(info);
         let decoded = roundtrip_agent(&msg);
@@ -1328,6 +1355,7 @@ mod tests {
                 line: 42,
                 locals: None,
             }])),
+            hook_type: None,
         };
         let msg = AgentMessage::Child(info);
         let decoded = roundtrip_agent(&msg);

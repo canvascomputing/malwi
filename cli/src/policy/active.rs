@@ -126,8 +126,11 @@ impl ActivePolicy {
     pub fn evaluate_trace(&self, event: &TraceEvent) -> EventDisposition {
         let func = &event.function;
 
-        // Cache lookup for function-level disposition (skip Exec/EnvVar — names vary per call)
-        let cache_key = if !matches!(event.hook_type, HookType::Exec | HookType::EnvVar) {
+        // Cache lookup for function-level disposition (skip Exec/Bash/EnvVar — names vary per call)
+        let cache_key = if !matches!(
+            event.hook_type,
+            HookType::Exec | HookType::Bash | HookType::EnvVar
+        ) {
             let key = (hook_type_discriminant(&event.hook_type), func.to_string());
             if let Some(cached) = self.fn_cache.borrow().get(&key) {
                 let disp = cached.clone();
@@ -152,7 +155,7 @@ impl ActivePolicy {
             HookType::Python => self.engine.evaluate_function(Runtime::Python, func, &args),
             HookType::Nodejs => self.engine.evaluate_function(Runtime::Node, func, &args),
             HookType::Native => self.engine.evaluate_native_function(func, &args),
-            HookType::Exec => {
+            HookType::Exec | HookType::Bash => {
                 // Unwrap shell wrappers: sh -c "curl ..." → evaluate as "curl ..."
                 let full_cmd = unwrap_shell_exec_args(func, &args).unwrap_or_else(|| {
                     // Build full command string: "cmd arg1 arg2" (skip argv[0])
@@ -296,6 +299,7 @@ fn hook_type_discriminant(ht: &HookType) -> u8 {
         HookType::Nodejs => 2,
         HookType::Exec => 3,
         HookType::EnvVar => 4,
+        HookType::Bash => 5,
     }
 }
 

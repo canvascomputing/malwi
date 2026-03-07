@@ -23,7 +23,7 @@ impl ActivePolicy {
         event: &TraceEvent,
         disp: EventDisposition,
     ) -> EventDisposition {
-        if event.hook_type != HookType::Exec || disp.is_blocked() {
+        if !matches!(event.hook_type, HookType::Exec | HookType::Bash) || disp.is_blocked() {
             return disp;
         }
         let args: Vec<&str> = event

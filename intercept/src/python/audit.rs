@@ -348,6 +348,7 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
                         source_file,
                         source_line,
                         runtime_stack,
+                        hook_type: None,
                     });
                 }
             }

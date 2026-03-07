@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use malwi_intercept::{EventType, HookType, RuntimeStack, TraceEvent};
 
-use crate::{display_name, DIM, LIGHT_BLUE, RED, RESET, YELLOW};
+use crate::{display_name, OutputFormat, DIM, LIGHT_BLUE, RED, RESET, YELLOW};
 
 /// Global flag for SIGINT handler to signal shutdown.
 static MONITOR_SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -60,7 +60,7 @@ pub struct SessionEndRequest {
 // =============================================================================
 
 /// Run the monitor HTTP server.
-pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
+pub fn run_monitor(port: u16, show_stack: bool, format: OutputFormat) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)
         .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
@@ -94,7 +94,7 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
         let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
 
-        if let Err(e) = handle_monitor_request(&mut stream, show_stack) {
+        if let Err(e) = handle_monitor_request(&mut stream, show_stack, format) {
             log::debug!("Monitor request error: {}", e);
         }
     }
@@ -103,7 +103,11 @@ pub fn run_monitor(port: u16, show_stack: bool) -> Result<()> {
 }
 
 /// Parse a single HTTP request from a stream and handle it.
-fn handle_monitor_request(stream: &mut TcpStream, show_stack: bool) -> Result<()> {
+fn handle_monitor_request(
+    stream: &mut TcpStream,
+    show_stack: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
 
     // Read request line
@@ -162,7 +166,12 @@ fn handle_monitor_request(stream: &mut TcpStream, show_stack: bool) -> Result<()
         },
         ("POST", "/event") => match serde_json::from_str::<EventRequest>(&body) {
             Ok(req) => {
-                print_trace_event(&req.event, show_stack, Some(req.session_id.as_str()));
+                print_trace_event(
+                    &req.event,
+                    show_stack,
+                    Some(req.session_id.as_str()),
+                    format,
+                );
                 respond_ok(stream)?;
             }
             Err(e) => {
@@ -210,9 +219,39 @@ fn respond_error(stream: &mut TcpStream, msg: &str) -> Result<()> {
 }
 
 /// Print a trace event to stdout.
-fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Option<&str>) {
+fn print_trace_event(
+    event: &TraceEvent,
+    show_stack: bool,
+    session_prefix: Option<&str>,
+    format: OutputFormat,
+) {
     // Only print ENTER events
     if !matches!(event.event_type, EventType::Enter) {
+        return;
+    }
+
+    // JSON format: emit NDJSON line
+    if format == OutputFormat::Json {
+        // Parse BLOCKED/WARN prefix to extract policy info
+        let func = &event.function;
+        let policy = if func.starts_with("BLOCKED ") {
+            let (_, info) = parse_prefixed_event(func, "BLOCKED ");
+            Some(crate::JsonPolicy {
+                decision: "denied",
+                rule: info.map(|(_, r)| r),
+                category: info.map(|(s, _)| s),
+            })
+        } else if func.starts_with("WARN ") {
+            let (_, info) = parse_prefixed_event(func, "WARN ");
+            Some(crate::JsonPolicy {
+                decision: "warned",
+                rule: info.map(|(_, r)| r),
+                category: info.map(|(s, _)| s),
+            })
+        } else {
+            None
+        };
+        let _ = crate::write_json_event(event, policy, &mut std::io::stdout());
         return;
     }
 
@@ -250,8 +289,8 @@ fn print_trace_event(event: &TraceEvent, show_stack: bool, session_prefix: Optio
             "{}{}  {} {}:{} {} {}'{}'{}",
             color, tag, section, action, RESET, display_func, DIM, rule, RESET
         );
-    } else if event.hook_type == HookType::Exec {
-        // Exec: "cmd arg1 arg2" style (skip argv[0] which is the function name)
+    } else if event.hook_type == HookType::Exec || event.hook_type == HookType::Bash {
+        // Exec/Bash: "cmd arg1 arg2" style (skip argv[0] which is the function name)
         let start = 1.min(event.arguments.len());
         let args: Vec<String> = event.arguments[start..]
             .iter()

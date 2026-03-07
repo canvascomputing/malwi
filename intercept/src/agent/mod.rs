@@ -195,6 +195,10 @@ impl Agent {
                 crate::python::start_audit_registration_task();
                 debug!("Added exec filter: {}", config.symbol);
             }
+            HookType::Bash => {
+                // Bash hooks are installed automatically on detection (setup_bash_hooks()),
+                // not via HookConfig. No-op arm for exhaustive matching.
+            }
             HookType::EnvVar => {
                 // EnvVar monitoring: hook bash's find_variable if this is a bash process.
                 // Set the flag so setup_bash_hooks() will install the hook if the spawn
@@ -595,6 +599,7 @@ impl ForkHandler for Agent {
             source_file: None,
             source_line: None,
             runtime_stack: None,
+            hook_type: None,
         };
         self.notify_child_created(info);
     }
@@ -630,6 +635,7 @@ impl SpawnHandler for Agent {
             source_file: info.source_file,
             source_line: info.source_line,
             runtime_stack: info.runtime_stack,
+            hook_type: info.hook_type,
         };
         self.notify_child_created(child_info);
     }
@@ -645,6 +651,7 @@ impl SpawnHandler for Agent {
             source_file: info.source_file,
             source_line: info.source_line,
             runtime_stack: info.runtime_stack,
+            hook_type: info.hook_type,
         };
         self.notify_child_created(child_info);
     }

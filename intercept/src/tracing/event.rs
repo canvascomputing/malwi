@@ -108,6 +108,7 @@ impl EventBuilder {
             network_info: self.network_info,
             source_file: self.source_file,
             source_line: self.source_line,
+            timestamp_ns: super::time::elapsed_ns(),
             ..Default::default()
         }
     }
@@ -261,6 +262,15 @@ mod tests {
         let event = js_enter("fs.readFile").build();
         assert!(event.source_file.is_none());
         assert!(event.source_line.is_none());
+    }
+
+    #[test]
+    fn test_event_builder_sets_timestamp() {
+        let event = EventBuilder::enter("test_func").build();
+        assert!(
+            event.timestamp_ns > 0,
+            "timestamp_ns should be set by build()"
+        );
     }
 
     #[test]

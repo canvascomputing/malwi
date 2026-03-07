@@ -476,7 +476,7 @@ fn child_info_to_trace_event(info: HostChildInfo, cmd_name: String) -> TraceEven
         .unwrap_or_default();
 
     TraceEvent {
-        hook_type: HookType::Exec,
+        hook_type: info.hook_type.unwrap_or(HookType::Exec),
         event_type: EventType::Enter,
         function: cmd_name,
         arguments,

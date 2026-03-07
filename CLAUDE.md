@@ -340,7 +340,7 @@ pub fn is_envvar_monitoring_enabled() -> bool;
 ```rust
 // protocol/src/event.rs
 TraceEvent {
-    hook_type: HookType,            // Native, Python, Nodejs, Exec, EnvVar
+    hook_type: HookType,            // Native, Python, Nodejs, Exec, EnvVar, Bash
     event_type: EventType,          // Enter or Leave
     function: String,               // e.g., "fs.readFileSync" or "urllib.request.urlopen"
     arguments: Vec<Argument>,       // display + raw_value per argument

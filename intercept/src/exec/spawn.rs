@@ -212,6 +212,8 @@ pub struct SpawnInfo {
     pub source_file: Option<String>,
     pub source_line: Option<u32>,
     pub runtime_stack: Option<crate::RuntimeStack>,
+    /// Override hook type for the resulting TraceEvent (e.g. HookType::Bash).
+    pub hook_type: Option<crate::HookType>,
 }
 
 /// Callback trait for spawn/exec events.
@@ -630,6 +632,7 @@ unsafe extern "C" fn on_posix_spawn_leave(
                     source_file: None,
                     source_line: None,
                     runtime_stack: None,
+                    hook_type: None,
                 });
             }
         });
@@ -771,6 +774,7 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
             source_file: None,
             source_line: None,
             runtime_stack: None,
+            hook_type: None,
         });
     }
 }

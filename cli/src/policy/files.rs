@@ -16,7 +16,7 @@ impl ActivePolicy {
         disp: EventDisposition,
     ) -> EventDisposition {
         match event.hook_type {
-            HookType::Exec => self.evaluate_file_args_from_exec(event, disp),
+            HookType::Exec | HookType::Bash => self.evaluate_file_args_from_exec(event, disp),
             HookType::Native => self.evaluate_file_from_native(event, disp),
             _ => disp,
         }

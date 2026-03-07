@@ -17,7 +17,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use log::{debug, warn};
 use malwi_intercept::glob::{matches_glob, matches_glob_ci};
-use malwi_intercept::{HookConfig, HookType, ReviewDecision, RuntimeStack, TraceEvent};
+use malwi_intercept::{
+    HookConfig, HookType, NetworkInfo, ReviewDecision, RuntimeStack, TraceEvent,
+};
+use serde::Serialize;
 
 use std::path::Path;
 
@@ -130,6 +133,16 @@ struct Cli {
     command: Commands,
 }
 
+/// Output format for trace events.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    /// Human-readable text with ANSI colors
+    #[default]
+    Text,
+    /// NDJSON (one JSON object per line)
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     #[command(
@@ -228,6 +241,10 @@ enum Commands {
         #[arg(long, default_value = "9123", help_heading = "Output")]
         monitor_port: u16,
 
+        /// Output format (text or json)
+        #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Text, help_heading = "Output")]
+        format: OutputFormat,
+
         /// Program and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         program: Vec<String>,
@@ -243,6 +260,10 @@ enum Commands {
         /// Show stack traces
         #[arg(short = 't', long)]
         stack_trace: bool,
+
+        /// Output format (text or json)
+        #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
 
     /// List or manage policy files
@@ -273,6 +294,7 @@ async fn main() -> Result<()> {
             output,
             monitor,
             monitor_port,
+            format,
             program,
         } => {
             let trace_config = TraceConfig {
@@ -286,11 +308,16 @@ async fn main() -> Result<()> {
                 output,
                 use_monitor: monitor,
                 monitor_port,
+                format,
             };
             spawn_and_trace(trace_config, program).await?;
         }
-        Commands::M { port, stack_trace } => {
-            monitor::run_monitor(port, stack_trace)?;
+        Commands::M {
+            port,
+            stack_trace,
+            format,
+        } => {
+            monitor::run_monitor(port, stack_trace, format)?;
         }
         Commands::P { name } => match name.as_deref() {
             None => policy::list_policies()?,
@@ -569,6 +596,7 @@ struct TraceConfig {
     output: Option<PathBuf>,
     use_monitor: bool,
     monitor_port: u16,
+    format: OutputFormat,
 }
 
 /// Detect `malwi x curl ... | bash` and transform to `malwi x -- bash <tempfile>`.
@@ -823,13 +851,13 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
             use malwi_intercept::{EventType, HookType as EvHookType, TraceEvent};
 
             let eval_event = TraceEvent {
-                hook_type: EvHookType::Exec,
+                hook_type: EvHookType::Bash,
                 event_type: EventType::Enter,
                 function: "eval".to_string(),
                 ..Default::default()
             };
             let source_event = TraceEvent {
-                hook_type: EvHookType::Exec,
+                hook_type: EvHookType::Bash,
                 event_type: EventType::Enter,
                 function: "source".to_string(),
                 ..Default::default()
@@ -935,6 +963,7 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         active_policy: active_policy.as_ref(),
         manual_functions: &manual_functions,
         requested_hooks: &requested_hooks,
+        format: config.format,
     };
 
     use std::io::BufWriter;
@@ -989,6 +1018,7 @@ struct EventLoopConfig<'a> {
     active_policy: Option<&'a policy::ActivePolicy>,
     manual_functions: &'a HashSet<String>,
     requested_hooks: &'a [HookConfig],
+    format: OutputFormat,
 }
 
 /// Mutable state owned by the event loop (non-agent-tracking parts).
@@ -1234,6 +1264,7 @@ fn process_event(
                             &section,
                             config.monitor_client,
                             state.output_writer.as_deref_mut(),
+                            config.format,
                         );
 
                         return Ok(());
@@ -1246,10 +1277,12 @@ fn process_event(
                             &trace_event,
                             config.monitor_client,
                             state.output_writer.as_deref_mut(),
+                            config.format,
                         );
-                        // For exec/envvar events, the warning line already contains the full info.
+                        // For exec/bash/envvar events, the warning line already contains the full info.
                         // For function calls, fall through to also print the call details.
                         if trace_event.hook_type == HookType::Exec
+                            || trace_event.hook_type == HookType::Bash
                             || trace_event.hook_type == HookType::EnvVar
                         {
                             return Ok(());
@@ -1284,6 +1317,7 @@ fn process_event(
                     &resolved_frames,
                     out,
                     config.stack_trace_enabled,
+                    config.format,
                 )?;
             }
         }
@@ -1304,6 +1338,7 @@ fn process_event(
                                 &section,
                                 config.monitor_client,
                                 state.output_writer.as_deref_mut(),
+                                config.format,
                             );
                             ReviewDecision::Block
                         }
@@ -1313,6 +1348,7 @@ fn process_event(
                                 &event,
                                 config.monitor_client,
                                 state.output_writer.as_deref_mut(),
+                                config.format,
                             );
                             ReviewDecision::Warn
                         }
@@ -1346,7 +1382,19 @@ fn emit_blocked(
     section: &str,
     monitor: Option<&MonitorClient>,
     out: Option<&mut (dyn Write + '_)>,
+    format: OutputFormat,
 ) {
+    if format == OutputFormat::Json {
+        if let Some(out) = out {
+            let policy = Some(JsonPolicy {
+                decision: "denied",
+                rule: Some(rule),
+                category: Some(section),
+            });
+            let _ = write_json_event(event, policy, out);
+        }
+        return;
+    }
     let full = format_event_display_name(event);
     let src = format_source_location(&event.source_file, event.source_line);
     if let Some(client) = monitor {
@@ -1366,7 +1414,19 @@ fn emit_warning(
     event: &TraceEvent,
     monitor: Option<&MonitorClient>,
     out: Option<&mut (dyn Write + '_)>,
+    format: OutputFormat,
 ) {
+    if format == OutputFormat::Json {
+        if let Some(out) = out {
+            let policy = Some(JsonPolicy {
+                decision: "warned",
+                rule: None,
+                category: None,
+            });
+            let _ = write_json_event(event, policy, out);
+        }
+        return;
+    }
     let full = format_event_display_name(event);
     let src = format_source_location(&event.source_file, event.source_line);
     if let Some(client) = monitor {
@@ -1419,6 +1479,187 @@ pub const RED: &str = "\x1b[91m";
 pub const DIM: &str = "\x1b[2m";
 pub const RESET: &str = "\x1b[0m";
 
+// =============================================================================
+// JSON OUTPUT TYPES
+// =============================================================================
+
+/// JSON output record for a single trace event (NDJSON format).
+#[derive(Serialize)]
+struct JsonOutputEvent<'a> {
+    timestamp: f64,
+    seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    source: &'a str,
+    name: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy: Option<JsonPolicy<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    endpoint: Option<JsonEndpoint<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stack: Vec<JsonStackFrame<'a>>,
+}
+
+/// Policy evaluation result in JSON output.
+#[derive(Serialize)]
+pub struct JsonPolicy<'a> {
+    pub decision: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<&'a str>,
+}
+
+/// Network endpoint in JSON output.
+#[derive(Serialize)]
+struct JsonEndpoint<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<&'a str>,
+}
+
+/// A stack frame in JSON output.
+#[derive(Serialize)]
+struct JsonStackFrame<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+}
+
+/// Map HookType to a JSON-friendly source string.
+fn hook_type_to_source(hook_type: &HookType) -> &'static str {
+    match hook_type {
+        HookType::Native => "native",
+        HookType::Python => "python",
+        HookType::Nodejs => "nodejs",
+        HookType::Bash => "bash",
+        HookType::Exec => "execution",
+        HookType::EnvVar => "environment",
+    }
+}
+
+/// Build the stack array for JSON output by merging source_file/source_line
+/// with runtime stack frames and native addresses.
+fn build_json_stack<'a>(event: &'a TraceEvent) -> Vec<JsonStackFrame<'a>> {
+    let mut frames = Vec::new();
+
+    // First frame: immediate caller from source_file/source_line
+    if let Some(ref file) = event.source_file {
+        frames.push(JsonStackFrame {
+            function: None,
+            file: Some(file),
+            line: event.source_line,
+            column: None,
+            address: None,
+        });
+    }
+
+    // Deeper frames from runtime stack
+    match &event.runtime_stack {
+        Some(RuntimeStack::Python(pframes)) => {
+            for f in pframes {
+                frames.push(JsonStackFrame {
+                    function: Some(&f.function),
+                    file: Some(&f.filename),
+                    line: Some(f.line),
+                    column: None,
+                    address: None,
+                });
+            }
+        }
+        Some(RuntimeStack::Nodejs(nframes)) => {
+            for f in nframes {
+                frames.push(JsonStackFrame {
+                    function: Some(&f.function),
+                    file: Some(&f.script),
+                    line: Some(f.line),
+                    column: Some(f.column),
+                    address: None,
+                });
+            }
+        }
+        None => {}
+    }
+
+    // Native stack frames (raw addresses)
+    for &addr in &event.native_stack {
+        frames.push(JsonStackFrame {
+            function: None,
+            file: None,
+            line: None,
+            column: None,
+            address: Some(format!("{:#x}", addr)),
+        });
+    }
+
+    frames
+}
+
+/// Build a JsonEndpoint from NetworkInfo.
+fn build_json_endpoint(ni: &NetworkInfo) -> JsonEndpoint<'_> {
+    JsonEndpoint {
+        host: ni.host.as_deref(),
+        port: ni.port,
+        url: ni.url.as_deref(),
+        protocol: ni.protocol.as_ref().map(|p| p.as_str()),
+    }
+}
+
+/// Write a single trace event as a JSON line (NDJSON).
+pub fn write_json_event(
+    event: &TraceEvent,
+    policy: Option<JsonPolicy<'_>>,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let args: Vec<&str> = event
+        .arguments
+        .iter()
+        .filter_map(|a| a.display.as_deref())
+        .collect();
+
+    let pid = event.source.as_ref().and_then(|s| match s {
+        malwi_intercept::EventSource::Agent { pid } => Some(*pid),
+        _ => None,
+    });
+
+    let endpoint = event
+        .network_info
+        .as_ref()
+        .map(|ni| build_json_endpoint(ni));
+    let stack = build_json_stack(event);
+
+    let json_event = JsonOutputEvent {
+        timestamp: event.timestamp_ns as f64 / 1_000_000.0,
+        seq: event.seq,
+        pid,
+        source: hook_type_to_source(&event.hook_type),
+        name: &event.function,
+        args,
+        policy,
+        endpoint,
+        stack,
+    };
+
+    let json = serde_json::to_string(&json_event)?;
+    writeln!(output, "{}", json)?;
+    output.flush()?;
+    Ok(())
+}
+
 /// Map runtime identifier to display name.
 fn display_runtime_name(runtime: &str) -> String {
     match runtime {
@@ -1468,7 +1709,7 @@ fn unwrap_shell_display(argv0: &str, args: &[&str]) -> Option<String> {
 /// For exec events: "cmd arg1 arg2" style.
 /// For other events: just the function name.
 fn format_event_display_name(event: &TraceEvent) -> String {
-    if event.hook_type == HookType::Exec {
+    if event.hook_type == HookType::Exec || event.hook_type == HookType::Bash {
         let name = display_name(&event.function);
 
         // Collect full argv for shell-wrapper detection
@@ -1666,6 +1907,7 @@ fn print_trace_event(
     resolved_stack: &[malwi_intercept::NativeFrame],
     output: &mut Box<dyn Write>,
     stack_trace_enabled: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     use malwi_intercept::EventType;
 
@@ -1674,12 +1916,17 @@ fn print_trace_event(
         return Ok(());
     }
 
+    // JSON format: emit NDJSON line and return
+    if format == OutputFormat::Json {
+        return write_json_event(event, None, output.as_mut());
+    }
+
     let name = display_name(&event.function);
     let color = LIGHT_BLUE;
     let src = format_source_location(&event.source_file, event.source_line);
 
-    if event.hook_type == HookType::Exec {
-        // Exec: "cmd arg1 arg2" style (skip argv[0] which is the function name)
+    if event.hook_type == HookType::Exec || event.hook_type == HookType::Bash {
+        // Exec/Bash: "cmd arg1 arg2" style (skip argv[0] which is the function name)
         let start = 1.min(event.arguments.len());
         let args: Vec<String> = event.arguments[start..]
             .iter()

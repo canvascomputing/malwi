@@ -101,6 +101,7 @@ pub(crate) unsafe extern "C" fn on_shell_execve_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            hook_type: Some(crate::HookType::Bash),
         });
     }
 }
@@ -216,6 +217,7 @@ pub(crate) unsafe extern "C" fn on_execute_command_internal_enter(
                     source_file,
                     source_line,
                     runtime_stack: None,
+                    hook_type: Some(crate::HookType::Bash),
                 });
             }
         }
@@ -269,6 +271,7 @@ pub(crate) unsafe extern "C" fn on_eval_builtin_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            hook_type: Some(crate::HookType::Bash),
         });
     }
 }
@@ -316,6 +319,7 @@ pub(crate) unsafe extern "C" fn on_source_builtin_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            hook_type: Some(crate::HookType::Bash),
         });
     }
 }

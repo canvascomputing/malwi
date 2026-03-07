@@ -16,6 +16,8 @@ pub enum HookType {
     Exec,
     /// Environment variable access (bash find_variable with att_exported)
     EnvVar,
+    /// Bash command hook (shell_execve, builtins, eval, source)
+    Bash,
 }
 
 /// Network protocol type.
@@ -164,6 +166,9 @@ pub struct TraceEvent {
     /// Source line where the call originated (caller's line)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_line: Option<u32>,
+    /// Nanoseconds elapsed since agent trace start (set by EventBuilder)
+    #[serde(default)]
+    pub timestamp_ns: u64,
     /// Monotonic sequence number (set by CLI, 0 from agent)
     #[serde(default)]
     pub seq: u64,
@@ -303,4 +308,8 @@ pub struct HostChildInfo {
     /// Runtime-specific stack trace (Python, Node.js, etc.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_stack: Option<RuntimeStack>,
+    /// Override hook type for the resulting TraceEvent (e.g. Bash instead of Exec).
+    /// When None, defaults to HookType::Exec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_type: Option<HookType>,
 }
