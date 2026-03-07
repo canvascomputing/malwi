@@ -8,7 +8,7 @@ malwi is a function tracing tool for dynamic analysis of executables. It support
 - **Node.js functions** via hybrid tracing (V8 bytecode + codegen gate + N-API addon wrapping)
 - **Executed commands** via fork/exec/spawn monitoring
 
-The tool injects an agent library into target processes to intercept function calls and report them back to a CLI over HTTP.
+The tool injects an agent library into target processes to intercept function calls and report them back to a CLI over a binary wire protocol (length-prefixed TCP).
 
 ## Architecture
 
@@ -16,11 +16,11 @@ The tool injects an agent library into target processes to intercept function ca
 ┌─────────────────────────────────────────────────────────────────┐
 │                       CLI — malwi (cli/)                        │
 │  - Spawns processes with tracing                                │
-│  - Receives trace events via HTTP                               │
+│  - Receives trace events via binary wire protocol (TCP)         │
 │  - Policy engine + evaluation                                   │
 │  - Depends on malwi-intercept (default-features = false)        │
 └─────────────────────────────────────────────────────────────────┘
-                              │ HTTP (localhost)
+                              │ TCP (localhost, binary wire)
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │             Agent cdylib — malwi-agent (agent/)                 │
@@ -34,7 +34,7 @@ The tool injects an agent library into target processes to intercept function ca
 │  - Native interception engine (frida-gum)                       │
 │  - Agent runtime (python/nodejs/bash/exec hooks)                │
 │  - Re-exports malwi-protocol types                              │
-│  - Sends TraceEvents to CLI via HTTP                            │
+│  - Sends TraceEvents to CLI via binary wire client              │
 └─────────────────────────────────────────────────────────────────┘
                               │ depends on
                               ▼
@@ -145,14 +145,15 @@ binaries/
 
 ```
 cli/src/
-├── main.rs             # CLI entry point, arg parsing
+├── main.rs             # CLI entry point, arg parsing, display formatting
 ├── lib.rs              # Library root
 ├── spawn.rs            # Process spawning orchestration
 ├── native_spawn.rs     # posix_spawn/fork+exec implementation
-├── agent_server.rs     # HTTP server receiving agent events
+├── agent_server.rs     # TCP server receiving agent events (binary wire protocol)
+├── agent_tracker.rs    # Unified agent lifecycle tracking (EventLoopState, SharedState)
 ├── monitor.rs          # Trace event processing and display
 ├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
-├── shell_format.rs     # Shell output formatting
+├── shell_format.rs     # Shell output formatting (quoting, truncation)
 │
 └── policy/             # Policy subsystem (includes absorbed policy engine)
     ├── mod.rs          # Module root + re-exports
@@ -197,13 +198,13 @@ Wire protocol types live in `protocol/src/` (the `malwi-protocol` crate). `malwi
 ```
 protocol/src/
 ├── lib.rs              # Crate root, module declarations, re-exports
-├── event.rs            # TraceEvent, EventType, Argument, NativeFrame
-├── exec.rs             # Command unwrapping utilities
+├── event.rs            # TraceEvent, EventType, Argument, NetworkInfo, Protocol
+├── exec.rs             # Command unwrapping utilities (unwrap_shell_command)
 ├── glob.rs             # Glob pattern matching
 ├── message.rs          # AgentMessage, CliMessage
 ├── platform.rs         # Platform detection, agent_lib_name()
-├── protocol.rs         # HookType, FilterSpec
-└── wire.rs             # Length-prefixed wire encoding
+├── protocol.rs         # HookType, FilterSpec, HookConfig
+└── wire.rs             # Length-prefixed binary wire encoding (BinaryCodec)
 ```
 
 ## Intercept Module Structure
@@ -218,32 +219,46 @@ intercept/src/
 │   ├── mod.rs          # Interceptor struct
 │   ├── listener.rs     # CallListener trait
 │   └── invocation.rs   # InvocationContext
-├── module.rs           # Module enumeration
-├── backtrace.rs        # Native backtrace capture
+├── module/             # Module enumeration
+│   └── mod.rs
+├── backtrace/          # Native backtrace capture
+│   └── mod.rs
 ├── types.rs            # Shared types (InvocationContext)
 ├── gum.rs              # Frida-gum FFI wrapper
 ├── ffi.rs              # FFI bindings
+├── test_utils.rs       # Test utilities (lock_hook_tests, init_gum)
 │
-├── agent.rs            # Agent struct, malwi_agent_init(), global state
-├── http_client.rs      # CLI communication
+├── agent/              # Agent runtime (injected into target process)
+│   ├── mod.rs          # Agent struct, malwi_agent_init(), global state, event loop
+│   └── lifecycle.rs    # AgentPhase state machine (Uninitialized → Configuring → Ready → ...)
+├── client.rs           # Binary wire client (ForkSafeMutex<TcpStream>, BinaryCodec)
 │
-├── native/             # Infrastructure (HookManager, find_export, capture_backtrace)
+├── native/             # Native function hooks + formatting
+│   ├── mod.rs          # HookManager, find_export
+│   ├── hooks.rs        # Native function hook callbacks
+│   ├── format.rs       # Argument formatting (C constants, paths, FDs, NetworkInfo)
+│   └── symbol.rs       # Symbol resolution helpers
 │
 ├── tracing/            # SHARED utilities (all runtimes)
 │   ├── mod.rs
-│   ├── thread.rs       # thread_id() - single implementation
+│   ├── thread.rs       # thread_id() — single implementation
 │   ├── time.rs         # elapsed_ns(), TRACE_START
 │   ├── filter.rs       # FilterManager struct, pattern matching
-│   └── event.rs        # EventBuilder for TraceEvent creation
+│   ├── event.rs        # EventBuilder for TraceEvent creation
+│   ├── format.rs       # Shared formatting (truncate, truncate_url, truncate_display)
+│   ├── fork_mutex.rs   # ForkSafeMutex<T> — switches to try_lock after fork
+│   └── stack.rs        # Stack trace utilities
 │
 ├── python/             # Python tracing (sys.setprofile, audit hooks)
 │   ├── mod.rs          # Public API facade + re-exports
 │   ├── detect.rs       # is_loaded(), detected_version()
 │   ├── filters.rs      # FilterManager wrapper
 │   ├── profile.rs      # Profile hook registration and callback
+│   ├── hooks.rs        # C function hooks (exact pattern resolution)
+│   ├── helpers.rs      # Python introspection (qualified names, arg extraction, c_module_alias)
 │   ├── audit.rs        # Audit hook (PEP 578)
 │   ├── ffi.rs          # CPython FFI types
-│   ├── format.rs       # Argument formatting
+│   ├── format.rs       # Argument formatting + NetworkInfo (socket, urllib, requests, etc.)
 │   ├── stack.rs        # Python stack capture
 │   └── version.rs      # Version struct, parsing, Py_GetVersion()
 │
@@ -253,11 +268,18 @@ intercept/src/
 │   ├── bytecode.rs     # V8 bytecode tracing (Runtime_TraceEnter/Exit)
 │   ├── codegen.rs      # Synchronous eval/function-constructor gate
 │   ├── filters.rs      # Filter management, initialization
-│   ├── ffi.rs          # FFI types
+│   ├── format.rs       # NetworkInfo extraction for HTTP/socket/DNS functions
+│   ├── state.rs        # State machines (BytecodePhase, AddonPhase)
+│   ├── ffi.rs          # FFI types (NodejsTraceEventData, etc.)
 │   ├── script.rs       # JS execution
 │   ├── stack.rs        # JavaScript stack trace parsing
 │   ├── symbols.rs      # V8 symbol names
 │   └── addon/          # N-API addon management
+│       ├── mod.rs      # Addon loading orchestration
+│       ├── callback.rs # Trace event callback from addon → Rust
+│       ├── embed.rs    # Binary extraction per Node.js version
+│       ├── ffi.rs      # FFI function resolution
+│       └── loader.rs   # Loading strategies (--require, NODE_OPTIONS)
 │
 ├── bash/               # Bash tracing (shell hooks, builtins)
 │   ├── mod.rs          # Public API facade + re-exports
@@ -265,14 +287,12 @@ intercept/src/
 │   ├── hooks.rs        # Hook callbacks (shell_execve, execute_command_internal, etc.)
 │   └── structs.rs      # Bash internal struct layouts
 │
-├── exec/               # Child process monitoring (spawn/fork/exec)
-│   ├── mod.rs
-│   ├── spawn.rs        # posix_spawn/exec hooks, SpawnMonitor
-│   ├── fork.rs         # fork() hooks, ForkMonitor
-│   ├── filter.rs       # Exec command filter (ex: prefix)
-│   └── envvar.rs       # Environment variable deny patterns
-│
-└── syscall/            # Direct syscall detection (scan+patch)
+└── exec/               # Child process monitoring (spawn/fork/exec)
+    ├── mod.rs
+    ├── spawn.rs        # posix_spawn/exec hooks, SpawnMonitor, DYLD re-injection
+    ├── fork.rs         # fork() hooks, ForkMonitor
+    ├── filter.rs       # Exec command filter (ex: prefix)
+    └── envvar.rs       # Environment variable deny patterns
 ```
 
 The `agent/` crate is a thin cdylib wrapper:
@@ -293,8 +313,10 @@ Each language runtime module (`python/`, `nodejs/`, `bash/`, future runtimes) fo
 | `mod.rs` | Public API facade — re-exports, no logic | Required |
 | `detect.rs` | `is_loaded()`, `detected_version()` | Required |
 | `hooks.rs` | Hook callback functions | Required |
+| `format.rs` | Argument formatting + `NetworkInfo` extraction | If applicable |
 | `filters.rs` | FilterManager wrapper: `add_filter`, `check_filter`, `has_filters` | If applicable |
 | `ffi.rs` | FFI type definitions | If applicable |
+| `state.rs` | Initialization state machines | If applicable |
 
 **Standard public API (re-exported from `mod.rs`):**
 
@@ -316,16 +338,20 @@ pub fn is_envvar_monitoring_enabled() -> bool;
 ## Key Types
 
 ```rust
-// intercept/src/protocol/event.rs
+// protocol/src/event.rs
 TraceEvent {
-    timestamp_ns: u64,
-    thread_id: u64,
-    event_type: EventType,  // Enter or Leave
-    function: String,       // e.g., "js:fs.readFileSync" or "py:open"
-    module: String,
-    arguments: Vec<Argument>,
-    native_stack: Vec<NativeFrame>,
-    runtime_stack: Option<RuntimeStack>,
+    hook_type: HookType,            // Native, Python, Nodejs, Exec, EnvVar
+    event_type: EventType,          // Enter or Leave
+    function: String,               // e.g., "fs.readFileSync" or "urllib.request.urlopen"
+    arguments: Vec<Argument>,       // display + raw_value per argument
+    native_stack: Vec<usize>,       // Raw addresses, resolved CLI-side
+    runtime_stack: Option<RuntimeStack>,  // Python/JS stack frames
+    network_info: Option<NetworkInfo>,    // Structured host/port/url/protocol
+    source_file: Option<String>,    // Caller's source file
+    source_line: Option<u32>,       // Caller's source line
+    seq: u64,                       // Monotonic sequence (set by CLI)
+    source: Option<EventSource>,    // Agent PID (set by CLI)
+    category: Option<EventCategory>,// FunctionCall/NetworkAccess/etc. (set by CLI)
 }
 ```
 
@@ -338,13 +364,26 @@ TraceEvent {
 
 Current production deps (excluding internal crates): ~48 crates. Keep it minimal.
 
+## Maintaining This File
+
+**When you add, rename, move, or remove files, modules, or structural components, update the relevant sections of this CLAUDE.md to match.** This includes changes to directory layouts, module trees, key types, conventions, and any other documented structure. Outdated documentation causes confusion and wasted effort.
+
 ## Conventions
 
-### Function Name Prefixes
-- `js:` - JavaScript/Node.js functions (e.g., `js:fs.readFileSync`)
-- `py:` - Python functions (e.g., `py:open`)
-- `ex:` - Executed commands/child processes (e.g., `ex:curl`, `ex:*`)
-- No prefix - Native functions
+### Function Name Format
+
+Function names in `event.function` do **not** carry runtime prefixes. The runtime is identified by `event.hook_type`. Names are stored as:
+
+| Runtime | Format | Examples |
+|---------|--------|----------|
+| Python | `module.qualname` (or bare for `__main__`/builtins) | `urllib.request.urlopen`, `socket.connect`, `calculate`, `open` |
+| Node.js | `module.function` or bare | `fs.readFileSync`, `http.request`, `targetFunc` |
+| Native | Bare C symbol name | `socket`, `connect`, `malloc`, `open` |
+| Exec | Command basename | `curl`, `nc`, `sh` |
+| Bash | Command name | `echo`, `eval`, `source` |
+| EnvVar | Variable name | `PATH`, `HOME`, `SECRET_KEY` |
+
+CLI flags (`--py`, `--js`, `--cm`, `-s`) map to HookType for filtering.
 
 ### Filter Patterns
 Glob patterns are used for function matching:
@@ -420,6 +459,6 @@ Primary path is wrapper preload (`--require`) prepared before spawn.
 
 | Variable | Purpose |
 |----------|---------|
-| `MALWI_URL` | HTTP server URL for agent-CLI communication |
+| `MALWI_URL` | TCP server URL for agent-CLI communication |
 | `MALWI_TEST_BINARIES` | Override path to test binaries (auto-detected from `binaries/` if present) |
 | `RUST_LOG=debug` | Enable debug logging |
