@@ -45,17 +45,16 @@ fn test_nodejs_tracing_captures_user_defined_function() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Check if V8 tracing was initialized (in stderr log output)
-        let v8_initialized = stderr.contains("V8 detected") ||
-                             stderr.contains("V8 JavaScript tracing") ||
-                             stderr.contains("Replaced Runtime_TraceEnter");
-
-        // Should have V8 trace events in stdout (may be <anonymous> or foo)
-        let has_trace_events = stdout.contains("[malwi]");
-
         assert!(
-            v8_initialized || has_trace_events || output.status.success(),
-            "V8 simple function test failed. stdout: {}, stderr: {}",
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
+        );
+
+        // Should have traced the user-defined function foo
+        assert!(
+            stdout.contains("[malwi] foo"),
+            "Expected trace line '[malwi] foo' in output. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });
@@ -79,20 +78,22 @@ fn test_nodejs_tracing_captures_nested_function_calls() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should complete successfully or at least produce trace events
-        let has_traces = stdout.contains("[malwi]");
-
         assert!(
-            output.status.success() || has_traces,
-            "V8 nested calls test failed. stdout: {}, stderr: {}",
-            stdout, stderr
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
         );
 
-        // Should have trace events (function names may be outer/inner or <anonymous>)
+        // Should have traced both outer and inner functions
         assert!(
-            has_traces,
-            "Expected V8 trace events. stdout: {}",
-            stdout
+            stdout.contains("[malwi] outer"),
+            "Expected trace line '[malwi] outer' in output. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+        assert!(
+            stdout.contains("[malwi] inner"),
+            "Expected trace line '[malwi] inner' in output. stdout: {}, stderr: {}",
+            stdout, stderr
         );
     });
 }
@@ -115,11 +116,26 @@ fn test_nodejs_tracing_glob_filter_limits_captured_functions() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Test passes if it completes without crashing
-        // Filter behavior verification is optional since names may be <anonymous>
         assert!(
-            output.status.success() || stdout.contains("[malwi]"),
-            "V8 filter test failed. stdout: {}, stderr: {}",
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
+        );
+
+        // With a "foo*" filter, foo should be traced
+        assert!(
+            stdout.contains("[malwi] foo"),
+            "Expected trace line '[malwi] foo' in output. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // bar should NOT appear as a traced function (filtered out by "foo*")
+        let has_bar_trace = stdout.lines().any(|line| {
+            line.contains("[malwi]") && line.contains(" bar")
+        });
+        assert!(
+            !has_bar_trace,
+            "bar should not be traced with 'foo*' filter. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });
@@ -143,11 +159,15 @@ fn test_nodejs_tracing_captures_recursive_function_calls() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should complete and have trace events
-        let has_traces = stdout.contains("[malwi]");
         assert!(
-            output.status.success() || has_traces,
-            "V8 recursive test failed. stdout: {}, stderr: {}",
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
+        );
+
+        assert!(
+            stdout.contains("[malwi] factorial"),
+            "Expected trace line '[malwi] factorial' in output. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });
@@ -171,11 +191,15 @@ fn test_nodejs_tracing_captures_class_method_calls() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should complete and have trace events
-        let has_traces = stdout.contains("[malwi]");
         assert!(
-            output.status.success() || has_traces,
-            "V8 class methods test failed. stdout: {}, stderr: {}",
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
+        );
+
+        assert!(
+            stdout.contains("[malwi] method"),
+            "Expected trace line '[malwi] method' in output. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });
@@ -200,19 +224,15 @@ fn test_nodejs_tracing_captures_functions_from_file() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should have traced functions
-        let has_traces = stdout.contains("[malwi]");
         assert!(
-            has_traces || output.status.success(),
-            "V8 test file failed. stdout: {}, stderr: {}",
-            stdout, stderr
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
         );
 
-        // Check for the expected output (may be in stdout or captured differently)
-        let has_output = stdout.contains("result:") || stdout.contains("42");
         assert!(
-            has_traces || has_output,
-            "Expected trace events or output. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] testFunc"),
+            "Expected trace line '[malwi] testFunc' in output. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });
@@ -267,11 +287,20 @@ fn test_nodejs_tracing_captures_functions_across_scripts() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should complete and have trace events
-        let has_traces = stdout.contains("[malwi]");
         assert!(
-            output.status.success() || has_traces,
-            "V8 multiple scripts test failed. stdout: {}, stderr: {}",
+            output.status.success(),
+            "Process should exit successfully. stderr: {}",
+            stderr
+        );
+
+        assert!(
+            stdout.contains("[malwi] first"),
+            "Expected trace line '[malwi] first' in output. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+        assert!(
+            stdout.contains("[malwi] second"),
+            "Expected trace line '[malwi] second' in output. stdout: {}, stderr: {}",
             stdout, stderr
         );
     });

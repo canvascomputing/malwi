@@ -264,10 +264,8 @@ mod tests {
                     let w = Arc::clone(&winners);
                     std::thread::spawn(move || {
                         b.wait();
-                        if AddonPhase::advance(
-                            AddonPhase::Uninitialized,
-                            AddonPhase::Initializing,
-                        ) {
+                        if AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Initializing)
+                        {
                             w.fetch_add(1, Ordering::SeqCst);
                         }
                     })
@@ -324,8 +322,7 @@ mod tests {
             // Must be one of the valid states — no corruption
             let current = BytecodePhase::current();
             assert!(
-                current == BytecodePhase::Uninitialized
-                    || current == BytecodePhase::HooksInstalled,
+                current == BytecodePhase::Uninitialized || current == BytecodePhase::HooksInstalled,
                 "unexpected phase: {:?}",
                 current
             );
@@ -359,7 +356,10 @@ mod tests {
         // No global state needed — from_u8 is pure
         assert_eq!(BytecodePhase::from_u8(3), BytecodePhase::HooksInstalled);
         assert_eq!(BytecodePhase::from_u8(100), BytecodePhase::HooksInstalled);
-        assert_eq!(BytecodePhase::from_u8(u8::MAX), BytecodePhase::HooksInstalled);
+        assert_eq!(
+            BytecodePhase::from_u8(u8::MAX),
+            BytecodePhase::HooksInstalled
+        );
     }
 
     #[test]

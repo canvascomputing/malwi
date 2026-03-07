@@ -376,6 +376,11 @@ unsafe extern "C" fn replacement_trace_enter(
     // Extract function name from the V8 stack
     let function_name = extract_function_name(isolate);
 
+    // Consume the addon-handled flag eagerly, before any early returns.
+    // This prevents stale flags from JIT-compiled addon calls (which bypass
+    // the bytecode path entirely) from leaking to the next bytecode call.
+    let addon_handled = should_skip_for_addon(isolate);
+
     // If no js: filters are configured, skip all JS traces
     if !super::has_filters() {
         return result;
@@ -387,8 +392,8 @@ unsafe extern "C" fn replacement_trace_enter(
         return result;
     }
 
-    // Skip if addon is active and this is a CommonJS module function
-    if should_skip_for_addon(isolate) {
+    // Skip if addon already handled this specific call
+    if addon_handled {
         return result;
     }
 
@@ -480,6 +485,9 @@ unsafe extern "C" fn replacement_trace_exit(
     // Extract function name
     let function_name = extract_function_name(isolate);
 
+    // Consume the addon-handled flag eagerly (see replacement_trace_enter).
+    let addon_handled = should_skip_for_addon(isolate);
+
     // If no js: filters are configured, skip all JS traces
     if !super::has_filters() {
         return result;
@@ -491,8 +499,8 @@ unsafe extern "C" fn replacement_trace_exit(
         return result;
     }
 
-    // Skip if addon is active and this is a CommonJS module function
-    if should_skip_for_addon(isolate) {
+    // Skip if addon already handled this specific call
+    if addon_handled {
         return result;
     }
 

@@ -5,7 +5,8 @@
 //! synchronous and can block execution in review mode.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use log::{debug, info, warn};
 
@@ -32,7 +33,9 @@ struct CodegenResult {
 
 type ModifyCodegenFn = unsafe extern "C" fn(*mut c_void, *mut c_void, bool) -> CodegenResult;
 
-static mut ORIGINAL_MODIFY_CODEGEN: Option<ModifyCodegenFn> = None;
+/// Original function pointer, stored with Release before `end_transaction()`,
+/// read with Acquire in the replacement callback on arbitrary V8 threads.
+static ORIGINAL_MODIFY_CODEGEN: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 #[inline]
 fn deny_result() -> CodegenResult {
@@ -100,28 +103,27 @@ pub fn initialize() -> bool {
     };
 
     let interceptor = crate::Interceptor::obtain();
-    let mut original_ptr: *const c_void = std::ptr::null();
+    let mut original_ptr: *const c_void = ptr::null();
 
     interceptor.begin_transaction();
     let result = interceptor.replace(
         addr as *mut c_void,
         replacement_modify_codegen as *const c_void,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
         &mut original_ptr,
     );
-    interceptor.end_transaction();
 
     if let Err(e) = result {
+        interceptor.end_transaction();
         warn!("Failed to install Node codegen gate hook: {:?}", e);
         HOOK_INSTALLED.store(false, Ordering::SeqCst);
         return false;
     }
 
-    unsafe {
-        ORIGINAL_MODIFY_CODEGEN = Some(std::mem::transmute::<*const c_void, ModifyCodegenFn>(
-            original_ptr,
-        ));
-    }
+    // Store the original BEFORE end_transaction() activates the hook.
+    // The replacement reads this with Acquire ordering.
+    ORIGINAL_MODIFY_CODEGEN.store(original_ptr as *mut c_void, Ordering::Release);
+    interceptor.end_transaction();
     info!(
         "Installed Node codegen gate hook on ModifyCodeGenerationFromStrings at {:#x}",
         addr
@@ -134,9 +136,11 @@ unsafe extern "C" fn replacement_modify_codegen(
     source: *mut c_void,
     is_code_like: bool,
 ) -> CodegenResult {
-    let Some(original) = ORIGINAL_MODIFY_CODEGEN else {
+    let original_ptr = ORIGINAL_MODIFY_CODEGEN.load(Ordering::Acquire);
+    if original_ptr.is_null() {
         return deny_result();
-    };
+    }
+    let original: ModifyCodegenFn = std::mem::transmute(original_ptr);
 
     if !super::has_filters() {
         return original(context, source, is_code_like);
