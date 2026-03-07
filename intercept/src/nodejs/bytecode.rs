@@ -12,23 +12,14 @@
 //! - Return value passthrough (TraceExit returns args[0])
 
 use std::ffi::{c_char, c_void, CString};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use log::{debug, error, info, warn};
 
 use super::stack;
+use super::state::BytecodePhase;
 use crate::native;
 use core::ptr;
-
-// =============================================================================
-// STATE
-// =============================================================================
-
-/// Whether Node.js bytecode tracing has been initialized.
-static NODEJS_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// Whether hooks are installed.
-static HOOKS_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // V8 SYMBOL NAMES
@@ -74,38 +65,17 @@ static ORIGINAL_TRACE_ENTER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut())
 /// Acquire ordering in the replacement callback on arbitrary V8 threads.
 static ORIGINAL_TRACE_EXIT: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
-/// Whether V8's PrintF hook is installed (to suppress trace output)
-static PRINTF_HOOKED: AtomicBool = AtomicBool::new(false);
-
 // =============================================================================
 // SKIP LOGIC FOR ADDON DEDUPLICATION
 // =============================================================================
 
-/// Check if we should skip tracing for this function because addon is active.
+/// Check if we should skip tracing because the addon already handled this call.
 ///
-/// When the addon is tracing, we skip V8 internal tracing for CommonJS module
-/// functions to avoid duplicate events. The addon's require hook wraps module
-/// exports, so we'd get duplicate events if we also traced via Runtime_TraceEnter.
-///
-/// We only skip for actual file-based CommonJS modules (contain path separator
-/// and end with .js or .cjs). This allows:
-/// - User functions in --eval (script path is "[eval]", no path separator)
-/// - ESM modules (.mjs files, which addon doesn't handle)
-/// - Node.js internals (node:* paths)
-fn should_skip_for_addon(isolate: *mut std::ffi::c_void) -> bool {
-    if !super::is_addon_tracing_active() {
-        return false;
-    }
-
-    if let Some(script_path) = unsafe { stack::get_current_script_path(isolate) } {
-        // Only skip if it's a real file path (contains path separator)
-        // and is a CommonJS file (.js or .cjs, not .mjs)
-        let is_file_path = script_path.contains('/') || script_path.contains('\\');
-        let is_commonjs = script_path.ends_with(".js") || script_path.ends_with(".cjs");
-        return is_file_path && is_commonjs;
-    }
-
-    false
+/// Uses a per-call thread-local flag set by the addon callback. This avoids
+/// the old process-wide flag which could suppress bytecode events for files
+/// that the addon didn't actually trace (e.g. if the addon event was lost).
+fn should_skip_for_addon(_isolate: *mut std::ffi::c_void) -> bool {
+    super::addon::callback::take_addon_handled()
 }
 
 // =============================================================================
@@ -116,8 +86,8 @@ fn should_skip_for_addon(isolate: *mut std::ffi::c_void) -> bool {
 ///
 /// This must be called BEFORE V8 starts executing JavaScript code.
 pub fn enable_v8_tracing() -> bool {
-    if NODEJS_TRACE_ENABLED.swap(true, Ordering::SeqCst) {
-        return true; // Already initialized
+    if !BytecodePhase::advance(BytecodePhase::Uninitialized, BytecodePhase::TraceEnabled) {
+        return BytecodePhase::current() >= BytecodePhase::TraceEnabled;
     }
 
     debug!("Enabling V8 internal tracing...");
@@ -127,7 +97,7 @@ pub fn enable_v8_tracing() -> bool {
         Ok(addr) => addr,
         Err(e) => {
             warn!("Failed to find SetFlagsFromString: {}", e);
-            NODEJS_TRACE_ENABLED.store(false, Ordering::SeqCst);
+            BytecodePhase::reset_to(BytecodePhase::TraceEnabled, BytecodePhase::Uninitialized);
             return false;
         }
     };
@@ -193,8 +163,8 @@ fn find_v8_symbol(module_name: &str, symbol: &str) -> Option<usize> {
 /// the trace events that V8 generates when --trace is enabled.
 /// Using replace (not attach) suppresses V8's default stdout output.
 pub fn install_trace_hooks() -> bool {
-    if HOOKS_INSTALLED.swap(true, Ordering::SeqCst) {
-        return true; // Already installed
+    if !BytecodePhase::advance(BytecodePhase::TraceEnabled, BytecodePhase::HooksInstalled) {
+        return BytecodePhase::current() >= BytecodePhase::HooksInstalled;
     }
 
     debug!("Installing V8 trace hooks (replace mode)...");
@@ -207,7 +177,7 @@ pub fn install_trace_hooks() -> bool {
         }
         None => {
             warn!("Could not find V8 module");
-            HOOKS_INSTALLED.store(false, Ordering::SeqCst);
+            BytecodePhase::reset_to(BytecodePhase::HooksInstalled, BytecodePhase::TraceEnabled);
             return false;
         }
     };
@@ -290,7 +260,6 @@ pub fn install_trace_hooks() -> bool {
             ptr::null_mut(),
         );
         if result.is_ok() {
-            PRINTF_HOOKED.store(true, Ordering::SeqCst);
             info!("Replaced v8::internal::PrintF at {:#x}", addr);
             hooks_installed += 1;
         } else {
@@ -300,7 +269,6 @@ pub fn install_trace_hooks() -> bool {
             match unsafe { crate::module::rebind_pointers_by_value(&v8_module, addr, replacement) }
             {
                 Ok(n) => {
-                    PRINTF_HOOKED.store(true, Ordering::SeqCst);
                     info!("Rebound {} pointer(s) for PrintF", n);
                     hooks_installed += 1;
                 }
@@ -349,7 +317,7 @@ pub fn install_trace_hooks() -> bool {
         true
     } else {
         warn!("No V8 trace hooks could be installed");
-        HOOKS_INSTALLED.store(false, Ordering::SeqCst);
+        BytecodePhase::reset_to(BytecodePhase::HooksInstalled, BytecodePhase::TraceEnabled);
         false
     }
 }
@@ -604,9 +572,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bytecode_atomics_are_accessible() {
-        // Just verify the state variables are accessible
-        let _enabled = NODEJS_TRACE_ENABLED.load(Ordering::SeqCst);
-        let _installed = HOOKS_INSTALLED.load(Ordering::SeqCst);
+    fn test_bytecode_phase_is_accessible() {
+        let _phase = BytecodePhase::current();
     }
 }

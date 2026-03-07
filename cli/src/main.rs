@@ -1,6 +1,7 @@
 //! Malwi-trace CLI - function tracing tool.
 
 mod agent_server;
+mod agent_tracker;
 mod monitor;
 mod native_spawn;
 mod policy;
@@ -11,8 +12,6 @@ mod symbol_resolver;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -874,22 +873,26 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
             .as_ref()
             .is_some_and(|p| p.has_blocking_sections());
 
-    // Bounded channel for events from WebSocket server tasks to main loop.
+    // Bounded channel for events from TCP wire server tasks to main loop.
     // Bounded channel provides backpressure: when the main task can't keep up
     // (e.g., stdout pipe is full), server tasks block on send, which delays
-    // the WebSocket response, which naturally throttles the agent.
+    // the TCP wire response, which naturally throttles the agent.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(1024);
 
-    // Track active agent connections (shared between server and main loop)
-    let active_agents = Arc::new(AtomicU32::new(0));
-
-    // Create WebSocket server for agent communication
+    // Create TCP wire server for agent communication
     let requested_hooks = hook_configs.clone();
+
+    // Shared state between tracker and server — created before either, since
+    // the server starts before we know root_pid.
+    let active_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let reconnected_pids = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<u32>::new()));
+
     let server = AgentServer::new(
         hook_configs,
         effective_review,
         event_tx,
-        active_agents.clone(),
+        active_count.clone(),
+        reconnected_pids.clone(),
     )?;
 
     let server_url = server.url().to_string();
@@ -908,7 +911,7 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
 
     debug!("Spawned process with PID {}", root_pid);
 
-    // Run WebSocket server as tokio task
+    // Run TCP wire server as tokio task
     let server_handle = tokio::spawn(async move { server.run().await });
 
     // Create monitor client if --monitor flag was passed
@@ -945,22 +948,19 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         None
     };
 
+    let mut tracker = agent_tracker::AgentTracker::new(root_pid as u32, active_count);
     let mut loop_state = EventLoopState {
         output_writer,
-        root_agent_ready: false,
-        process_exit_status: None,
-        all_pids: HashMap::new(),
-        root_dead_since: None,
         symbol_resolver: symbol_resolver::SymbolResolver::new(),
     };
 
     // Main event loop - process events and print output
     let exit_code = run_main_event_loop(
         &mut event_rx,
-        &active_agents,
         &server_handle,
         &loop_config,
         &mut loop_state,
+        &mut tracker,
     )
     .await?;
 
@@ -991,13 +991,9 @@ struct EventLoopConfig<'a> {
     requested_hooks: &'a [HookConfig],
 }
 
-/// Mutable state owned by the event loop.
+/// Mutable state owned by the event loop (non-agent-tracking parts).
 struct EventLoopState {
     output_writer: Option<Box<dyn Write>>,
-    root_agent_ready: bool,
-    all_pids: HashMap<u32, bool>,
-    root_dead_since: Option<std::time::Instant>,
-    process_exit_status: Option<i32>,
     symbol_resolver: symbol_resolver::SymbolResolver,
 }
 
@@ -1027,10 +1023,10 @@ fn try_reap(_pid: i32) -> Option<i32> {
 /// Returns the exit code of the root process if available.
 async fn run_main_event_loop(
     event_rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
-    active_agents: &AtomicU32,
     server_handle: &tokio::task::JoinHandle<()>,
     config: &EventLoopConfig<'_>,
     state: &mut EventLoopState,
+    tracker: &mut agent_tracker::AgentTracker,
 ) -> Result<Option<i32>> {
     let mut process_check = tokio::time::interval(std::time::Duration::from_millis(200));
 
@@ -1038,18 +1034,34 @@ async fn run_main_event_loop(
         tokio::select! {
             // Events delivered instantly (no polling delay)
             Some(event) = event_rx.recv() => {
-                let is_disconnect = matches!(&event, AgentEvent::Disconnected { .. });
-                process_event(event, config, state)?;
-                // Decrement active_agents here (not in the WS handler) so that
+                let disconnect_pid = match &event {
+                    AgentEvent::Disconnected { pid } => Some(*pid),
+                    _ => None,
+                };
+                process_event(event, config, state, tracker)?;
+                // Decrement active_agents here (not in the server handler) so that
                 // all preceding events in the FIFO channel are guaranteed to have
                 // been processed first. This eliminates the shutdown drain race.
-                if is_disconnect {
-                    active_agents.fetch_sub(1, Ordering::SeqCst);
-                    let all_gone = state.root_agent_ready && active_agents.load(Ordering::SeqCst) == 0;
+                if let Some(pid) = disconnect_pid {
+                    let all_gone = tracker.on_agent_disconnected(pid);
                     if all_gone {
                         // Check if root truly exited (vs mid-exec reconnect)
-                        state.process_exit_status = state.process_exit_status.or_else(|| try_reap(config.root_pid));
-                        if state.process_exit_status.is_some() {
+                        tracker.try_reap();
+                        if tracker.should_exit() {
+                            // Drain late events from other TCP connections
+                            // (dual-connection race: flush thread and main agent
+                            // use separate connections dispatched to separate
+                            // tokio tasks, so events may arrive after Disconnected).
+                            let drain_until = tokio::time::Instant::now()
+                                + tokio::time::Duration::from_millis(50);
+                            loop {
+                                match tokio::time::timeout_at(drain_until, event_rx.recv()).await {
+                                    Ok(Some(late_event)) => {
+                                        process_event(late_event, config, state, tracker)?;
+                                    }
+                                    _ => break,
+                                }
+                            }
                             break;
                         }
                         debug!("All agents gone but root {} still alive, awaiting reconnect", config.root_pid);
@@ -1065,20 +1077,14 @@ async fn run_main_event_loop(
                     break;
                 }
                 // Reap root process once per tick
-                if state.process_exit_status.is_none() {
-                    state.process_exit_status = try_reap(config.root_pid);
-                }
-                let root_dead = state.process_exit_status.is_some();
-                // Check if all agents disconnected
-                if active_agents.load(Ordering::SeqCst) == 0 && state.root_agent_ready {
-                    if root_dead {
-                        break;
-                    }
-                    // Root still alive (exec/reconnect case) — handled by root_dead_since timer below
+                tracker.try_reap();
+                // Check if all agents disconnected and root is dead
+                if tracker.should_exit() {
+                    break;
                 }
                 // Check if root process exited without ever connecting
                 // This handles cases like non-existent programs or immediate crashes
-                if !state.root_agent_ready && root_dead {
+                if tracker.root_died_before_connect() {
                     debug!(
                         "Root process {} exited before agent connected",
                         config.root_pid
@@ -1087,22 +1093,14 @@ async fn run_main_event_loop(
                 }
                 // Fallback: if root process has exited but some agents haven't
                 // sent Disconnected (e.g., forked children that died without cleanup),
-                // wait up to 500ms then exit gracefully. With WebSocket EOF detection,
+                // wait up to 500ms then exit gracefully. With TCP wire EOF detection,
                 // this path is rarely needed.
-                if state.root_agent_ready && root_dead {
-                    match state.root_dead_since {
-                        None => {
-                            state.root_dead_since = Some(std::time::Instant::now());
-                        }
-                        Some(since) if since.elapsed() > std::time::Duration::from_millis(500) => {
-                            debug!(
-                                "Root process exited but {} agents still active, exiting after timeout",
-                                active_agents.load(Ordering::SeqCst)
-                            );
-                            break;
-                        }
-                        _ => {}
-                    }
+                if tracker.check_orphan_timeout(500) {
+                    debug!(
+                        "Root process exited but {} agents still active, exiting after timeout",
+                        tracker.active_count_value()
+                    );
+                    break;
                 }
             }
 
@@ -1112,7 +1110,7 @@ async fn run_main_event_loop(
     }
 
     // Use saved exit code if root was already reaped
-    if let Some(code) = state.process_exit_status {
+    if let Some(code) = tracker.exit_status() {
         return Ok(Some(code));
     }
     #[cfg(unix)]
@@ -1150,6 +1148,7 @@ fn process_event(
     event: AgentEvent,
     config: &EventLoopConfig,
     state: &mut EventLoopState,
+    tracker: &mut agent_tracker::AgentTracker,
 ) -> Result<()> {
     match event {
         AgentEvent::Ready {
@@ -1175,10 +1174,8 @@ fn process_event(
             if !modules.is_empty() {
                 state.symbol_resolver.add_module_map(pid, modules);
             }
-            state.all_pids.insert(pid, true);
-            if pid == config.root_pid as u32 {
-                state.root_agent_ready = true;
-
+            tracker.on_agent_ready(pid);
+            if tracker.is_root(pid) {
                 // Print each detected runtime immediately.
                 // Node.js version typically arrives later via RuntimeInfo.
                 if let Some(ref pyv) = python_version {
@@ -1292,7 +1289,8 @@ fn process_event(
         }
         AgentEvent::Disconnected { pid } => {
             debug!("Agent {} disconnected", pid);
-            state.all_pids.remove(&pid);
+            // Note: active_count decrement happens in run_main_event_loop,
+            // not here, to ensure FIFO ordering.
             state.symbol_resolver.remove_pid(pid);
         }
         AgentEvent::ReviewRequest { event, response_tx } => {

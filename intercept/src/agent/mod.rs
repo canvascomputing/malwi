@@ -2,44 +2,32 @@
 //!
 //! Contains the Agent struct, global statics, and the `malwi_agent_init()` entry point.
 
+pub mod lifecycle;
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use lifecycle::AgentPhase;
+
 /// Whether agent debug output is enabled (from MALWI_AGENT_DEBUG env var at init).
 static AGENT_DEBUG: AtomicBool = AtomicBool::new(false);
-
-/// Set after wait_for_configuration() succeeds. Guards DYLD re-injection in
-/// spawn hooks so that runtime-internal posix_spawn calls (e.g. Python 3.14
-/// _osx_support probes during init) don't create phantom agent connections.
-pub static CONFIGURATION_COMPLETE: AtomicBool = AtomicBool::new(false);
 
 /// Check if agent debug output is enabled.
 pub fn agent_debug_enabled() -> bool {
     AGENT_DEBUG.load(Ordering::Relaxed)
 }
 
-// Flag to signal the agent's background thread to shut down.
-// Set by atexit handler when the process is exiting.
-static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-// Ensures /shutdown is only sent once (prevents double-send from both
-// atexit handler and background thread).
-static SHUTDOWN_SENT: AtomicBool = AtomicBool::new(false);
-// Set by the flush thread after it has drained all pending events on shutdown.
-// The atexit handler waits on this before sending /shutdown, ensuring events
-// are flushed before the CLI's active_agents counter is decremented.
-static FLUSH_COMPLETE: AtomicBool = AtomicBool::new(false);
-
 /// Maximum time to wait for the flush thread to drain pending events during
-/// shutdown. With WebSocket, flushes are single-frame writes on a persistent
-/// connection — no TCP setup or HTTP overhead. The flush thread typically
-/// completes in <50ms; this timeout is a safety net for pathological delays.
+/// shutdown. Flushes are single-frame writes on a persistent TCP connection —
+/// no per-message overhead. The flush thread typically completes in <50ms;
+/// this timeout is a safety net for pathological delays.
 const FLUSH_DRAIN_TIMEOUT_MS: u64 = 500;
 
 /// Idle timeout for the flush loop's `recv_timeout`. Controls how quickly the
-/// flush thread notices `SHUTDOWN_REQUESTED` when no events are arriving.
+/// flush thread notices shutdown when no events are arriving.
 /// At 10ms the thread wakes 100 times/second — negligible CPU impact.
 const FLUSH_RECV_TIMEOUT_MS: u64 = 10;
 
@@ -48,7 +36,7 @@ const FLUSH_RECV_TIMEOUT_MS: u64 = 10;
 fn wait_for_flush_complete() {
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(FLUSH_DRAIN_TIMEOUT_MS);
-    while !FLUSH_COMPLETE.load(Ordering::Acquire) {
+    while !AgentPhase::is_flushed() {
         if std::time::Instant::now() >= deadline {
             break;
         }
@@ -60,10 +48,10 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use malwi_protocol::{ChildOperation, HookConfig, HookType, HostChildInfo};
 
+use crate::client::Client;
 #[cfg(unix)]
 use crate::exec::{ForkHandler, ForkMonitor};
 use crate::exec::{SpawnHandler, SpawnInfo, SpawnMonitor};
-use crate::http_client::HttpClient;
 use crate::native::HookManager;
 
 /// Global agent state.
@@ -72,14 +60,14 @@ static AGENT: OnceLock<Agent> = OnceLock::new();
 /// The agent managing hooks and communication.
 pub struct Agent {
     hook_manager: HookManager,
-    /// HTTP client for CLI communication — no mutexes needed.
-    http: HttpClient,
+    /// Wire client for CLI communication — no mutexes needed.
+    client: Client,
     /// Channel sender for batched event delivery.
     event_tx: SyncSender<malwi_protocol::TraceEvent>,
     review_mode: AtomicBool,
     /// True in forked child processes — bypass the dead batching channel.
     forked: AtomicBool,
-    /// Cache of functions already blocked in review mode — skip HTTP round-trip on retry.
+    /// Cache of functions already blocked in review mode — skip wire round-trip on retry.
     /// Keyed by (HookType, function_name) to avoid collisions between runtimes.
     review_blocked_cache: Mutex<HashSet<(HookType, String)>>,
     #[cfg(unix)]
@@ -88,24 +76,24 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Create a new agent connected to the CLI via HTTP.
+    /// Create a new agent connected to the CLI via TCP wire protocol.
     pub fn new(url: &str) -> Result<Self> {
-        let http = HttpClient::new(url);
+        let client = Client::new(url);
         let hook_manager = HookManager::new()?;
 
         // Event batching: hook callbacks push to this channel,
         // a dedicated flush thread drains and sends in batches.
         let (event_tx, event_rx) = mpsc::sync_channel::<malwi_protocol::TraceEvent>(4096);
 
-        // Spawn flush thread with its own HTTP client
-        let flush_http = HttpClient::new(url);
+        // Spawn flush thread with its own wire client
+        let flush_client = Client::new(url);
         std::thread::spawn(move || {
-            event_flush_loop(flush_http, event_rx);
+            event_flush_loop(flush_client, event_rx);
         });
 
         Ok(Self {
             hook_manager,
-            http,
+            client,
             event_tx,
             review_mode: AtomicBool::new(false),
             forked: AtomicBool::new(false),
@@ -127,21 +115,21 @@ impl Agent {
 
         loop {
             // Check if shutdown was requested (e.g., by atexit handler)
-            if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+            if AgentPhase::is_shutting_down() {
                 // Wait for flush thread to drain pending events before sending
                 // /shutdown, otherwise the CLI may exit before displaying them.
                 wait_for_flush_complete();
-                if !SHUTDOWN_SENT.swap(true, Ordering::SeqCst) {
+                if AgentPhase::advance(AgentPhase::Flushed, AgentPhase::ShutdownSent) {
                     info!("Shutdown requested, notifying CLI");
-                    let _ = self.http.shutdown(std::process::id());
+                    let _ = self.client.shutdown(std::process::id());
                 }
                 break;
             }
 
-            // Check if CLI is still connected (WS connection alive)
-            if !self.http.is_connected() {
+            // Check if CLI is still connected (TCP connection alive)
+            if !self.client.is_connected() {
                 // Server unreachable — if we're shutting down, that's expected
-                if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+                if AgentPhase::is_shutting_down() {
                     info!("Server unreachable during shutdown (expected)");
                     break;
                 }
@@ -162,7 +150,7 @@ impl Agent {
             // detected_version() is a single OnceLock read — negligible overhead.
             if nodejs_version_pending {
                 if let Some(v) = crate::nodejs::detected_version() {
-                    let _ = self.http.send_runtime_info(
+                    let _ = self.client.send_runtime_info(
                         std::process::id(),
                         "nodejs",
                         &format!("v{}", v),
@@ -178,7 +166,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Install a hook locally (no HTTP call needed — agent manages hooks directly).
+    /// Install a hook locally (no wire call needed — agent manages hooks directly).
     fn add_hook_local(&self, config: HookConfig) -> Result<()> {
         match config.hook_type {
             HookType::Native => match self.hook_manager.add_hook(&config) {
@@ -245,17 +233,17 @@ impl Agent {
     /// Send a trace event to the CLI.
     ///
     /// Pushes to the batch channel for efficient delivery. Falls back to
-    /// direct HTTP if the channel is full (backpressure) or after fork
+    /// direct send if the channel is full (backpressure) or after fork
     /// (channel receiver thread is dead).
     pub fn send_event(&self, event: malwi_protocol::TraceEvent) -> Result<()> {
         if self.forked.load(Ordering::Acquire) {
-            // Channel receiver is dead after fork — send directly via HTTP.
-            return self.http.send_event(&event);
+            // Channel receiver is dead after fork — send directly.
+            return self.client.send_event(&event);
         }
         match self.event_tx.try_send(event) {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(event)) => self.http.send_event(&event),
-            Err(TrySendError::Disconnected(event)) => self.http.send_event(&event),
+            Err(TrySendError::Full(event)) => self.client.send_event(&event),
+            Err(TrySendError::Disconnected(event)) => self.client.send_event(&event),
         }
     }
 
@@ -265,13 +253,13 @@ impl Agent {
     }
 
     /// Wait for user decision in review mode.
-    /// Blocks on HTTP response — no condvar needed.
+    /// Blocks on wire response — no condvar needed.
     /// Returns the `ReviewDecision` from the CLI.
     pub fn await_review_decision(
         &self,
         event: malwi_protocol::TraceEvent,
     ) -> malwi_protocol::ReviewDecision {
-        // Fast path: already blocked → skip HTTP round-trip
+        // Fast path: already blocked → skip wire round-trip
         let key = (event.hook_type.clone(), event.function.clone());
         {
             let cache = self
@@ -283,7 +271,7 @@ impl Agent {
             }
         }
 
-        match self.http.review(&event) {
+        match self.client.review(&event) {
             Ok(decision) => {
                 if matches!(decision, malwi_protocol::ReviewDecision::Block) {
                     self.review_blocked_cache
@@ -307,8 +295,8 @@ impl Agent {
 
     /// Wait for hook configuration to complete.
     ///
-    /// Makes a single HTTP call to /configure, installs hooks locally,
-    /// then notifies the CLI via /ready.
+    /// Makes a single wire call to get configuration, installs hooks
+    /// locally, then notifies the CLI via a ready message.
     pub fn wait_for_configuration(&self) -> Result<()> {
         info!("Requesting configuration from CLI...");
 
@@ -319,8 +307,8 @@ impl Agent {
             None
         };
 
-        // Single HTTP call to get all configuration
-        let config = self.http.configure(pid, nodejs_version)?;
+        // Single wire call to get all configuration
+        let config = self.client.configure(pid, nodejs_version)?;
 
         // Install hooks locally
         for hook_config in &config.hooks {
@@ -361,7 +349,7 @@ impl Agent {
             hooks.len(),
             modules.len()
         );
-        self.http.ready(
+        self.client.ready(
             pid,
             hooks,
             nodejs_version,
@@ -501,7 +489,7 @@ impl Agent {
         }
 
         let cmd_label = raw_command.unwrap_or("?");
-        match self.http.send_child(&info) {
+        match self.client.send_child(&info) {
             Ok(()) => {
                 if agent_debug_enabled() {
                     eprintln!("[malwi-agent] send_child ok: {}", cmd_label);
@@ -522,7 +510,7 @@ impl Agent {
 /// Collects events from the channel and sends them in batches of up to 64.
 /// Uses `recv_timeout` to coalesce events that arrive close together,
 /// flushing either when the batch is full or after a `FLUSH_RECV_TIMEOUT_MS` idle period.
-fn event_flush_loop(http: HttpClient, rx: mpsc::Receiver<malwi_protocol::TraceEvent>) {
+fn event_flush_loop(client: Client, rx: mpsc::Receiver<malwi_protocol::TraceEvent>) {
     crate::native::suppress_hooks_on_current_thread();
     let mut batch = Vec::with_capacity(64);
     loop {
@@ -538,15 +526,15 @@ fn event_flush_loop(http: HttpClient, rx: mpsc::Receiver<malwi_protocol::TraceEv
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+                if AgentPhase::is_shutting_down() {
                     // Drain remaining events before exiting
                     while let Ok(e) = rx.try_recv() {
                         batch.push(e);
                     }
                     if !batch.is_empty() {
-                        let _ = http.send_events(&batch);
+                        let _ = client.send_events(std::mem::take(&mut batch));
                     }
-                    FLUSH_COMPLETE.store(true, Ordering::Release);
+                    AgentPhase::advance(AgentPhase::ShuttingDown, AgentPhase::Flushed);
                     return;
                 }
                 // No events arrived — continue waiting
@@ -558,29 +546,28 @@ fn event_flush_loop(http: HttpClient, rx: mpsc::Receiver<malwi_protocol::TraceEv
                     batch.push(e);
                 }
                 if !batch.is_empty() {
-                    let _ = http.send_events(&batch);
+                    let _ = client.send_events(std::mem::take(&mut batch));
                 }
-                FLUSH_COMPLETE.store(true, Ordering::Release);
+                AgentPhase::advance(AgentPhase::ShuttingDown, AgentPhase::Flushed);
                 return;
             }
         }
 
         if !batch.is_empty() {
-            let _ = http.send_events(&batch);
-            batch.clear();
+            let _ = client.send_events(std::mem::take(&mut batch));
         }
 
         // Check for shutdown after each batch send, not just on timeout.
         // Without this, the flush thread can't exit promptly when events
         // keep arriving (the Timeout arm is never reached).
-        if SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+        if AgentPhase::is_shutting_down() {
             while let Ok(e) = rx.try_recv() {
                 batch.push(e);
             }
             if !batch.is_empty() {
-                let _ = http.send_events(&batch);
+                let _ = client.send_events(std::mem::take(&mut batch));
             }
-            FLUSH_COMPLETE.store(true, Ordering::Release);
+            AgentPhase::advance(AgentPhase::ShuttingDown, AgentPhase::Flushed);
             return;
         }
     }
@@ -621,11 +608,11 @@ impl ForkHandler for Agent {
         // if the conn mutex was held by a now-dead thread at fork time.
         // No proactive reconnect — the next send() call will lazily
         // establish a fresh connection via ensure_connected().
-        self.http.mark_forked_child();
+        self.client.mark_forked_child();
         // Register with CLI so active_agents is incremented before the parent
         // can exit and decrement it, preventing premature CLI shutdown.
         let _ = self
-            .http
+            .client
             .send_reconnect(unsafe { libc::getppid() } as u32, std::process::id());
     }
 }
@@ -750,6 +737,9 @@ pub extern "C" fn malwi_agent_init() -> i32 {
         }
     }
 
+    // Mark that we're entering configuration phase
+    AgentPhase::advance(AgentPhase::Uninitialized, AgentPhase::Configuring);
+
     match Agent::new(&url) {
         Ok(agent) => {
             info!("Connected to CLI at {}, waiting for configuration...", url);
@@ -760,7 +750,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 return -1;
             }
 
-            CONFIGURATION_COMPLETE.store(true, Ordering::SeqCst);
+            AgentPhase::advance(AgentPhase::Configuring, AgentPhase::Ready);
 
             info!(
                 "Configuration complete, {} hooks installed",
@@ -779,18 +769,18 @@ pub extern "C" fn malwi_agent_init() -> i32 {
             extern "C" fn shutdown_handler() {
                 // Suppress hooks on the main thread during shutdown.
                 // After main() returns, all remaining mallocs are agent
-                // bookkeeping (HTTP, cleanup) — not meaningful to the user.
+                // bookkeeping (wire protocol, cleanup) — not meaningful to the user.
                 crate::native::suppress_hooks_on_current_thread();
-                SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+                AgentPhase::request_shutdown();
                 // Wait for flush thread to drain pending events BEFORE we
                 // decrement the CLI's active_agents counter via /shutdown.
                 // Bounded timeout in case flush thread is dead (e.g., in
                 // forked children where threads don't survive fork).
                 wait_for_flush_complete();
                 // Send shutdown (only once across atexit + bg thread)
-                if !SHUTDOWN_SENT.swap(true, Ordering::SeqCst) {
+                if AgentPhase::advance(AgentPhase::Flushed, AgentPhase::ShutdownSent) {
                     if let Some(agent) = Agent::get() {
-                        let _ = agent.http.shutdown(std::process::id());
+                        let _ = agent.client.shutdown(std::process::id());
                     }
                 }
             }
@@ -956,19 +946,18 @@ fn generate_wrapper_script(addon_dir: &std::path::Path) -> String {
             addon.enableTracing();
         }}
 
-        // Install require hook only when JS filters are configured.
-        // Filters are set by the CLI via --js flag and passed through Rust agent state.
-        // Without this guard, the require hook breaks npm's module loading.
+        // Install require hook unconditionally so late-arriving filters
+        // (hook config received after wrapper execution) still take effect.
+        if (addon.installRequireHook) {{
+            addon.installRequireHook(Module);
+        }}
+
+        // Forward any pre-registered filters to the addon
         if (addon.getFilters) {{
             const filters = addon.getFilters();
-            if (filters.length > 0) {{
-                if (addon.installRequireHook) {{
-                    addon.installRequireHook(Module);
-                }}
-                for (const f of filters) {{
-                    if (addon.addFilter) {{
-                        addon.addFilter(f.pattern, f.captureStack);
-                    }}
+            for (const f of filters) {{
+                if (addon.addFilter) {{
+                    addon.addFilter(f.pattern, f.captureStack);
                 }}
             }}
         }}

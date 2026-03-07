@@ -28,20 +28,20 @@ const INIT_MAX_RETRIES: u32 = 5;
 /// Maintains a persistent TCP connection. The connection is
 /// wrapped in a `ForkSafeMutex` to allow shared access from multiple
 /// threads and safe operation after `fork()`.
-pub struct HttpClient {
+pub struct Client {
     addr: String,
     conn: ForkSafeMutex<Option<TcpStream>>,
     next_review_id: AtomicU32,
     codec: BinaryCodec,
 }
 
-impl HttpClient {
+impl Client {
     /// Create a new client pointing at the CLI server.
     pub fn new(url: &str) -> Self {
         // Extract host:port from URL like "http://127.0.0.1:12345"
         let addr = url.strip_prefix("http://").unwrap_or(url).to_string();
 
-        HttpClient {
+        Client {
             addr,
             conn: ForkSafeMutex::new(None),
             next_review_id: AtomicU32::new(1),
@@ -99,6 +99,9 @@ impl HttpClient {
     }
 
     /// Send a fire-and-forget message.
+    ///
+    /// On write failure the broken connection is dropped so the next call
+    /// reconnects via `ensure_connected()` instead of writing to a dead stream.
     fn send(&self, msg: &AgentMessage) -> Result<()> {
         let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
@@ -110,12 +113,17 @@ impl HttpClient {
 
         let mut buf = Vec::new();
         self.codec.encode_agent_msg(msg, &mut buf);
-        write_frame(stream, &buf)?;
-        stream.flush()?;
+        if let Err(e) = write_frame(stream, &buf).and_then(|()| stream.flush()) {
+            *lock = None;
+            return Err(e.into());
+        }
         Ok(())
     }
 
     /// Send a message and wait for a response.
+    ///
+    /// On write/read failure the broken connection is dropped so the next
+    /// call reconnects instead of writing to a dead stream.
     fn send_and_recv(&self, msg: &AgentMessage) -> Result<CliMessage> {
         let _guard = crate::native::HookSuppressGuard::new();
         self.ensure_connected()?;
@@ -128,12 +136,19 @@ impl HttpClient {
         // Send
         let mut buf = Vec::new();
         self.codec.encode_agent_msg(msg, &mut buf);
-        write_frame(stream, &buf)?;
-        stream.flush()?;
+        if let Err(e) = write_frame(stream, &buf).and_then(|()| stream.flush()) {
+            *lock = None;
+            return Err(e.into());
+        }
 
         // Read response
-        let payload = read_frame(stream)?;
-        Ok(self.codec.decode_cli_msg(&payload)?)
+        match read_frame(stream) {
+            Ok(payload) => Ok(self.codec.decode_cli_msg(&payload)?),
+            Err(e) => {
+                *lock = None;
+                Err(e.into())
+            }
+        }
     }
 
     /// Request configuration from the CLI.
@@ -179,8 +194,10 @@ impl HttpClient {
     }
 
     /// Send a batch of trace events.
-    pub fn send_events(&self, events: &[TraceEvent]) -> Result<()> {
-        self.send(&AgentMessage::Events(events.to_vec()))
+    ///
+    /// Takes ownership of the batch to avoid cloning on the hot path.
+    pub fn send_events(&self, events: Vec<TraceEvent>) -> Result<()> {
+        self.send(&AgentMessage::Events(events))
     }
 
     /// Send a child process notification.

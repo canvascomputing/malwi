@@ -51,10 +51,10 @@ struct SharedState {
     /// Suppresses duplicate exec events caused by libc PATH iteration.
     /// Key: (child_pid, command_basename).
     seen_events: Mutex<HashSet<(u32, String)>>,
-    /// PIDs that connected via reconnect. Used to avoid double-counting
-    /// active_agents when a reconnected child does exec (which triggers a second
-    /// configure for the same PID from the fresh agent).
-    reconnected_pids: Mutex<HashSet<u32>>,
+    /// PIDs that connected via reconnect. Shared with AgentTracker to avoid
+    /// double-counting active_agents when a reconnected child does exec
+    /// (which triggers a second configure for the same PID from the fresh agent).
+    reconnected_pids: Arc<Mutex<HashSet<u32>>>,
 }
 
 /// Binary wire server for agent communication.
@@ -125,6 +125,7 @@ impl AgentServer {
         review_mode: bool,
         event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
         active_agents: Arc<AtomicU32>,
+        reconnected_pids: Arc<Mutex<HashSet<u32>>>,
     ) -> Result<Self> {
         let listener = create_reuse_addr_listener()?;
         let port = listener.local_addr()?.port();
@@ -136,7 +137,7 @@ impl AgentServer {
             event_tx,
             active_agents,
             seen_events: Mutex::new(HashSet::new()),
-            reconnected_pids: Mutex::new(HashSet::new()),
+            reconnected_pids,
         });
 
         Ok(Self {

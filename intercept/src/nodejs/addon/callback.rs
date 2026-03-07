@@ -4,13 +4,25 @@
 //! The addon calls this function with a direct struct pointer for efficient event processing.
 
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::exec::envvar as envvar_filter;
 use crate::nodejs::ffi::NodejsTraceEventData;
 
-/// Set on first callback invocation to mark addon tracing as active.
-static CALLBACK_SEEN: AtomicBool = AtomicBool::new(false);
+// Per-call flag: set after the addon handles a trace event, cleared by
+// `take_addon_handled()` in the bytecode hook to avoid duplicate events.
+std::thread_local! {
+    static ADDON_HANDLED_CURRENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark that the addon has handled the current call (set by addon callback).
+pub fn mark_addon_handled() {
+    ADDON_HANDLED_CURRENT.with(|c| c.set(true));
+}
+
+/// Check and clear the addon-handled flag (consumed by bytecode dedup).
+pub fn take_addon_handled() -> bool {
+    ADDON_HANDLED_CURRENT.with(|c| c.replace(false))
+}
 
 /// Helper to extract a string from a C pointer with length.
 /// Returns an empty string if the pointer is null or length is unreasonable.
@@ -36,11 +48,6 @@ unsafe fn extract_string(ptr: *const c_char, len: u32) -> String {
 pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEventData) -> i32 {
     if event_data.is_null() {
         return 1; // Allow if no data
-    }
-
-    // Mark addon tracing as active on first callback (signals bytecode dedup)
-    if !CALLBACK_SEEN.swap(true, Ordering::Relaxed) {
-        super::set_addon_tracing_active(true);
     }
 
     let (event, is_enter) = unsafe {
@@ -116,15 +123,14 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
     // Only check review mode for ENTER events (can't block Leave events)
     if agent.is_review_mode() && is_enter {
         // await_review_decision sends the event and waits for user decision
-        return if agent.await_review_decision(event).is_allowed() {
-            1
-        } else {
-            0
-        };
+        let allowed = agent.await_review_decision(event).is_allowed();
+        mark_addon_handled();
+        return if allowed { 1 } else { 0 };
     }
 
     // Normal mode: just send the event
     let _ = agent.send_event(event);
+    mark_addon_handled();
     1 // Allow execution
 }
 

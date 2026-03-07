@@ -21,7 +21,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, warn};
 
@@ -217,13 +216,6 @@ mod embedded {
     pub static NODE24: &[u8] = &[];
     pub static NODE25: &[u8] = &[];
 }
-
-// =============================================================================
-// STATE
-// =============================================================================
-
-/// Whether the addon has been loaded (via FFI, not JS)
-static ADDON_LOADED: AtomicBool = AtomicBool::new(false);
 
 /// Cached addon path after extraction
 static ADDON_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -625,14 +617,9 @@ pub fn get_addon_path() -> Option<PathBuf> {
     Some(path)
 }
 
-/// Check if the addon is loaded.
+/// Check if the addon is loaded (FFI functions resolved).
 pub fn is_addon_loaded() -> bool {
-    ADDON_LOADED.load(Ordering::SeqCst)
-}
-
-/// Mark the addon as loaded (called by hooks.rs after successful FFI init).
-pub fn set_addon_loaded(loaded: bool) {
-    ADDON_LOADED.store(loaded, Ordering::SeqCst);
+    super::ADDON_FFI.get().is_some()
 }
 
 /// Load the addon - DEPRECATED, use filters::initialize() instead.

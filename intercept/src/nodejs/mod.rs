@@ -67,6 +67,7 @@ pub mod ffi;
 pub mod filters;
 pub mod script;
 pub mod stack;
+pub mod state;
 pub mod symbols;
 
 // Re-export commonly used items from addon
@@ -76,9 +77,10 @@ pub use addon::embed::{is_addon_loaded, load_addon};
 pub use detect::{detected_version, is_loaded};
 
 // Re-export from filters (main coordination layer)
-pub use filters::{
-    add_filter, check_filter, get_thread_id, has_filters, initialize, is_addon_tracing_active,
-};
+pub use filters::{add_filter, check_filter, get_thread_id, has_filters, initialize};
+
+// Re-export state machines
+pub use state::{AddonPhase, BytecodePhase};
 
 // =============================================================================
 // PUBLIC API

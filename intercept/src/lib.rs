@@ -28,8 +28,8 @@ pub use types::InvocationContext;
 // Agent runtime modules
 pub mod agent;
 pub mod bash;
+pub mod client;
 pub mod exec;
-pub mod http_client;
 pub mod native;
 pub mod nodejs;
 pub mod python;
@@ -38,10 +38,8 @@ pub mod tracing;
 #[cfg(test)]
 mod test_utils;
 
-pub use agent::{
-    agent_debug_enabled, malwi_agent_init, malwi_prepare_node_options, Agent,
-    CONFIGURATION_COMPLETE,
-};
+pub use agent::lifecycle::AgentPhase;
+pub use agent::{agent_debug_enabled, malwi_agent_init, malwi_prepare_node_options, Agent};
 pub use tracing::{StackCapturer, StackFrame};
 
 /// Whether hook debug output is enabled (from MALWI_HOOK_DEBUG env var at init).

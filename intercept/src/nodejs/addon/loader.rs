@@ -14,32 +14,11 @@
 
 use std::ffi::CString;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, warn};
 
 use super::{malwi_nodejs_trace_callback, resolve_addon_ffi, AddonFfi, ADDON_FFI};
-
-// =============================================================================
-// SHARED STATE
-// =============================================================================
-
-/// Whether addon-based tracing is active.
-static ADDON_TRACING_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Check if addon-based tracing is currently active.
-///
-/// Returns true if the addon has been loaded and tracing is enabled.
-/// This is used by bytecode tracing to avoid duplicate events for module functions
-/// that are already being traced by the addon's require hook.
-pub fn is_addon_tracing_active() -> bool {
-    ADDON_TRACING_ACTIVE.load(Ordering::SeqCst)
-}
-
-/// Set addon tracing as active.
-pub fn set_addon_tracing_active(active: bool) {
-    ADDON_TRACING_ACTIVE.store(active, Ordering::SeqCst);
-}
+use crate::nodejs::state::AddonPhase;
 
 /// Forward existing filters to the addon.
 pub fn forward_filters_to_addon(ffi: &AddonFfi, filters: &[crate::tracing::Filter]) {
@@ -79,7 +58,7 @@ pub fn activate_addon_tracing(addon_path: &Path) -> bool {
     }
 
     let _ = ADDON_FFI.set(ffi);
-    set_addon_tracing_active(true);
+    AddonPhase::advance(AddonPhase::Initializing, AddonPhase::Active);
 
     // Forward existing filters
     if let Some(stored_ffi) = ADDON_FFI.get() {
@@ -142,19 +121,18 @@ fn generate_wrapper_script(addon_dir: &Path) -> String {
             addon.enableTracing();
         }}
 
-        // Install require hook only when JS filters are configured.
-        // Filters are set by the CLI via --js flag and passed through Rust agent state.
-        // Without this guard, the require hook breaks npm's module loading.
+        // Install require hook unconditionally so late-arriving filters
+        // (hook config received after wrapper execution) still take effect.
+        if (addon.installRequireHook) {{
+            addon.installRequireHook(Module);
+        }}
+
+        // Forward any pre-registered filters to the addon
         if (addon.getFilters) {{
             const filters = addon.getFilters();
-            if (filters.length > 0) {{
-                if (addon.installRequireHook) {{
-                    addon.installRequireHook(Module);
-                }}
-                for (const f of filters) {{
-                    if (addon.addFilter) {{
-                        addon.addFilter(f.pattern, f.captureStack);
-                    }}
+            for (const f of filters) {{
+                if (addon.addFilter) {{
+                    addon.addFilter(f.pattern, f.captureStack);
                 }}
             }}
         }}

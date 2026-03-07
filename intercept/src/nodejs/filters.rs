@@ -14,20 +14,13 @@
 //! - Addon is injected via Script::Run hook when Node.js starts executing JavaScript
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
 use log::debug;
 
 use super::addon;
+use super::state::AddonPhase;
 use crate::tracing::FilterManager;
-
-// =============================================================================
-// STATE
-// =============================================================================
-
-/// Whether Node.js tracing has been initialized.
-static NODEJS_TRACING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // FILTERS
@@ -80,15 +73,6 @@ pub fn get_thread_id() -> u64 {
 }
 
 // =============================================================================
-// RE-EXPORTS
-// =============================================================================
-
-/// Check if addon-based tracing is currently active.
-pub fn is_addon_tracing_active() -> bool {
-    addon::is_addon_tracing_active()
-}
-
-// =============================================================================
 // INITIALIZATION
 // =============================================================================
 
@@ -96,14 +80,14 @@ pub fn is_addon_tracing_active() -> bool {
 ///
 /// Uses NODE_OPTIONS --require preloading.
 pub fn initialize() -> bool {
-    if NODEJS_TRACING_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return true; // Already initialized
+    if !AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Initializing) {
+        return AddonPhase::current() >= AddonPhase::Initializing;
     }
 
     let result = addon::node_options_initialize();
 
     if !result {
-        NODEJS_TRACING_INITIALIZED.store(false, Ordering::SeqCst);
+        AddonPhase::reset_to(AddonPhase::Initializing, AddonPhase::Uninitialized);
     }
 
     result
