@@ -377,6 +377,25 @@ Node.js addon may not be ready at agent load time. Use deferred init pattern:
 - In-process fallback that sets `NODE_OPTIONS` is too late for the current process (only affects descendants)
 - SIP/restricted binaries on macOS can strip preload env vars; resolve shebangs and avoid restricted launchers
 
+### Test Naming
+All test functions use snake_case and follow this structure:
+
+```
+test_<subject>_<scenario>_<expected_outcome>
+```
+
+- **Subject**: What's being tested — the module, function, or feature (e.g., `python_tracing`, `format_read`, `policy_block`)
+- **Scenario**: The specific input or condition (e.g., `glob_pattern`, `null_addr`, `with_t_flag`)
+- **Expected outcome**: What should happen (e.g., `is_benign`, `returns_network_info`, `blocked`, `allowed`)
+
+Guidelines:
+- Name tests after **behavior**, not implementation details (no internal engine numbers, stage names, etc.)
+- Include the expected outcome when the test verifies a specific result (e.g., `_is_suspicious`, `_returns_none`, `_blocked`)
+- For pure formatting tests, describe what's displayed: `test_format_read_displays_fd_buf_count`
+- For NetworkInfo extraction tests, use `_returns_network_info` suffix
+- Integration tests include the runtime prefix: `test_python_*`, `test_nodejs_*`, `test_bash_*`, `test_native_*`
+- Policy tests include the policy name: `test_pip_install_*`, `test_air_gap_*`, `test_default_security_*`
+
 ## Node Addon (node-addon/)
 
 C++ N-API addon that wraps JavaScript functions:

@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_read() {
+    fn test_format_read_displays_fd_buf_count() {
         let mut args = make_args(&[5, 0x12345678, 1024]);
         format_read(&mut args);
 
@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_close() {
+    fn test_format_close_displays_fd() {
         let mut args = make_args(&[42]);
         format_close(&mut args);
 
@@ -1492,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_open_flags() {
+    fn test_format_open_flags_displays_symbolic_names() {
         // O_RDONLY
         assert!(format_open_flags(0).contains("O_RDONLY"));
 
@@ -1504,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_access_mode() {
+    fn test_format_access_mode_displays_rwx_flags() {
         assert_eq!(format_access_mode(0), "F_OK");
         assert!(format_access_mode(4).contains("R_OK"));
         assert!(format_access_mode(2).contains("W_OK"));
@@ -1513,19 +1513,19 @@ mod tests {
     }
 
     #[test]
-    fn test_format_socket_domain() {
+    fn test_format_socket_domain_displays_af_names() {
         assert_eq!(format_socket_domain(1), "AF_UNIX");
         assert_eq!(format_socket_domain(2), "AF_INET");
     }
 
     #[test]
-    fn test_format_socket_type() {
+    fn test_format_socket_type_displays_sock_names() {
         assert!(format_socket_type(1).contains("SOCK_STREAM"));
         assert!(format_socket_type(2).contains("SOCK_DGRAM"));
     }
 
     #[test]
-    fn test_format_mmap_prot() {
+    fn test_format_mmap_prot_displays_protection_flags() {
         assert_eq!(format_mmap_prot(0), "PROT_NONE");
         assert!(format_mmap_prot(0x1).contains("PROT_READ"));
         assert!(format_mmap_prot(0x3).contains("PROT_READ"));
@@ -1533,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate() {
+    fn test_truncate_long_string_adds_ellipsis() {
         // Uses shared truncate from tracing::format - max is total output length
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world", 8), "hello..."); // 8 = 5 chars + 3 for "..."
@@ -1544,7 +1544,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_format_listen() {
+    fn test_format_listen_displays_fd_and_backlog() {
         let mut args = make_args(&[3, 128]);
         format_listen(&mut args);
 
@@ -1553,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_shutdown() {
+    fn test_format_shutdown_displays_fd_and_how() {
         let mut args = make_args(&[3, 2]);
         format_shutdown(&mut args);
 
@@ -1570,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_send() {
+    fn test_format_send_displays_fd_len_flags() {
         // Use NULL buffer (0) to avoid segfault from read_buffer_preview
         let mut args = make_args(&[3, 0, 128, 0]);
         format_send(&mut args);
@@ -1595,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_recv() {
+    fn test_format_recv_displays_fd_len_flags() {
         let mut args = make_args(&[3, 0x12345678, 4096, 0]);
         format_recv(&mut args);
 
@@ -1620,7 +1620,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_format_pread() {
+    fn test_format_pread_displays_fd_count_offset() {
         let mut args = make_args(&[3, 0x12345678, 1024, 0]);
         format_pread(&mut args);
 
@@ -1631,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_lseek() {
+    fn test_format_lseek_displays_fd_offset_whence() {
         let mut args = make_args(&[3, 100, 0]);
         format_lseek(&mut args);
 
@@ -2016,7 +2016,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_format_getaddrinfo() {
+    fn test_format_getaddrinfo_displays_host_and_service() {
         let host = std::ffi::CString::new("pypi.org").unwrap();
         let svc = std::ffi::CString::new("443").unwrap();
         let mut args = make_args(&[

