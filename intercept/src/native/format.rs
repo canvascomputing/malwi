@@ -6,7 +6,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use crate::{Argument, NetworkInfo};
+use crate::{Argument, NetworkInfo, Protocol};
 
 use crate::tracing::format::truncate;
 
@@ -74,10 +74,7 @@ pub fn format_native_arguments(function: &str, arguments: &mut [Argument]) -> Op
             format_path_arg(arguments, 0);
             None
         }
-        "socket" | "_socket" => {
-            format_socket(arguments);
-            None
-        }
+        "socket" | "_socket" => format_socket(arguments),
         "connect" | "_connect" => format_connect(arguments),
         "bind" | "_bind" => format_bind(arguments),
         "sendto" | "_sendto" => format_sendto(arguments),
@@ -396,12 +393,27 @@ fn format_mkdir(args: &mut [Argument]) {
 }
 
 /// Format socket(domain, type, protocol) arguments.
-fn format_socket(args: &mut [Argument]) {
+fn format_socket(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 3 {
         args[0].display = Some(format_socket_domain(args[0].raw_value as i32));
-        args[1].display = Some(format_socket_type(args[1].raw_value as i32));
+        let sock_type = args[1].raw_value as i32;
+        args[1].display = Some(format_socket_type(sock_type));
         args[2].display = Some(format!("protocol={}", args[2].raw_value));
+        // Populate NetworkInfo with protocol (TCP/UDP) from socket type
+        let base_type = sock_type & 0xf;
+        let protocol = match base_type {
+            1 => Some(Protocol::Tcp),  // SOCK_STREAM
+            2 => Some(Protocol::Udp),  // SOCK_DGRAM
+            _ => None,
+        };
+        if protocol.is_some() {
+            return Some(NetworkInfo {
+                protocol,
+                ..Default::default()
+            });
+        }
     }
+    None
 }
 
 /// Format connect(fd, addr, addrlen) arguments.

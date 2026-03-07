@@ -173,14 +173,41 @@ pub unsafe fn get_code_argcount(code: *mut c_void) -> usize {
 /// For example, `os.getpid.__module__` returns `"posix"` (the C extension), not `"os"`.
 fn c_module_alias(module: &str) -> Option<&'static str> {
     match module {
+        // OS interface
         "posix" | "nt" => Some("os"),
+        // Networking
         "_socket" => Some("socket"),
+        "_ssl" => Some("ssl"),
+        // Serialization
         "_json" => Some("json"),
         "_pickle" => Some("pickle"),
         "_csv" => Some("csv"),
-        "_ssl" => Some("ssl"),
+        // Hashing & crypto
         "_hashlib" => Some("hashlib"),
+        // I/O
         "_io" => Some("io"),
+        // Data structures
+        "_struct" => Some("struct"),
+        "_collections" => Some("collections"),
+        "_bisect" => Some("bisect"),
+        "_heapq" => Some("heapq"),
+        // Functional programming
+        "_functools" => Some("functools"),
+        "_operator" => Some("operator"),
+        // Compression
+        "_zlib" => Some("zlib"),
+        "_bz2" => Some("bz2"),
+        "_lzma" => Some("lzma"),
+        // Database
+        "_sqlite3" => Some("sqlite3"),
+        // System
+        "_signal" => Some("signal"),
+        // Date/time
+        "_datetime" => Some("datetime"),
+        // String processing
+        "_string" => Some("string"),
+        // Regular expressions
+        "_sre" => Some("re"),
         _ => None,
     }
 }

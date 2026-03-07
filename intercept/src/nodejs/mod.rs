@@ -65,6 +65,7 @@ pub mod codegen;
 mod detect;
 pub mod ffi;
 pub mod filters;
+pub mod format;
 pub mod script;
 pub mod stack;
 pub mod state;

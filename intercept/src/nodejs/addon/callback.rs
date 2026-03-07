@@ -104,6 +104,13 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
             (None, None)
         };
 
+        // Extract NetworkInfo from arguments for networking functions
+        let network_info = if is_enter {
+            crate::nodejs::format::format_nodejs_arguments(&function, &arguments)
+        } else {
+            None
+        };
+
         // Build event using EventBuilder
         let builder = if is_enter {
             crate::tracing::event::js_enter(&function).arguments(arguments)
@@ -111,7 +118,10 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
             crate::tracing::event::js_leave(&function, return_value)
         };
 
-        let event = builder.source_location(caller_file, caller_line).build();
+        let event = builder
+            .network_info(network_info)
+            .source_location(caller_file, caller_line)
+            .build();
 
         (event, is_enter)
     };

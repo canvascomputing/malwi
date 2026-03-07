@@ -137,7 +137,10 @@ pub fn envvar_enter(var_name: &str) -> EventBuilder {
 ///
 /// Builds an event for review mode when a child process is about to be spawned/exec'd.
 /// The command name should be the basename of the executable.
-/// Arguments are formatted from the argv array.
+///
+/// Arguments include the full argv (argv[0] is the program name).
+/// `format_event_display_name()` in the CLI skips argv[0] when formatting
+/// for display, since the command name is already shown separately.
 pub fn exec_event(command: &str, argv: Option<Vec<String>>) -> EventBuilder {
     let args: Vec<Argument> = argv
         .unwrap_or_default()

@@ -1434,12 +1434,60 @@ pub fn display_name(func: &str) -> &str {
     func
 }
 
+/// Unwrap a shell-wrapped command for display.
+///
+/// When `sh -c "curl -s http://..."` is exec'd, the policy engine unwraps
+/// this to function="curl" with the original argv still containing the shell
+/// args. This function detects the shell wrapper and returns the inner
+/// command string for clean display.
+fn unwrap_shell_display(argv0: &str, args: &[&str]) -> Option<String> {
+    const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+    let basename = Path::new(argv0).file_name()?.to_str()?;
+    if !SHELLS.contains(&basename) {
+        return None;
+    }
+    let c_idx = args.iter().position(|a| *a == "-c")?;
+    let cmd_str = args.get(c_idx + 1)?;
+    if cmd_str.is_empty() {
+        return None;
+    }
+    // Replace the command path with its basename, keep the rest
+    let first_space = cmd_str.find(char::is_whitespace);
+    let cmd_path = match first_space {
+        Some(idx) => &cmd_str[..idx],
+        None => cmd_str,
+    };
+    let cmd_basename = Path::new(cmd_path).file_name()?.to_str()?;
+    match first_space {
+        Some(idx) => Some(format!("{}{}", cmd_basename, &cmd_str[idx..])),
+        None => Some(cmd_basename.to_string()),
+    }
+}
+
 /// Format a trace event for display in denied/warning messages.
 /// For exec events: "cmd arg1 arg2" style.
 /// For other events: just the function name.
 fn format_event_display_name(event: &TraceEvent) -> String {
     if event.hook_type == HookType::Exec {
         let name = display_name(&event.function);
+
+        // Collect full argv for shell-wrapper detection
+        let argv: Vec<&str> = event
+            .arguments
+            .iter()
+            .filter_map(|a| a.display.as_deref())
+            .collect();
+
+        // If the command was unwrapped from a shell wrapper (sh -c "cmd args"),
+        // display the inner command string instead of the confusing wrapper args.
+        if argv.len() >= 3 {
+            let args_ref: Vec<&str> = argv[1..].iter().copied().collect();
+            if let Some(unwrapped) = unwrap_shell_display(&argv[0], &args_ref) {
+                return unwrapped;
+            }
+        }
+
+        // Not shell-wrapped — skip argv[0] and format remaining args
         let start = 1.min(event.arguments.len());
         let args: Vec<String> = event.arguments[start..]
             .iter()

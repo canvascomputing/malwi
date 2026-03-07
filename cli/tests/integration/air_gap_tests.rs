@@ -75,8 +75,8 @@ fn test_air_gap_bypass_attempts() {
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         assert!(
-            stdout.contains("denied: curl -c 'curl -s http://127.0.0.1:4444'"),
-            "curl -c 'curl -s http://127.0.0.1:4444' should be denied by air-gap command policy.\nstdout:\n{}",
+            stdout.contains("denied: curl -s http://127.0.0.1:4444"),
+            "curl -s http://127.0.0.1:4444 should be denied by air-gap command policy.\nstdout:\n{}",
             stdout,
         );
     });
