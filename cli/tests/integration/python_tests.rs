@@ -27,15 +27,20 @@ fn test_python_tracing_captures_single_function_call() {
             "./test_python.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let combined = format!("{}\n{}", stdout, stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should have traced the calculate function
+        // Should have traced the calculate function with arguments and source
         assert!(
-            combined.contains("calculate") || output.status.success(),
-            "Expected calculate trace. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] calculate(10, 20)"),
+            "Expected [malwi] calculate(10, 20) trace. stdout: {}, stderr: {}",
             stdout, stderr
+        );
+        assert!(
+            stdout.contains("test_python.py:"),
+            "Expected test_python.py source location. stdout: {}",
+            stdout
         );
     });
 }
@@ -58,8 +63,9 @@ fn test_python_tracing_glob_matches_all_functions() {
             "./test_python.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
         // Should complete without crashing
         assert!(
@@ -68,10 +74,15 @@ fn test_python_tracing_glob_matches_all_functions() {
             stdout, stderr
         );
 
-        // Verify that glob patterns matched at least some functions
+        // Verify that glob patterns matched the calculate function with arguments and source
         assert!(
-            stdout.contains("calculate") || stdout.contains("nested_"),
-            "Expected glob patterns to match functions. stdout: {}",
+            stdout.contains("[malwi] calculate(10, 20)"),
+            "Expected [malwi] calculate(10, 20) from glob pattern. stdout: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("test_python.py:"),
+            "Expected test_python.py source location. stdout: {}",
             stdout
         );
     });
@@ -189,14 +200,20 @@ calculate(1, 2)
             "/tmp/test_py_prefix.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Check that the function name is present in trace output
+        // Check that the function name appears in a trace line with arguments and source
         assert!(
-            stdout.contains("calculate"),
-            "Expected calculate in trace output. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] calculate(1, 2)"),
+            "Expected [malwi] calculate(1, 2) in trace output. stdout: {}, stderr: {}",
             stdout, stderr
+        );
+        assert!(
+            stdout.contains("test_py_prefix.py:"),
+            "Expected test_py_prefix.py source location. stdout: {}",
+            stdout
         );
     });
 }
@@ -275,10 +292,10 @@ fn test_python_stack_trace_included_with_t_flag() {
             stdout
         );
 
-        // Should have Python-style stack frames (function (file.py:line))
+        // Should have Python-style stack frame for the traced function
         assert!(
-            has_python_stack_frame(&stdout, "nested_inner") || has_python_stack_frame(&stdout, "nested_outer"),
-            "Expected Python stack frame format. stdout: {}",
+            has_python_stack_frame(&stdout, "nested_inner"),
+            "Expected Python stack frame for nested_inner. stdout: {}",
             stdout
         );
     });
@@ -415,14 +432,20 @@ print(f"Result: {result}")
             "/tmp/test_py_calc.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Check that we traced calculate with arguments (10, 20)
+        // Check that we traced calculate with arguments and source
         assert!(
-            stdout.contains("calculate") && (stdout.contains("10") || stdout.contains("20")),
-            "Expected py:calculate with arguments. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] calculate(10, 20)"),
+            "Expected [malwi] calculate(10, 20) trace. stdout: {}, stderr: {}",
             stdout, stderr
+        );
+        assert!(
+            stdout.contains("test_py_calc.py:"),
+            "Expected test_py_calc.py source location. stdout: {}",
+            stdout
         );
     });
 }
@@ -449,14 +472,20 @@ greet("World", "Hi")
             "/tmp/test_py_args.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Check that string arguments are captured
+        // Check that string arguments are captured with source location
         assert!(
-            stdout.contains("greet") && stdout.contains("World"),
-            "Expected py:greet with string arguments. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] greet('World', 'Hi')"),
+            "Expected [malwi] greet('World', 'Hi') trace. stdout: {}, stderr: {}",
             stdout, stderr
+        );
+        assert!(
+            stdout.contains("test_py_args.py:"),
+            "Expected test_py_args.py source location. stdout: {}",
+            stdout
         );
     });
 }
@@ -712,8 +741,9 @@ except Exception:
             "-c", script,
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
         assert!(
             output.status.success(),
@@ -721,11 +751,21 @@ except Exception:
             stdout, stderr
         );
 
-        // requests.get → requests.api.get should be traced
+        // requests.get → requests.api.get should be traced with URL and source
         assert!(
-            stdout.contains("get"),
-            "Expected requests.get trace. stdout: {}, stderr: {}",
+            stdout.contains("[malwi] get("),
+            "Expected [malwi] get( trace with args. stdout: {}, stderr: {}",
             stdout, stderr
+        );
+        assert!(
+            stdout.contains("127.0.0.1"),
+            "Expected 127.0.0.1 URL in get() arguments. stdout: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("<string>:"),
+            "Expected <string> source location. stdout: {}",
+            stdout
         );
     });
 }
@@ -906,8 +946,9 @@ fn test_python_unicode_function_names_traced() {
             "./test_python_unicode.py",
         ]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
 
         assert!(
             output.status.success(),
@@ -915,15 +956,20 @@ fn test_python_unicode_function_names_traced() {
             stdout, stderr
         );
 
-        // At least one of the Unicode function names should appear in output
+        // Both Unicode function names should appear in output
         let has_german = stdout.contains("grüße");
         let has_cyrillic = stdout.contains("подсчёт");
 
         assert!(
-            has_german || has_cyrillic,
-            "Expected at least one Unicode function name in trace output. \
+            has_german && has_cyrillic,
+            "Expected both Unicode function names in trace output. \
              grüße: {}, подсчёт: {}. stdout: {}, stderr: {}",
             has_german, has_cyrillic, stdout, stderr
+        );
+        assert!(
+            stdout.contains("test_python_unicode.py:"),
+            "Expected test_python_unicode.py source location. stdout: {}",
+            stdout
         );
     });
 }

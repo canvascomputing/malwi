@@ -129,12 +129,10 @@ symbols:
     // like a valid fd, causing infinite retry loops that never terminated.
     // Now socket() fails with EACCES, so node sees the error and stops retrying.
     // We verify at least one denied message appeared.
-    let blocked_count = stdout.matches("denied:").count();
     assert!(
-        blocked_count >= 1,
-        "Expected at least one denied socket message (got {}). stderr: {}",
-        blocked_count,
-        stderr
+        stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
+        "Expected denied socket(AF_INET, SOCK_STREAM) message. stdout: {}, stderr: {}",
+        stdout, stderr
     );
 
     // The process should have exited (not been killed by timeout).

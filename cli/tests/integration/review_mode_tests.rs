@@ -371,18 +371,22 @@ fn test_review_mode_approve_allows_v8_execution() {
             stdout, stderr
         );
 
-        // Should have review prompt or trace event
-        let has_js_event = stdout.contains("targetFunc") || stdout.contains("<anonymous>");
+        // Should have review prompt or trace event for targetFunc with source
         assert!(
-            has_js_event || has_review_prompt(&stdout),
-            "Expected targetFunc trace or review prompt. stdout: {}",
+            stdout.contains("[malwi] targetFunc") || has_review_prompt(&stdout),
+            "Expected [malwi] targetFunc trace or review prompt. stdout: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("[eval]:") || has_review_prompt(&stdout),
+            "Expected [eval] source location. stdout: {}",
             stdout
         );
 
-        // Function should have executed
+        // Function should have executed and printed result
         assert!(
-            stdout.contains("Result:") || stdout.contains("42"),
-            "Expected function to execute. stdout: {}",
+            stdout.contains("Result: 42"),
+            "Expected 'Result: 42' in output. stdout: {}",
             stdout
         );
     });
@@ -711,8 +715,8 @@ fn test_review_mode_deny_blocks_exec_in_shell_script() {
 
         // Should show denied message for cat
         assert!(
-            stdout.contains("denied:") && stdout.contains("cat"),
-            "Expected denied message for cat. stdout: {}, stderr: {}",
+            stdout.contains("denied: cat /dev/null"),
+            "Expected 'denied: cat /dev/null' message. stdout: {}, stderr: {}",
             stdout, stderr
         );
 

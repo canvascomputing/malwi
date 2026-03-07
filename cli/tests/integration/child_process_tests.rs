@@ -18,9 +18,9 @@ fn test_fork_syscall_detected_in_child_process() {
 
     let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "fork"]);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_raw = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}\n{}", stdout, stderr);
+    let stdout = strip_ansi_codes(&stdout_raw);
 
     // Should complete successfully
     assert!(
@@ -30,14 +30,10 @@ fn test_fork_syscall_detected_in_child_process() {
         stderr
     );
 
-    // Should detect fork operation
-    let has_fork = has_child_event(&combined, "Fork")
-        || combined.contains("fork")
-        || combined.contains("child");
-
+    // Should have traced the spawner_marker function
     assert!(
-        has_fork || combined.contains("spawner"),
-        "Expected fork detection. stdout: {}, stderr: {}",
+        stdout.contains("[malwi] spawner_marker"),
+        "Expected [malwi] spawner_marker trace event. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
@@ -53,10 +49,10 @@ fn test_exec_syscall_detected_when_process_replaced() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Should complete (exec replaces the process image)
-    // The test passes if we don't crash
+    // The test passes if we don't crash — this is a crash-safety test
     assert!(
-        output.status.success() || stderr.contains("exec") || stdout.contains("simple_target"),
-        "Exec test had unexpected failure. stdout: {}, stderr: {}",
+        output.status.success(),
+        "Exec test should complete without crashing. stdout: {}, stderr: {}",
         stdout,
         stderr
     );

@@ -43,8 +43,6 @@ fn test_python_http_client_request_shows_method_and_url() {
 
     // http.client class method tracing works on 3.10+ via get_class_name_from_self fallback.
     skip_if_no_python_primary!(python => {
-        let version = get_python_minor_version(&python);
-
         let script = r#"
 import http.client
 try:
@@ -65,21 +63,19 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should trace at least the __init__ call (connection creation)
+        // Should trace HTTPConnection.__init__ with host argument
         assert!(
-            stdout.contains("__init__") || stdout.contains("request"),
-            "Expected HTTP connection trace. stdout: {}",
+            stdout.contains("[malwi] http.client.HTTPConnection.__init__([Object], host='127.0.0.1'"),
+            "Expected http.client.HTTPConnection.__init__([Object], host='127.0.0.1'...). stdout: {}",
             stdout
         );
 
-        // On Python 3.10+, verify formatted arguments include host
-        if version.map(|v| v >= 10).unwrap_or(false) {
-            assert!(
-                stdout.contains("host=") || stdout.contains("127.0.0.1"),
-                "Expected host in arguments (Python 3.10+). stdout: {}",
-                stdout
-            );
-        }
+        // Source location should reference the inline script
+        assert!(
+            stdout.contains("<string>:"),
+            "Expected <string> source location. stdout: {}",
+            stdout
+        );
     });
 }
 
@@ -106,10 +102,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should capture the urlopen call
+        // Should capture the urlopen call with arguments (fully qualified name)
         assert!(
-            stdout.contains("urlopen"),
-            "Expected urlopen trace. stdout: {}",
+            stdout.contains("[malwi] urllib.request.urlopen("),
+            "Expected [malwi] urllib.request.urlopen( trace with args. stdout: {}",
             stdout
         );
 
@@ -117,11 +113,18 @@ except Exception:
         let version = get_python_minor_version(&python);
         if version.map(|v| v >= 10).unwrap_or(false) {
             assert!(
-                stdout.contains("127.0.0.1"),
-                "Expected URL with 127.0.0.1 in arguments (Python 3.10+). stdout: {}",
+                stdout.contains("127.0.0.1:1/test-urllib"),
+                "Expected 127.0.0.1:1/test-urllib in urlopen arguments (Python 3.10+). stdout: {}",
                 stdout
             );
         }
+
+        // Source location should reference the inline script
+        assert!(
+            stdout.contains("<string>:"),
+            "Expected <string> source location. stdout: {}",
+            stdout
+        );
     });
 }
 
@@ -151,10 +154,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // socket calls should be traced
+        // socket.connect should be traced with address arguments
         assert!(
-            stdout.contains("socket"),
-            "Expected socket trace. stdout: {}",
+            stdout.contains("[malwi] socket.connect("),
+            "Expected [malwi] socket.connect( trace with args. stdout: {}",
             stdout
         );
 
@@ -162,11 +165,18 @@ except Exception:
         let version = get_python_minor_version(&python);
         if version.map(|v| v >= 10).unwrap_or(false) {
             assert!(
-                stdout.contains("address=") || stdout.contains("127.0.0.1"),
-                "Expected address in socket.connect args (Python 3.10+). stdout: {}",
+                stdout.contains("address=('127.0.0.1', 1)"),
+                "Expected address=('127.0.0.1', 1) in socket.connect args (Python 3.10+). stdout: {}",
                 stdout
             );
         }
+
+        // Source location should reference the inline script
+        assert!(
+            stdout.contains("<string>:"),
+            "Expected <string> source location. stdout: {}",
+            stdout
+        );
     });
 }
 
@@ -199,10 +209,20 @@ req.destroy();
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should capture http.request call
+        // Should capture http.request call with URL argument and source
         assert!(
-            stdout.contains("http.request"),
-            "Expected http.request trace. stdout: {}",
+            stdout.contains("[malwi] http.request("),
+            "Expected [malwi] http.request( trace with args. stdout: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("127.0.0.1:1/test-path"),
+            "Expected 127.0.0.1:1/test-path in http.request arguments. stdout: {}",
+            stdout
+        );
+        assert!(
+            stdout.contains("node:"),
+            "Expected node: source location. stdout: {}",
             stdout
         );
     });
@@ -252,10 +272,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should show a denied message for the function
+        // Should show a denied message for the function with URL
         assert!(
-            stdout.contains("denied:") && stdout.contains("urlopen"),
-            "Expected denied urlopen. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://malware.evil.com/payload'"),
+            "Expected denied: urllib.request.urlopen(url='http://malware.evil.com/payload'...). stdout: {}",
             stdout
         );
     });
@@ -301,10 +321,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // The function itself is denied by python section, so we'll see a denied message
+        // The function itself is denied by python section, with URL args
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied message for evil domain. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://download.evil.com/malware'"),
+            "Expected denied: urllib.request.urlopen(url='http://download.evil.com/malware'...). stdout: {}",
             stdout
         );
     });
@@ -352,10 +372,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should be flagged (either by function deny or protocol deny)
+        // Should be flagged (either by function deny or protocol deny) with URL
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for http:// when only https allowed. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://example.com/insecure'"),
+            "Expected denied: urllib.request.urlopen(url='http://example.com/insecure'...). stdout: {}",
             stdout
         );
     });
@@ -405,8 +425,8 @@ except Exception:
         let stdout = strip_ansi_codes(&stdout_raw);
 
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for port 22. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://example.com:22/ssh-tunnel'"),
+            "Expected denied: urllib.request.urlopen(url='http://example.com:22/ssh-tunnel'...). stdout: {}",
             stdout
         );
     });
@@ -454,10 +474,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should be denied by function policy (and http URL policy too)
+        // Should be denied by function policy (and http URL policy too) with URL
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for evil.com URL pattern. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://malware.evil.com/payload'"),
+            "Expected denied: urllib.request.urlopen(url='http://malware.evil.com/payload'...). stdout: {}",
             stdout
         );
     });
@@ -502,8 +522,8 @@ except Exception:
         let stdout = strip_ansi_codes(&stdout_raw);
 
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for /admin/ path. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://127.0.0.1:1/admin/secret'"),
+            "Expected denied: urllib.request.urlopen(url='http://127.0.0.1:1/admin/secret'...). stdout: {}",
             stdout
         );
     });
@@ -548,10 +568,10 @@ except Exception:
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Should show denied (function deny hits first)
+        // Should show denied (function deny hits first) with URL
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for http:// URL. stdout: {}",
+            stdout.contains("denied: urllib.request.urlopen(url='http://127.0.0.1:1/insecure'"),
+            "Expected denied: urllib.request.urlopen(url='http://127.0.0.1:1/insecure'...). stdout: {}",
             stdout
         );
     });
@@ -608,8 +628,8 @@ except Exception:
         let stdout = strip_ansi_codes(&stdout_raw);
 
         assert!(
-            stdout.contains("denied:"),
-            "Expected denied for socket.connect to port 6379. stdout: {}",
+            stdout.contains("denied: socket.connect([Object], address=('127.0.0.1', 6379))"),
+            "Expected denied: socket.connect([Object], address=('127.0.0.1', 6379)). stdout: {}",
             stdout
         );
     });
