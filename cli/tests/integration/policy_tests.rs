@@ -515,6 +515,88 @@ base64 --help
     let _ = std::fs::remove_file(&policy_path);
 }
 
+// ============================================================================
+// Policy Warn Tests - EnvVar
+// ============================================================================
+
+/// Regression test for envvar warn double-logging fix.
+/// Verifies that a warned envvar access produces exactly one [malwi] line,
+/// not a duplicate line without the "warning:" prefix.
+#[test]
+fn test_policy_warn_envvar_shows_single_warning_line() {
+    setup();
+
+    let bash = match find_primary_bash() {
+        Some(b) => b,
+        None => {
+            println!("SKIPPED: test: bash not found");
+            return;
+        }
+    };
+
+    let (policy_path, _f) =
+        write_temp_policy("version: 1\nenvvars:\n  warn:\n    - TEST_SECRET_*\n");
+
+    // Script that sets and reads a variable matching the warn pattern
+    let script_path = std::env::temp_dir().join(format!(
+        "malwi-test-envvar-warn-{}-{:x}.sh",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(
+        &script_path,
+        "#!/bin/bash\nexport TEST_SECRET_KEY=sensitive\necho $TEST_SECRET_KEY\n",
+    )
+    .expect("write test script");
+
+    let output = run_tracer_with_timeout_noninteractive(
+        &[
+            "x",
+            "-p",
+            policy_path.to_str().unwrap(),
+            "--",
+            bash.to_str().unwrap(),
+            script_path.to_str().unwrap(),
+        ],
+        std::time::Duration::from_secs(10),
+    );
+
+    let _ = std::fs::remove_file(&script_path);
+    let _ = std::fs::remove_file(&policy_path);
+
+    let stdout_raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = strip_ansi_codes(&stdout_raw);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("stdout:\n{}", stdout);
+    println!("stderr:\n{}", stderr);
+
+    // Count [malwi] lines that mention TEST_SECRET_KEY
+    let malwi_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("[malwi]") && l.contains("TEST_SECRET_KEY"))
+        .collect();
+
+    assert!(
+        !malwi_lines.is_empty(),
+        "Expected at least one [malwi] warning line for TEST_SECRET_KEY. stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+
+    // Each [malwi] line should contain "warning:" — no duplicate without it
+    for line in &malwi_lines {
+        assert!(
+            line.contains("warning:"),
+            "Expected 'warning:' in [malwi] line (double-logging regression): {}",
+            line
+        );
+    }
+}
+
 /// Review-mode behavior should be deterministic with explicit stdin input.
 #[test]
 fn test_bash_install_policy_review_rule_with_stdin_decision() {

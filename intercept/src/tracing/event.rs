@@ -259,4 +259,15 @@ mod tests {
         assert!(event.source_file.is_none());
         assert!(event.source_line.is_none());
     }
+
+    #[test]
+    fn test_envvar_source_location() {
+        let event = envvar_enter("SECRET_KEY")
+            .source_location(Some("script.sh".to_string()), Some(5))
+            .build();
+        assert_eq!(event.hook_type, HookType::EnvVar);
+        assert_eq!(event.function, "SECRET_KEY");
+        assert_eq!(event.source_file.as_deref(), Some("script.sh"));
+        assert_eq!(event.source_line, Some(5));
+    }
 }

@@ -376,7 +376,10 @@ pub(crate) unsafe extern "C" fn on_find_variable_leave(
 
     // Send trace event regardless (blocked or not — CLI decides display)
     if let Some(agent) = crate::Agent::get() {
-        let event = crate::tracing::event::envvar_enter(&name).build();
+        let (source_file, source_line) = get_bash_source_location();
+        let event = crate::tracing::event::envvar_enter(&name)
+            .source_location(source_file, source_line)
+            .build();
         let _ = agent.send_event(event);
     }
 }

@@ -1250,9 +1250,11 @@ fn process_event(
                             config.monitor_client,
                             state.output_writer.as_deref_mut(),
                         );
-                        // For exec events, the warning line already contains the full command.
+                        // For exec/envvar events, the warning line already contains the full info.
                         // For function calls, fall through to also print the call details.
-                        if trace_event.hook_type == HookType::Exec {
+                        if trace_event.hook_type == HookType::Exec
+                            || trace_event.hook_type == HookType::EnvVar
+                        {
                             return Ok(());
                         }
                     }
