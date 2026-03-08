@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::atomic::AtomicU32;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -39,8 +40,9 @@ fn setup_server() -> (String, tokio::runtime::Runtime) {
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
     let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
     let active = Arc::new(AtomicU32::new(0));
+    let reconnected = Arc::new(Mutex::new(HashSet::new()));
     let server = rt
-        .block_on(async { AgentServer::new(make_hook_configs(), false, tx, active) })
+        .block_on(async { AgentServer::new(make_hook_configs(), false, tx, active, reconnected) })
         .expect("create server");
     let url = server.url().to_string();
     rt.spawn(async move { server.run().await });

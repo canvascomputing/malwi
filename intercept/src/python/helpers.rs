@@ -102,7 +102,7 @@ pub unsafe fn get_simple_name(code: *mut c_void) -> Option<String> {
 ///
 /// # Safety
 /// Caller must ensure obj is a valid PyObject pointer and GIL is held.
-unsafe fn get_object_display(
+pub(crate) unsafe fn get_object_display(
     obj: *mut c_void,
     api: &super::ffi::PythonApi,
     object_repr: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
@@ -437,7 +437,7 @@ pub fn strip_python_repr_quotes(s: &str) -> &str {
 /// - `<module 'os' from '/usr/lib/...'>` → `os`
 /// - `<class 'dict'>` → `dict`
 /// - `<unknown_type at 0x...>` → `[Object]`
-fn simplify_object_repr(s: &str) -> String {
+pub(crate) fn simplify_object_repr(s: &str) -> String {
     // Only process <...> repr format (objects with addresses/internal info)
     // Simple values like 'hello', 42, [1,2,3], {'k':'v'} pass through unchanged
     if !s.starts_with('<') || !s.ends_with('>') {

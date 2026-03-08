@@ -110,6 +110,10 @@ pub type PySys_AddAuditHookFn =
 /// Returns the ml_meth field (the actual C function pointer). Stable API since Python 2.0.
 pub type PyCFunction_GetFunctionFn = unsafe extern "C" fn(op: *mut c_void) -> *mut c_void;
 
+/// PyCFunction_GetFlags - get the ml_flags field from a PyCFunctionObject
+/// Returns the calling convention flags (METH_VARARGS, METH_O, etc.). Stable API since Python 2.0.
+pub type PyCFunction_GetFlagsFn = unsafe extern "C" fn(op: *mut c_void) -> c_int;
+
 /// PyImport_ImportModule - import a module by name (returns new reference)
 pub type PyImport_ImportModuleFn = unsafe extern "C" fn(name: *const c_char) -> *mut c_void;
 
@@ -128,6 +132,14 @@ pub type PyThreadState_UncheckedGetFn = unsafe extern "C" fn() -> *mut c_void;
 // PyTrace event types
 pub const PYTRACE_CALL: c_int = 0;
 pub const PYTRACE_C_CALL: c_int = 4;
+
+// CPython method calling convention flags (methodobject.h, stable since Python 2.0)
+pub(crate) const METH_VARARGS: i32 = 0x0001;
+pub(crate) const METH_NOARGS: i32 = 0x0004;
+pub(crate) const METH_O: i32 = 0x0008;
+pub(crate) const METH_FASTCALL: i32 = 0x0080;
+/// Mask for the mutually-exclusive calling convention bits.
+pub(crate) const METH_CONVENTION_MASK: i32 = METH_VARARGS | METH_NOARGS | METH_O | METH_FASTCALL;
 
 // =============================================================================
 // PYTHON API STRUCT
@@ -158,6 +170,7 @@ pub struct PythonApi {
     pub exc_permission_error: *mut c_void,
     // C function hooking APIs
     pub pycfunction_get_function: Option<PyCFunction_GetFunctionFn>,
+    pub pycfunction_get_flags: Option<PyCFunction_GetFlagsFn>,
     pub import_module: Option<PyImport_ImportModuleFn>,
     // Thread state iteration APIs (for propagating profile to new threads)
     pub interp_thread_head: Option<PyInterpreterState_ThreadHeadFn>,
@@ -264,6 +277,11 @@ pub fn resolve_python_api() -> Option<PythonApi> {
             .ok()
             .map(|addr| unsafe { std::mem::transmute(addr) });
 
+    let pycfunction_get_flags: Option<PyCFunction_GetFlagsFn> =
+        native::find_export(None, "PyCFunction_GetFlags")
+            .ok()
+            .map(|addr| unsafe { std::mem::transmute(addr) });
+
     let import_module: Option<PyImport_ImportModuleFn> =
         native::find_export(None, "PyImport_ImportModule")
             .ok()
@@ -313,6 +331,7 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         err_set_string,
         exc_permission_error,
         pycfunction_get_function,
+        pycfunction_get_flags,
         import_module,
         interp_thread_head,
         tstate_next,

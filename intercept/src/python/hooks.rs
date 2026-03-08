@@ -199,8 +199,13 @@ pub unsafe fn try_resolve_pending() {
             continue;
         }
 
-        // Get the C function pointer
+        // Get the C function pointer and method flags
         let c_func_ptr = get_function(func_obj);
+        let method_flags = match api.pycfunction_get_flags {
+            Some(get_flags) => get_flags(func_obj),
+            None => 0,
+        };
+
         (api.py_decref)(func_obj);
 
         if c_func_ptr.is_null() {
@@ -210,9 +215,8 @@ pub unsafe fn try_resolve_pending() {
             continue;
         }
 
-        // Hook it
         let addr = c_func_ptr as usize;
-        attach_interceptor(addr, &hook.display_name, hook.capture_stack);
+        attach_interceptor(addr, &hook.display_name, hook.capture_stack, method_flags);
 
         // Remove from pending (resolved)
         pending.swap_remove(i);
@@ -231,13 +235,19 @@ pub unsafe fn try_resolve_pending() {
 struct HookData {
     display_name: String,
     capture_stack: bool,
+    method_flags: i32,
 }
 
 /// Attach an interceptor hook to a C function at the given address.
 ///
 /// Acquires the HOOKED_C_FUNCTIONS lock once to check+insert, then attaches
 /// the interceptor. Returns true if the function was already hooked.
-fn attach_interceptor(addr: usize, display_name: &str, capture_stack: bool) -> bool {
+fn attach_interceptor(
+    addr: usize,
+    display_name: &str,
+    capture_stack: bool,
+    method_flags: i32,
+) -> bool {
     let mut hooked = HOOKED_C_FUNCTIONS.lock().unwrap_or_else(|e| e.into_inner());
 
     if !hooked.insert(addr) {
@@ -247,6 +257,7 @@ fn attach_interceptor(addr: usize, display_name: &str, capture_stack: bool) -> b
     let data = Box::new(HookData {
         display_name: display_name.to_string(),
         capture_stack,
+        method_flags,
     });
     let user_data = Box::into_raw(data) as *mut c_void;
 
@@ -311,8 +322,14 @@ pub unsafe fn is_hooked_or_hook(arg: *mut c_void, display_name: &str, capture_st
 
     let addr = c_func_ptr as usize;
 
+    // Get method flags for argument extraction in the interceptor
+    let method_flags = match api.pycfunction_get_flags {
+        Some(get_flags) => get_flags(arg),
+        None => 0,
+    };
+
     // Single-lock: check + hook in one call
-    attach_interceptor(addr, display_name, capture_stack)
+    attach_interceptor(addr, display_name, capture_stack, method_flags)
 }
 
 // =============================================================================
@@ -407,7 +424,7 @@ thread_local! {
 ///
 /// # Safety
 /// Called by malwi-intercept with valid context.
-unsafe extern "C" fn on_c_function_enter(_context: *mut InvocationContext, user_data: *mut c_void) {
+unsafe extern "C" fn on_c_function_enter(context: *mut InvocationContext, user_data: *mut c_void) {
     // Re-entrancy guard
     if IN_PY_C_HOOK.with(|h| h.get()) {
         return;
@@ -429,7 +446,14 @@ unsafe extern "C" fn on_c_function_enter(_context: *mut InvocationContext, user_
             let runtime_stack = super::helpers::maybe_capture_stack(frame, data.capture_stack);
             let (source_file, source_line) = super::helpers::extract_frame_location(frame);
 
+            // Extract C function arguments from CPU registers via InvocationContext
+            let mut arguments = extract_c_function_arguments(context, data.method_flags, api);
+            let network_info =
+                super::format::format_python_arguments(&data.display_name, &mut arguments);
+
             let event = crate::tracing::event::python_enter(&data.display_name)
+                .arguments(arguments)
+                .network_info(network_info)
                 .runtime_stack(runtime_stack)
                 .source_location(source_file, source_line)
                 .build();
@@ -442,4 +466,80 @@ unsafe extern "C" fn on_c_function_enter(_context: *mut InvocationContext, user_
     }
 
     IN_PY_C_HOOK.with(|h| h.set(false));
+}
+
+use super::ffi::{METH_CONVENTION_MASK, METH_FASTCALL, METH_NOARGS, METH_O, METH_VARARGS};
+
+/// Extract arguments from a C extension method using its calling convention flags
+/// and the raw CPU register values from `InvocationContext`.
+///
+/// # Safety
+/// `context` must be a valid InvocationContext from an active interceptor callback.
+/// GIL must be held (we call PyObject_Repr etc.).
+unsafe fn extract_c_function_arguments(
+    context: *mut InvocationContext,
+    method_flags: i32,
+    api: &super::ffi::PythonApi,
+) -> Vec<crate::Argument> {
+    use crate::interceptor::invocation::get_nth_argument;
+
+    if method_flags == 0 {
+        return Vec::new(); // Unknown flags (e.g. eager resolution path)
+    }
+
+    let convention = method_flags & METH_CONVENTION_MASK;
+
+    match convention {
+        METH_NOARGS => Vec::new(),
+        METH_O => {
+            // fn(self, arg) — two C arguments
+            let self_obj = get_nth_argument(context, 0);
+            let arg_obj = get_nth_argument(context, 1);
+            let mut args = Vec::with_capacity(2);
+            args.push(pyobj_to_argument(self_obj, api));
+            args.push(pyobj_to_argument(arg_obj, api));
+            args
+        }
+        c if c & METH_VARARGS != 0 => {
+            // fn(self, args_tuple) — self + Python tuple of positional args
+            let self_obj = get_nth_argument(context, 0);
+            let args_tuple = get_nth_argument(context, 1);
+            let mut args = vec![pyobj_to_argument(self_obj, api)];
+            args.extend(super::helpers::extract_tuple_arguments(args_tuple));
+            args
+        }
+        c if c & METH_FASTCALL != 0 => {
+            // fn(self, *args_array, nargs) — self + C array of PyObject*
+            let self_obj = get_nth_argument(context, 0);
+            let args_ptr = get_nth_argument(context, 1) as *const *mut c_void;
+            let nargs = get_nth_argument(context, 2) as isize;
+            let mut args = vec![pyobj_to_argument(self_obj, api)];
+            if !args_ptr.is_null() && nargs > 0 {
+                for i in 0..nargs.min(8) {
+                    let item = *args_ptr.add(i as usize);
+                    args.push(pyobj_to_argument(item, api));
+                }
+            }
+            args
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Convert a raw PyObject pointer to an `Argument` by calling `PyObject_Repr`.
+///
+/// # Safety
+/// `obj` must be a valid PyObject pointer (or null). GIL must be held.
+unsafe fn pyobj_to_argument(obj: *mut c_void, api: &super::ffi::PythonApi) -> crate::Argument {
+    let display = if obj.is_null() {
+        None
+    } else if let Some(object_repr) = api.object_repr {
+        super::helpers::get_object_display(obj, api, object_repr, 200)
+    } else {
+        None
+    };
+    crate::Argument {
+        raw_value: obj as usize,
+        display,
+    }
 }

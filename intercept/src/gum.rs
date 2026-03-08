@@ -153,7 +153,7 @@ mod test_helpers {
 
         let mut old_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
         let mut new_action: libc::sigaction = MaybeUninit::zeroed().assume_init();
-        new_action.sa_sigaction = sigsys_handler as usize;
+        new_action.sa_sigaction = sigsys_handler as *const () as usize;
         new_action.sa_flags = libc::SA_SIGINFO;
         libc::sigemptyset(&mut new_action.sa_mask as *mut libc::sigset_t);
 
