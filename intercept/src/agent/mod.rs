@@ -287,7 +287,7 @@ impl Agent {
             }
             Err(e) => {
                 warn!("Review request failed: {}", e);
-                malwi_protocol::ReviewDecision::Allow
+                malwi_protocol::ReviewDecision::Block
             }
         }
     }
