@@ -738,7 +738,7 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     } else if let Some(policy_name) = policy::detect_policy(&program) {
         // Auto-detected command-specific policy
         let path = policy::ensure_auto_policy(policy_name)?;
-        eprintln!("Using policy: {} ({})", policy_name, path.display());
+        eprintln!("{}[malwi] Applying {}{}", DIM, path.display(), RESET);
         Some(policy::ActivePolicy::from_file(&path.to_string_lossy())?)
     } else {
         // Default policy from config file

