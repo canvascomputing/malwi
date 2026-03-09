@@ -27,3 +27,19 @@ pub unsafe fn get_return_value(ctx: *mut InvocationContext) -> *mut c_void {
 pub unsafe fn replace_return_value(ctx: *mut InvocationContext, value: *mut c_void) {
     gum::gum_invocation_context_replace_return_value(ctx, value as gum::gpointer);
 }
+
+/// Get the current `InvocationContext` from within a replacement function.
+///
+/// # Safety
+/// Must be called from within an `Interceptor::replace` replacement function.
+pub unsafe fn get_current_invocation() -> *mut InvocationContext {
+    gum::gum_interceptor_get_current_invocation() as *mut InvocationContext
+}
+
+/// Get the replacement_data pointer passed to `Interceptor::replace`.
+///
+/// # Safety
+/// `ctx` must be a valid pointer to an active `InvocationContext`.
+pub unsafe fn get_replacement_data(ctx: *mut InvocationContext) -> *mut c_void {
+    gum::gum_invocation_context_get_replacement_data(ctx) as *mut c_void
+}

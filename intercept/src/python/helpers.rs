@@ -742,6 +742,24 @@ pub unsafe fn extract_caller_location(frame: *mut c_void) -> (Option<String>, Op
     (file, if line > 0 { Some(line) } else { None })
 }
 
+/// Raise a Python PermissionError exception.
+///
+/// # Safety
+/// Caller must ensure GIL is held.
+pub(crate) unsafe fn raise_permission_error() {
+    let Some(api) = PYTHON_API.get() else { return };
+    let Some(err_set_string) = api.err_set_string else {
+        return;
+    };
+    if api.exc_permission_error.is_null() {
+        return;
+    }
+    err_set_string(
+        api.exc_permission_error,
+        c"malwi: blocked by policy".as_ptr(),
+    );
+}
+
 /// Conditionally capture a Python stack trace from the given frame.
 ///
 /// Returns `Some(RuntimeStack::Python(...))` if `capture` is true and the

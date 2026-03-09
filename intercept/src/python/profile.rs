@@ -19,31 +19,13 @@ use super::ffi::{
 };
 use super::filters::matches_filter;
 use super::helpers::{
-    extract_caller_location, extract_frame_location, extract_function_arguments,
-    get_c_function_qualified_name, get_qualified_function_name, maybe_capture_stack,
+    extract_caller_location, extract_function_arguments, get_c_function_qualified_name,
+    get_qualified_function_name, maybe_capture_stack, raise_permission_error,
 };
 
 // Dedup set for Python envvar names — reports each variable once per thread.
 thread_local! {
     static PY_ENVVAR_SEEN: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
-}
-
-/// Raise a Python PermissionError exception.
-///
-/// # Safety
-/// Caller must ensure GIL is held.
-unsafe fn raise_permission_error() {
-    let Some(api) = PYTHON_API.get() else { return };
-    let Some(err_set_string) = api.err_set_string else {
-        return;
-    };
-    if api.exc_permission_error.is_null() {
-        return;
-    }
-    err_set_string(
-        api.exc_permission_error,
-        c"malwi-trace: blocked by user".as_ptr(),
-    );
 }
 
 /// Whether profile hook is registered
@@ -289,7 +271,7 @@ unsafe extern "C" fn profile_hook(
 ///
 /// # Safety
 /// Called from profile_hook with GIL held. `frame` and `arg` are valid Python objects.
-unsafe fn handle_c_call(frame: *mut c_void, arg: *mut c_void) -> c_int {
+unsafe fn handle_c_call(_frame: *mut c_void, arg: *mut c_void) -> c_int {
     let (internal_name, aliased_name) = match get_c_function_qualified_name(arg) {
         Some(names) => names,
         None => return 0,
@@ -316,31 +298,14 @@ unsafe fn handle_c_call(frame: *mut c_void, arg: *mut c_void) -> c_int {
         return 0;
     }
 
-    // Try to hook this C function with the interceptor for C→C call tracing.
-    // If already hooked, skip the profile event — the interceptor handles it.
-    // If not yet hooked (first time), we install the hook and trace this call
-    // from the profile hook. Future calls go through the interceptor.
-    if super::hooks::is_hooked_or_hook(arg, &display_name, capture_stack) {
-        return 0;
-    }
-
-    // C functions don't have accessible arguments from the profile hook.
-    // The frame is the caller's frame, not the C function's.
-    let arguments = Vec::new();
-
-    let runtime_stack = maybe_capture_stack(frame, capture_stack);
-    let (caller_file, caller_line) = extract_frame_location(frame);
-
-    let event = crate::tracing::event::python_enter(&display_name)
-        .arguments(arguments)
-        .runtime_stack(runtime_stack)
-        .source_location(caller_file, caller_line)
-        .build();
-
-    if super::helpers::send_trace_event(event).is_err() {
-        raise_permission_error();
-        return -1;
-    }
+    // Install replacement for this C function via Interceptor::replace.
+    // Returns true if already replaced — the replacement handles tracing + policy.
+    // Returns false if just replaced — this call will ALSO go through the replacement
+    // because PYTRACE_C_CALL fires BEFORE CPython calls the function.
+    //
+    // Either way, we return 0 to let CPython proceed to call the (replaced) function.
+    // The replacement handles argument extraction, event sending, and denial.
+    super::hooks::ensure_replaced(arg, &display_name, capture_stack);
 
     0
 }

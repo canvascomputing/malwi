@@ -1,20 +1,23 @@
 //! Interceptor-based hooking for Python C functions.
 //!
-//! When the profile hook sees a matching C function via PYTRACE_C_CALL,
-//! it extracts the native function pointer via PyCFunction_GetFunction
-//! and hooks it with the Interceptor. From then on, ALL calls to that
-//! C function — whether from Python or from other C code — are caught.
+//! Uses `Interceptor::replace` to substitute C functions with tracing
+//! replacements. The replacement receives actual C arguments, enabling
+//! argument extraction on every call and true blocking for denied calls.
 //!
-//! This closes the C→C call tracing gap: e.g., pickle.loads internally
+//! When the profile hook sees a matching C function via PYTRACE_C_CALL,
+//! it installs the replacement. Since PYTRACE_C_CALL fires BEFORE CPython
+//! calls the C function, the replacement handles the current call too.
+//!
+//! This also closes the C→C call tracing gap: e.g., pickle.loads internally
 //! calling os.getpid via PyObject_Call is invisible to the profile hook,
-//! but the interceptor catches it.
+//! but the replacement catches it.
 
 use std::collections::HashSet;
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use crate::{CallListener, Interceptor, InvocationContext};
+use crate::Interceptor;
 use log::debug;
 
 use crate::native;
@@ -216,7 +219,7 @@ pub unsafe fn try_resolve_pending() {
         }
 
         let addr = c_func_ptr as usize;
-        attach_interceptor(addr, &hook.display_name, hook.capture_stack, method_flags);
+        replace_interceptor(addr, &hook.display_name, hook.capture_stack, method_flags);
 
         // Remove from pending (resolved)
         pending.swap_remove(i);
@@ -231,18 +234,30 @@ pub unsafe fn try_resolve_pending() {
 // INTERCEPTOR HOOKING
 // =============================================================================
 
-/// User data passed to the interceptor callback via leaked Box.
+/// User data passed to the replacement function via leaked Box.
 struct HookData {
     display_name: String,
     capture_stack: bool,
     method_flags: i32,
+    /// Pointer to the trampoline that calls through to the original function.
+    /// Set by `Interceptor::replace()`.
+    trampoline: *const c_void,
 }
 
-/// Attach an interceptor hook to a C function at the given address.
+// Safety: HookData is only accessed from the replacement function,
+// which runs on the calling thread. The `trampoline` pointer is a
+// trampoline address that doesn't change after replace().
+unsafe impl Send for HookData {}
+unsafe impl Sync for HookData {}
+
+/// Replace a C function at the given address with our tracing replacement.
 ///
-/// Acquires the HOOKED_C_FUNCTIONS lock once to check+insert, then attaches
-/// the interceptor. Returns true if the function was already hooked.
-fn attach_interceptor(
+/// Uses `Interceptor::replace` so the replacement receives the actual C
+/// arguments directly, enabling argument extraction and true call blocking.
+///
+/// Acquires the HOOKED_C_FUNCTIONS lock once to check+insert. Returns true
+/// if the function was already replaced.
+fn replace_interceptor(
     addr: usize,
     display_name: &str,
     capture_stack: bool,
@@ -251,65 +266,86 @@ fn attach_interceptor(
     let mut hooked = HOOKED_C_FUNCTIONS.lock().unwrap_or_else(|e| e.into_inner());
 
     if !hooked.insert(addr) {
-        return true; // Already hooked
+        return true; // Already replaced
     }
+
+    // Select replacement function based on calling convention.
+    // METH_FASTCALL uses 3-arg ABI: fn(self, *args, nargs).
+    // All others (METH_NOARGS, METH_O, METH_VARARGS) use 2-arg ABI: fn(self, arg).
+    let convention = method_flags & super::ffi::METH_CONVENTION_MASK;
+    let replacement: *const c_void = if convention & super::ffi::METH_FASTCALL != 0 {
+        replacement_3arg as *const c_void
+    } else {
+        replacement_2arg as *const c_void
+    };
 
     let data = Box::new(HookData {
         display_name: display_name.to_string(),
         capture_stack,
         method_flags,
+        trampoline: std::ptr::null(),
     });
-    let user_data = Box::into_raw(data) as *mut c_void;
+    let data_ptr = Box::into_raw(data);
+    let user_data = data_ptr as *mut c_void;
 
     let interceptor = Interceptor::obtain();
-    let listener = CallListener {
-        on_enter: Some(on_c_function_enter),
-        on_leave: None,
-        user_data,
-    };
+    let mut trampoline: *const c_void = std::ptr::null();
 
     interceptor.begin_transaction();
-    let result = interceptor.attach(addr as *mut c_void, listener);
+    let result = interceptor.replace(
+        addr as *mut c_void,
+        replacement,
+        user_data,
+        &mut trampoline as *mut *const c_void,
+    );
+    if result.is_ok() {
+        // Write trampoline BEFORE end_transaction makes the replacement live,
+        // preventing a TOCTOU race where the replacement runs with a null trampoline.
+        unsafe {
+            (*data_ptr).trampoline = trampoline;
+        }
+    }
     interceptor.end_transaction();
 
     match result {
         Ok(()) => {
             debug!(
-                "Hooked C function '{}' at {:#x} via interceptor",
+                "Replaced C function '{}' at {:#x} via interceptor",
                 display_name, addr
             );
         }
         Err(e) => {
             // Clean up leaked data and remove from set on failure
             unsafe {
-                let _ = Box::from_raw(user_data as *mut HookData);
+                let _ = Box::from_raw(data_ptr);
             }
             hooked.remove(&addr);
             debug!(
-                "Failed to hook C function '{}' at {:#x}: {:?}",
+                "Failed to replace C function '{}' at {:#x}: {:?}",
                 display_name, addr, e
             );
         }
     }
 
-    false // Was not previously hooked
+    false // Was not previously replaced
 }
 
-/// Check if a C function (from PYTRACE_C_CALL arg) is already hooked.
-/// If not hooked, attempt to hook it. Returns true if the function IS hooked
-/// (either already was, or just got hooked successfully).
+/// Ensure a C function (from PYTRACE_C_CALL arg) has a tracing replacement installed.
+///
+/// If the function is already replaced, this is a no-op. Otherwise, installs
+/// the replacement via `Interceptor::replace`.
 ///
 /// # Safety
 /// Must be called with GIL held. `arg` must be a valid PyCFunctionObject pointer.
-pub unsafe fn is_hooked_or_hook(arg: *mut c_void, display_name: &str, capture_stack: bool) -> bool {
+pub unsafe fn ensure_replaced(arg: *mut c_void, display_name: &str, capture_stack: bool) {
     let api = match PYTHON_API.get() {
         Some(api) => api,
-        None => return false,
+        None => return,
     };
 
     let get_function = match api.pycfunction_get_function {
         Some(f) => f,
-        None => return false,
+        None => return,
     };
 
     let c_func_ptr = get_function(arg);
@@ -317,7 +353,7 @@ pub unsafe fn is_hooked_or_hook(arg: *mut c_void, display_name: &str, capture_st
         if let Some(err_clear) = api.err_clear {
             err_clear();
         }
-        return false;
+        return;
     }
 
     let addr = c_func_ptr as usize;
@@ -328,8 +364,8 @@ pub unsafe fn is_hooked_or_hook(arg: *mut c_void, display_name: &str, capture_st
         None => 0,
     };
 
-    // Single-lock: check + hook in one call
-    attach_interceptor(addr, display_name, capture_stack, method_flags)
+    // Single-lock: check + replace in one call
+    replace_interceptor(addr, display_name, capture_stack, method_flags);
 }
 
 // =============================================================================
@@ -409,82 +445,169 @@ mod tests {
 }
 
 // =============================================================================
-// INTERCEPTOR CALLBACK
+// REPLACEMENT FUNCTIONS
 // =============================================================================
 
-// Re-entrancy guard for interceptor callbacks (per-thread).
+// Re-entrancy guard for replacement callbacks (per-thread).
 thread_local! {
     static IN_PY_C_HOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Interceptor on_enter callback for hooked C functions.
+use super::ffi::{METH_CONVENTION_MASK, METH_FASTCALL, METH_NOARGS, METH_O, METH_VARARGS};
+
+/// Replacement for C functions using 2-arg ABI: fn(self, arg) -> *mut c_void.
 ///
-/// Fires for EVERY call to the hooked C function, whether from Python or C code.
-/// The GIL is held during C→C calls within CPython, so PyEval_GetFrame is safe.
+/// Covers METH_NOARGS, METH_O, and METH_VARARGS calling conventions.
+/// Extracts arguments from the direct C parameters, sends trace event,
+/// and either calls the original or raises PermissionError.
 ///
 /// # Safety
-/// Called by malwi-intercept with valid context.
-unsafe extern "C" fn on_c_function_enter(context: *mut InvocationContext, user_data: *mut c_void) {
-    // Re-entrancy guard
+/// Called by frida-gum as a replacement for the original C function.
+/// GIL is held (we are being called from CPython's call machinery).
+unsafe extern "C" fn replacement_2arg(self_obj: *mut c_void, arg: *mut c_void) -> *mut c_void {
+    let ctx = crate::interceptor::invocation::get_current_invocation();
+    if ctx.is_null() {
+        super::helpers::raise_permission_error();
+        return std::ptr::null_mut();
+    }
+    let user_data = crate::interceptor::invocation::get_replacement_data(ctx);
+    if user_data.is_null() {
+        super::helpers::raise_permission_error();
+        return std::ptr::null_mut();
+    }
+    let data = &*(user_data as *const HookData);
+    let original: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        std::mem::transmute(data.trampoline);
+
+    // Re-entrancy guard: during PyObject_Repr etc., call original directly
     if IN_PY_C_HOOK.with(|h| h.get()) {
-        return;
+        return original(self_obj, arg);
     }
     IN_PY_C_HOOK.with(|h| h.set(true));
 
-    if !user_data.is_null() {
-        let data = &*(user_data as *const HookData);
-
-        let api = PYTHON_API.get();
-        if let Some(api) = api {
-            // Get the current Python frame for source location.
-            // This is safe because GIL is held during C→C calls within CPython.
-            let frame = match api.eval_get_frame {
-                Some(eval_get_frame) => eval_get_frame(),
-                None => std::ptr::null_mut(),
-            };
-
-            let runtime_stack = super::helpers::maybe_capture_stack(frame, data.capture_stack);
-            let (source_file, source_line) = super::helpers::extract_frame_location(frame);
-
-            // Extract C function arguments from CPU registers via InvocationContext
-            let mut arguments = extract_c_function_arguments(context, data.method_flags, api);
-            let network_info =
-                super::format::format_python_arguments(&data.display_name, &mut arguments);
-
-            let event = crate::tracing::event::python_enter(&data.display_name)
-                .arguments(arguments)
-                .network_info(network_info)
-                .runtime_stack(runtime_stack)
-                .source_location(source_file, source_line)
-                .build();
-
-            if super::helpers::send_trace_event(event).is_err() {
-                // Can't raise PermissionError from interceptor context — the C function
-                // is already being entered. Best effort: event was blocked.
-            }
-        }
-    }
+    let result = handle_replacement(data, self_obj, arg, std::ptr::null_mut());
 
     IN_PY_C_HOOK.with(|h| h.set(false));
+
+    match result {
+        ReplacementDecision::Allow => original(self_obj, arg),
+        ReplacementDecision::Deny => {
+            super::helpers::raise_permission_error();
+            std::ptr::null_mut()
+        }
+    }
 }
 
-use super::ffi::{METH_CONVENTION_MASK, METH_FASTCALL, METH_NOARGS, METH_O, METH_VARARGS};
-
-/// Extract arguments from a C extension method using its calling convention flags
-/// and the raw CPU register values from `InvocationContext`.
+/// Replacement for C functions using 3-arg ABI: fn(self, args_ptr, nargs) -> *mut c_void.
+///
+/// Covers METH_FASTCALL calling convention.
 ///
 /// # Safety
-/// `context` must be a valid InvocationContext from an active interceptor callback.
-/// GIL must be held (we call PyObject_Repr etc.).
-unsafe fn extract_c_function_arguments(
-    context: *mut InvocationContext,
+/// Called by frida-gum as a replacement for the original C function.
+unsafe extern "C" fn replacement_3arg(
+    self_obj: *mut c_void,
+    args_ptr: *mut c_void,
+    nargs: *mut c_void,
+) -> *mut c_void {
+    let ctx = crate::interceptor::invocation::get_current_invocation();
+    if ctx.is_null() {
+        super::helpers::raise_permission_error();
+        return std::ptr::null_mut();
+    }
+    let user_data = crate::interceptor::invocation::get_replacement_data(ctx);
+    if user_data.is_null() {
+        super::helpers::raise_permission_error();
+        return std::ptr::null_mut();
+    }
+    let data = &*(user_data as *const HookData);
+    let original: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
+        std::mem::transmute(data.trampoline);
+
+    // Re-entrancy guard
+    if IN_PY_C_HOOK.with(|h| h.get()) {
+        return original(self_obj, args_ptr, nargs);
+    }
+    IN_PY_C_HOOK.with(|h| h.set(true));
+
+    let result = handle_replacement(data, self_obj, args_ptr, nargs);
+
+    IN_PY_C_HOOK.with(|h| h.set(false));
+
+    match result {
+        ReplacementDecision::Allow => original(self_obj, args_ptr, nargs),
+        ReplacementDecision::Deny => {
+            super::helpers::raise_permission_error();
+            std::ptr::null_mut()
+        }
+    }
+}
+
+enum ReplacementDecision {
+    Allow,
+    Deny,
+}
+
+/// Common logic for both replacement functions: extract args, send event, get decision.
+///
+/// `third_arg` is null for 2-arg replacements, nargs for METH_FASTCALL.
+///
+/// # Safety
+/// GIL must be held. Pointers must be valid Python objects.
+unsafe fn handle_replacement(
+    data: &HookData,
+    self_obj: *mut c_void,
+    second_arg: *mut c_void,
+    third_arg: *mut c_void,
+) -> ReplacementDecision {
+    let api = match PYTHON_API.get() {
+        Some(api) => api,
+        None => return ReplacementDecision::Allow,
+    };
+
+    // Get the current Python frame for source location
+    let frame = match api.eval_get_frame {
+        Some(eval_get_frame) => eval_get_frame(),
+        None => std::ptr::null_mut(),
+    };
+
+    let runtime_stack = super::helpers::maybe_capture_stack(frame, data.capture_stack);
+    let (source_file, source_line) = super::helpers::extract_frame_location(frame);
+
+    // Extract arguments from direct C parameters
+    let mut arguments =
+        extract_args_from_params(self_obj, second_arg, third_arg, data.method_flags, api);
+    let network_info = super::format::format_python_arguments(&data.display_name, &mut arguments);
+
+    let event = crate::tracing::event::python_enter(&data.display_name)
+        .arguments(arguments)
+        .network_info(network_info)
+        .runtime_stack(runtime_stack)
+        .source_location(source_file, source_line)
+        .build();
+
+    if super::helpers::send_trace_event(event).is_err() {
+        ReplacementDecision::Deny
+    } else {
+        ReplacementDecision::Allow
+    }
+}
+
+/// Extract arguments from direct C function parameters based on calling convention.
+///
+/// Unlike `extract_c_function_arguments` (which reads from InvocationContext registers),
+/// this reads from the actual function parameters passed to the replacement.
+///
+/// # Safety
+/// All pointers must be valid Python objects (or null). GIL must be held.
+unsafe fn extract_args_from_params(
+    self_obj: *mut c_void,
+    second_arg: *mut c_void,
+    third_arg: *mut c_void,
     method_flags: i32,
     api: &super::ffi::PythonApi,
 ) -> Vec<crate::Argument> {
-    use crate::interceptor::invocation::get_nth_argument;
-
     if method_flags == 0 {
-        return Vec::new(); // Unknown flags (e.g. eager resolution path)
+        return Vec::new();
     }
 
     let convention = method_flags & METH_CONVENTION_MASK;
@@ -493,30 +616,25 @@ unsafe fn extract_c_function_arguments(
         METH_NOARGS => Vec::new(),
         METH_O => {
             // fn(self, arg) — two C arguments
-            let self_obj = get_nth_argument(context, 0);
-            let arg_obj = get_nth_argument(context, 1);
             let mut args = Vec::with_capacity(2);
             args.push(pyobj_to_argument(self_obj, api));
-            args.push(pyobj_to_argument(arg_obj, api));
+            args.push(pyobj_to_argument(second_arg, api));
             args
         }
         c if c & METH_VARARGS != 0 => {
             // fn(self, args_tuple) — self + Python tuple of positional args
-            let self_obj = get_nth_argument(context, 0);
-            let args_tuple = get_nth_argument(context, 1);
             let mut args = vec![pyobj_to_argument(self_obj, api)];
-            args.extend(super::helpers::extract_tuple_arguments(args_tuple));
+            args.extend(super::helpers::extract_tuple_arguments(second_arg));
             args
         }
         c if c & METH_FASTCALL != 0 => {
             // fn(self, *args_array, nargs) — self + C array of PyObject*
-            let self_obj = get_nth_argument(context, 0);
-            let args_ptr = get_nth_argument(context, 1) as *const *mut c_void;
-            let nargs = get_nth_argument(context, 2) as isize;
+            let args_array = second_arg as *const *mut c_void;
+            let nargs = third_arg as isize;
             let mut args = vec![pyobj_to_argument(self_obj, api)];
-            if !args_ptr.is_null() && nargs > 0 {
+            if !args_array.is_null() && nargs > 0 {
                 for i in 0..nargs.min(8) {
-                    let item = *args_ptr.add(i as usize);
+                    let item = *args_array.add(i as usize);
                     args.push(pyobj_to_argument(item, api));
                 }
             }

@@ -978,10 +978,9 @@ fn test_python_unicode_function_names_traced() {
 // C Extension Method Argument Extraction Tests
 // ============================================================================
 
-/// Verify that C extension method arguments are captured via the interceptor.
+/// Verify that C extension method arguments are captured via Interceptor::replace.
 /// socket.connect is METH_O — the address arg should appear in trace output.
-/// The first call goes through the profile hook (no args); subsequent calls
-/// go through the interceptor (with args). We call connect twice to test both paths.
+/// All calls go through the replacement, including the first.
 #[test]
 fn test_python_tracing_c_method_arguments_via_interceptor() {
     setup();
@@ -1011,10 +1010,48 @@ for _ in range(2):
         let stdout_raw = String::from_utf8_lossy(&output.stdout);
         let stdout = strip_ansi_codes(&stdout_raw);
 
-        // Second call goes through interceptor — should have arguments
+        // All calls go through replacement — should have arguments
         assert!(
             stdout.contains("socket.connect(") && stdout.contains("127.0.0.1"),
-            "Expected socket.connect with address argument via interceptor. stdout: {}",
+            "Expected socket.connect with address argument via replacement. stdout: {}",
+            stdout
+        );
+    });
+}
+
+/// C method arguments are captured on the very first call via
+/// Interceptor::replace (no warmup call needed).
+#[test]
+fn test_python_tracing_c_method_captures_args_on_first_call() {
+    setup();
+
+    skip_if_no_python_primary!(python => {
+        let script = r#"
+import socket
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.1)
+    s.connect(('127.0.0.1', 1))
+except Exception:
+    pass
+"#;
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "--py", "socket.connect",
+                "--",
+                python.to_str().unwrap(),
+                "-c", script,
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            stdout.contains("socket.connect(") && stdout.contains("127.0.0.1"),
+            "Expected socket.connect with address on first call. stdout: {}",
             stdout
         );
     });
