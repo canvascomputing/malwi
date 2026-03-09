@@ -135,6 +135,14 @@ fn find_agent_library() -> Result<String> {
             // {prefix}/bin/../lib/ -> {prefix}/lib/
             candidates.push(exe_dir.join("..").join("lib").join(&lib_name));
         }
+        // Resolve symlinks (e.g., pipx: ~/.local/bin/malwi → venv/bin/malwi)
+        if let Ok(resolved) = exe_path.canonicalize() {
+            if resolved != exe_path {
+                if let Some(exe_dir) = resolved.parent() {
+                    candidates.push(exe_dir.join("..").join("lib").join(&lib_name));
+                }
+            }
+        }
     }
 
     // Add platform-specific installed paths
