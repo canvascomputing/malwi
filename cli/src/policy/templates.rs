@@ -881,8 +881,8 @@ mod tests {
     fn test_comfyui_warns_symbols() {
         let engine = comfyui_engine();
 
-        // symbols: warn: [getpass, crypt, keyring] — Warn mode, not Block
-        for sym in &["getpass", "crypt", "keyring"] {
+        // symbols: warn: [getpass, crypt, keyring, symlink, link, syscall] — Warn mode, not Block
+        for sym in &["getpass", "crypt", "keyring", "symlink", "link", "syscall"] {
             let d = engine.evaluate_native_function(sym, &[]);
             assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
             assert_eq!(
@@ -907,6 +907,32 @@ mod tests {
 
         let d = engine.evaluate_envvar("LD_PRELOAD");
         assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_comfyui_hf_config_envvar_allowed() {
+        let engine = comfyui_engine();
+
+        // HF config flags match *TOKEN* deny but are overridden by explicit allow
+        let d = engine.evaluate_envvar("HF_HUB_DISABLE_IMPLICIT_TOKEN");
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        let d = engine.evaluate_envvar("HF_TOKEN_PATH");
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        // HF_HUB_* glob allows other HF hub config flags
+        let d = engine.evaluate_envvar("HF_HUB_OFFLINE");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_comfyui_hf_token_still_denied() {
+        let engine = comfyui_engine();
+
+        // HF_TOKEN is the actual secret — still blocked
+        let d = engine.evaluate_envvar("HF_TOKEN");
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.section_mode(), EnforcementMode::Block);
     }
 
     // =====================================================================

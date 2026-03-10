@@ -398,11 +398,11 @@ impl PolicyEngine {
         }
 
         // No rules matched - determine implicit action
-        let action = if section.has_allow_rules() {
-            // Has allow rules but none matched = implicit deny
+        let action = if section.has_allow_rules() && !section.has_deny_rules() {
+            // Pure allowlist — implicit deny for unlisted items
             PolicyAction::Deny
         } else {
-            // Only has deny rules (and none matched) = implicit allow
+            // Deny-only or mixed allow+deny — implicit allow for unlisted items
             PolicyAction::Allow
         };
 
@@ -1008,7 +1008,7 @@ commands:
         assert_eq!(d2.action, PolicyAction::Deny);
 
         let d3 = engine.evaluate_execution("ls -la");
-        assert_eq!(d3.action, PolicyAction::Deny); // Not in allow list
+        assert_eq!(d3.action, PolicyAction::Allow); // Mixed allow+deny: implicit allow for unlisted
     }
 
     #[test]

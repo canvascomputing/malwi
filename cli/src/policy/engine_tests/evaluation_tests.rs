@@ -371,7 +371,7 @@ commands:
     assert_eq!(d2.action, PolicyAction::Deny);
 
     let d3 = engine.evaluate_execution("ls -la");
-    assert_eq!(d3.action, PolicyAction::Deny); // Not in allow list
+    assert_eq!(d3.action, PolicyAction::Allow); // Mixed allow+deny: implicit allow for unlisted
 }
 
 #[test]
@@ -668,7 +668,7 @@ commands:
         engine
             .evaluate_function(Runtime::Python, "requests.get", &["https://evil.com"])
             .action,
-        PolicyAction::Deny
+        PolicyAction::Allow // Mixed allow+deny: constraint miss + no deny match = implicit allow
     );
 
     // File tests (global)
@@ -1286,9 +1286,9 @@ python:
     let d2 = engine.evaluate_function(Runtime::Python, "requests.get", &["https://api.com/users"]);
     assert_eq!(d2.action, PolicyAction::Allow);
 
-    // other.com is denied (has allow rules but none match)
+    // other.com — mixed allow+deny: implicit allow for unmatched
     let d3 = engine.evaluate_function(Runtime::Python, "requests.get", &["https://other.com"]);
-    assert_eq!(d3.action, PolicyAction::Deny);
+    assert_eq!(d3.action, PolicyAction::Allow);
 }
 
 #[test]
@@ -1445,14 +1445,14 @@ envvars:
 
     // MY_AWS_KEY doesn't match deny regex (must start with AWS_)
     let d2 = engine.evaluate_envvar("MY_AWS_KEY");
-    // Doesn't match allow either, but has allow rules = deny
-    assert_eq!(d2.action, PolicyAction::Deny);
+    // Mixed allow+deny: implicit allow for unmatched
+    assert_eq!(d2.action, PolicyAction::Allow);
 }
 
 #[test]
-fn test_mixed_allow_deny_neither_matches_implicit_deny() {
+fn test_mixed_allow_deny_neither_matches_implicit_allow() {
     // allow: ["json.*"], deny: ["eval"]
-    // os.system → DENY (has allow rules, implicit deny)
+    // os.system → ALLOW (mixed allow+deny, implicit allow for unlisted)
     let engine = engine_from_yaml(
         r#"
 version: 1
@@ -1473,10 +1473,10 @@ python:
     let d2 = engine.evaluate_function(Runtime::Python, "json.loads", &[]);
     assert_eq!(d2.action, PolicyAction::Allow);
 
-    // Neither matches - implicit deny because allow rules exist
+    // Neither matches — implicit allow (mixed allow+deny, not pure allowlist)
     let d3 = engine.evaluate_function(Runtime::Python, "os.system", &[]);
-    assert_eq!(d3.action, PolicyAction::Deny);
-    assert_eq!(d3.matched_rule, None); // No rule matched, implicit deny
+    assert_eq!(d3.action, PolicyAction::Allow);
+    assert_eq!(d3.matched_rule, None);
 }
 
 #[test]
@@ -1596,10 +1596,10 @@ python:
 }
 
 #[test]
-fn test_adding_allow_rule_changes_implicit_behavior() {
-    // Risk: Adding first allow rule silently changes default behavior
-    // Blacklist mode (implicit allow for unlisted)
-    let engine_blacklist = engine_from_yaml(
+fn test_adding_allow_rule_does_not_change_implicit_behavior() {
+    // Adding allow rules alongside deny rules does NOT create implicit deny.
+    // Implicit deny only applies to pure-allowlist sections (no deny rules).
+    let engine_denylist = engine_from_yaml(
         r#"
 version: 1
 python:
@@ -1608,12 +1608,12 @@ python:
 "#,
     );
 
-    // Unlisted function allowed in blacklist mode
-    let d1 = engine_blacklist.evaluate_function(Runtime::Python, "print", &[]);
+    // Unlisted function allowed in denylist mode
+    let d1 = engine_denylist.evaluate_function(Runtime::Python, "print", &[]);
     assert_eq!(d1.action, PolicyAction::Allow);
 
-    // Whitelist mode (implicit deny for unlisted) - just add ONE allow rule!
-    let engine_whitelist = engine_from_yaml(
+    // Mixed allow+deny — still implicit allow for unlisted
+    let engine_mixed = engine_from_yaml(
         r#"
 version: 1
 python:
@@ -1624,17 +1624,30 @@ python:
 "#,
     );
 
-    // Same unlisted function now DENIED in whitelist mode
-    let d2 = engine_whitelist.evaluate_function(Runtime::Python, "print", &[]);
-    assert_eq!(d2.action, PolicyAction::Deny);
+    // Unlisted function still ALLOWED (mixed mode, not pure allowlist)
+    let d2 = engine_mixed.evaluate_function(Runtime::Python, "print", &[]);
+    assert_eq!(d2.action, PolicyAction::Allow);
 
     // eval still denied
-    let d3 = engine_whitelist.evaluate_function(Runtime::Python, "eval", &[]);
+    let d3 = engine_mixed.evaluate_function(Runtime::Python, "eval", &[]);
     assert_eq!(d3.action, PolicyAction::Deny);
 
     // json.loads allowed
-    let d4 = engine_whitelist.evaluate_function(Runtime::Python, "json.loads", &[]);
+    let d4 = engine_mixed.evaluate_function(Runtime::Python, "json.loads", &[]);
     assert_eq!(d4.action, PolicyAction::Allow);
+
+    // Pure allowlist — implicit deny for unlisted
+    let engine_allowlist = engine_from_yaml(
+        r#"
+version: 1
+python:
+  allow:
+    - json.loads
+"#,
+    );
+
+    let d5 = engine_allowlist.evaluate_function(Runtime::Python, "print", &[]);
+    assert_eq!(d5.action, PolicyAction::Deny);
 }
 
 #[test]
@@ -1801,7 +1814,7 @@ python:
 #[test]
 fn test_eval_allow_deny_warn_keys_together() {
     // python: has allow, deny, and warn keys together.
-    // The allow rules create implicit deny for unlisted.
+    // Mixed allow+deny — unlisted items get implicit allow.
     let engine = engine_from_yaml(
         r#"
 version: 1
@@ -1829,9 +1842,9 @@ python:
     assert_eq!(d3.action, PolicyAction::Deny);
     assert_eq!(d3.section_mode(), EnforcementMode::Warn);
 
-    // unlisted → denied (implicit, because allow rules exist)
+    // unlisted → allowed (mixed allow+deny, not pure allowlist)
     let d4 = engine.evaluate_function(Runtime::Python, "os.system", &[]);
-    assert_eq!(d4.action, PolicyAction::Deny);
+    assert_eq!(d4.action, PolicyAction::Allow);
 }
 
 #[test]
