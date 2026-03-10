@@ -151,6 +151,7 @@ cli/src/
 ├── native_spawn.rs     # posix_spawn/fork+exec implementation
 ├── agent_server.rs     # TCP server receiving agent events (binary wire protocol)
 ├── agent_tracker.rs    # Unified agent lifecycle tracking (EventLoopState, SharedState)
+├── embedded_agent.rs   # Embedded agent library extraction (compile-time include_bytes)
 ├── monitor.rs          # Trace event processing and display
 ├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
 ├── shell_format.rs     # Shell output formatting (quoting, truncation)

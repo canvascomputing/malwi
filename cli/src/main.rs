@@ -2,6 +2,7 @@
 
 mod agent_server;
 mod agent_tracker;
+mod embedded_agent;
 mod monitor;
 mod native_spawn;
 mod policy;

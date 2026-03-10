@@ -111,7 +111,10 @@ jobs:
           echo "Addon files for ${{ matrix.platform }}:"
           ls -la node-addon/prebuilt/${{ matrix.platform }}/*/v8_introspect.node
 
-      - name: Build
+      - name: Build agent
+        run: cargo build --release --target ${{ matrix.target }} -p malwi-agent
+
+      - name: Build all
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload CLI binary

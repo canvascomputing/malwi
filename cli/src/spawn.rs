@@ -171,6 +171,11 @@ fn find_agent_library() -> Result<String> {
         }
     }
 
+    // Final fallback: extract embedded agent library
+    if let Some(path) = crate::embedded_agent::extract_embedded_agent() {
+        return Ok(path);
+    }
+
     anyhow::bail!(
         "Agent library not found. Build with 'cargo build --release' or set MALWI_AGENT_LIB"
     )

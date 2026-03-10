@@ -62,6 +62,7 @@ DEPENDENCIES.md: Cargo.lock
 	@echo "Updated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> DEPENDENCIES.md
 
 build: fmt sbom
+	cargo build --release -p malwi-agent
 	cargo build --release
 	ln -sf target/release/malwi .
 
