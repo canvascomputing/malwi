@@ -1,98 +1,132 @@
 version: 1
-includes: [base]
 
 # Auto-policy for ComfyUI (AI image generation)
 # Customise: ~/.config/malwi/policies/comfyui.yaml
 #
-# Threat model: malicious custom node running arbitrary Python via importlib.
+# Threat model: malicious custom node running arbitrary Python.
 # exec/compile/eval cannot be denied — Python's import system uses them.
-# Inherits from base: files, envvars, symbols, network deny/warn.
+#
+# Enforcement:
+#   python: deny    — ENFORCED (agent raises PermissionError)
+#   commands: deny  — ENFORCED (agent blocks spawn)
+#   network: allow  — ENFORCED (auto-traces HTTP functions, blocks non-allowed hosts)
+#   symbols: warn   — display only
+#   files/envvars   — display only
 
 python:
   deny:
-    # Shell command execution
-    - os.system
-    - os.popen
-    # Credential theft
+    # Credential theft — no command-level equivalent
     - getpass.getpass
     - keyring.get_password
     - keyring.set_password
-    # Native code escape hatch — blocks loading libc/C libraries
-    # to prevent raw socket exfiltration that bypasses network rules
+    # Native code loading — bypasses all Python-level controls
     - ctypes.CDLL
     - ctypes.cdll.LoadLibrary
     - ctypes.WinDLL
-    # Exfiltration via allowed HTTP hosts — argument-constrained denies
-    - "requests.post": ["*api.github.com*"]
-    - "requests.put": ["*api.github.com*"]
-    - "requests.post": ["*upload.pypi.org*"]
-    - "httpx.post": ["*api.github.com*"]
-    - "aiohttp.ClientSession._request": ["*api.github.com*"]
-  warn:
-    # Subprocess use — not blocked (ComfyUI uses it for GPU detection),
-    # but worth noticing if a custom node spawns processes
-    - subprocess.run
-    - subprocess.call
-    - subprocess.check_output
-    - subprocess.check_call
-    - subprocess.Popen.__init__
 
-# Read-only git + package management. Block write operations and dangerous tools.
 commands:
   allow:
-    # Custom node repos — read-only operations
     - "git clone *"
     - "git pull *"
     - "git fetch *"
     - "git checkout *"
     - "git submodule *"
     - "git status"
+    - "git status *"
+    - "git version"
     - "git rev-parse *"
     - "git log *"
     - "git diff *"
-    # Custom node dependencies
+    - "git describe *"
+    - "git branch"
+    - "git branch *"
+    - "git show *"
+    - "git config *"
+    - "git ls-remote *"
+    - "git remote -v"
     - "pip install *"
     - "pip3 install *"
+    - "pip freeze"
+    - "pip list"
+    - "pip show *"
     - "python -m pip *"
     - "python3 -m pip *"
-  deny:
-    # Git write operations — exfiltration channel
-    - "git push *"
-    - "git remote add *"
-    - "git remote set-url *"
-    # Data exfiltration tools
-    - curl
-    - wget
-    # Remote access
-    - ssh
-    - nc
-    - ncat
-    # Privilege escalation
-    - "*sudo*"
-    # Shell spawning — prevent arbitrary command execution
-    - sh
-    - bash
-    - perl
-    - ruby
+    - "uv pip *"
+    - "uv sync *"
+    - "uv run *"
+    - "python3 -I *"
+    - "python -I *"
+    - "python3 -c *"
+    - "python -c *"
+    - "python3 --version"
+    - "python --version"
+    - "nvidia-smi"
+    - "nvidia-smi *"
+  # No deny needed — everything not in allow list is blocked by default.
 
-# Restrict outbound HTTP to known model hosting and package registries.
-# Base provides cloud metadata deny + anonymity domain warnings.
+symbols:
+  warn:
+    - getpass
+    - crypt
+    - keyring
+
+# Network allowlist — default-deny. Everything not listed below is blocked.
+# The system auto-hooks requests.get, httpx.post, etc. from taxonomy and
+# evaluates the URL argument against these rules.
 network:
   allow:
-    # Model downloads
     - "huggingface.co/**"
     - "*.huggingface.co/**"
     - "civitai.com/**"
     - "*.civitai.com/**"
-    # Custom nodes and raw content (NOT *.github.com — blocks api.github.com)
     - "github.com/**"
     - "*.githubusercontent.com/**"
-    # pip packages — download only (not upload.pypi.org)
-    - "pypi.org/simple/**"
-    - "*.pypi.org/simple/**"
+    - "codeload.github.com/**"
+    - "pypi.org/**"
+    - "*.pypi.org/**"
     - "files.pythonhosted.org/**"
     - "*.pythonhosted.org/**"
-    # ComfyUI web UI (any port — kept broad for compatibility)
     - "127.0.0.1:*/**"
     - "localhost:*/**"
+    - "0.0.0.0:*/**"
+  # No deny/warn needed — implicit deny blocks everything not in allow list.
   protocols: [https, http, wss, ws]
+
+files:
+  deny:
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+    - "~/.local/share/keyrings/**"
+    - "~/.local/share/kwalletd/**"
+    - "~/.config/autostart/**"
+    - "~/.config/systemd/user/**"
+    - "/etc/ld.so.preload"
+    - "~/Library/LaunchAgents/**"
+
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD

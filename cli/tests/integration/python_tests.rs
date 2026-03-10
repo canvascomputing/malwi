@@ -1056,3 +1056,54 @@ except Exception:
         );
     });
 }
+
+// ============================================================================
+// EnvVar Monitoring Tests
+// ============================================================================
+
+/// Regression test: envvar monitoring must not break subprocess on Python 3.12+.
+///
+/// os.get_exec_path() calls env.get(b'PATH') with a bytes key. The profile
+/// hook must clear the TypeError from PyUnicode_AsUTF8 on non-string keys,
+/// otherwise PEP 669's legacy_event_handler raises SystemError.
+#[test]
+fn test_python_envvar_monitoring_allows_subprocess_run() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let policy = "version: 1\nenvvars:\n  warn:\n    - PATH\n    - HOME\n";
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("malwi-test-envvar-subprocess-{}.yaml", std::process::id()));
+        std::fs::write(&path, policy).expect("write policy");
+
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-p", path.to_str().unwrap(),
+                "--",
+                python.to_str().unwrap(),
+                "-c", "import subprocess; subprocess.run(['echo', 'hello'])",
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let _ = std::fs::remove_file(&path);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stdout = strip_ansi_codes(&stdout_raw);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "subprocess.run() failed with envvar policy. stdout:\n{}\nstderr:\n{}",
+            stdout, stderr
+        );
+
+        // Should NOT contain SystemError
+        assert!(
+            !stdout.contains("SystemError"),
+            "Got SystemError with envvar policy. stdout:\n{}\nstderr:\n{}",
+            stdout, stderr
+        );
+    });
+}

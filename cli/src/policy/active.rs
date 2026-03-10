@@ -98,6 +98,8 @@ impl ActivePolicy {
 
     /// Derive hook configurations from policy rules.
     /// Each policy rule (allow or deny) needs an agent-side hook so we can intercept the call.
+    /// When the policy has `network: allow:` rules, also auto-adds known HTTP functions
+    /// from the taxonomy so the network phase can evaluate their URLs.
     pub fn derive_hook_configs(&self, capture_stack: bool) -> Vec<HookConfig> {
         let specs = self.engine.extract_hook_specs();
         let mut configs = Vec::new();
@@ -109,6 +111,37 @@ impl ActivePolicy {
             let key = (format!("{:?}", config.hook_type), config.symbol.clone());
             if seen.insert(key) {
                 configs.push(config);
+            }
+        }
+
+        // Auto-add HTTP function hooks when network: allow exists.
+        // These functions aren't in any deny/warn list, but the network phase
+        // needs to see them fire to evaluate URLs against the allowlist.
+        if self.has_network_allow {
+            let tax = super::taxonomy::get();
+            for func in &tax.http_functions.python {
+                let key = ("Python".to_string(), func.clone());
+                if seen.insert(key) {
+                    configs.push(HookConfig {
+                        hook_type: HookType::Python,
+                        symbol: func.clone(),
+                        arg_count: None,
+                        capture_return: true,
+                        capture_stack,
+                    });
+                }
+            }
+            for func in &tax.http_functions.nodejs {
+                let key = ("Nodejs".to_string(), func.clone());
+                if seen.insert(key) {
+                    configs.push(HookConfig {
+                        hook_type: HookType::Nodejs,
+                        symbol: func.clone(),
+                        arg_count: None,
+                        capture_return: true,
+                        capture_stack,
+                    });
+                }
             }
         }
 
@@ -225,7 +258,14 @@ impl ActivePolicy {
             && self.has_network_allow
         {
             // Downgrade Block to Display so the network phase can decide
-            Some(self.evaluate_network_phase(event, EventDisposition::Display))
+            let net_disp = self.evaluate_network_phase(event, EventDisposition::Display);
+            // If network phase would block but we only have an IP (no hostname/URL),
+            // the hostname-based allow rules can't match — don't block on that basis.
+            if net_disp.is_blocked() && !has_hostname_context(event) {
+                Some(EventDisposition::Display)
+            } else {
+                Some(net_disp)
+            }
         } else {
             None // Stay blocked
         }
@@ -237,6 +277,23 @@ impl ActivePolicy {
 fn is_networking_symbol(name: &str) -> bool {
     let tax = super::taxonomy::get();
     tax.symbols.networking.iter().any(|s| s == name)
+}
+
+/// Check if a trace event has hostname context (URL or non-IP hostname).
+/// IP-only events can't match hostname-based allow rules, so blocking them
+/// based on "no allow match" would be incorrect.
+fn has_hostname_context(event: &TraceEvent) -> bool {
+    match &event.network_info {
+        Some(info) => {
+            if info.url.is_some() {
+                return true;
+            }
+            info.host
+                .as_ref()
+                .is_some_and(|h| h.parse::<std::net::IpAddr>().is_err())
+        }
+        None => false,
+    }
 }
 
 /// Check if a policy engine has any network allow rules (Http, Domains, or Endpoints).

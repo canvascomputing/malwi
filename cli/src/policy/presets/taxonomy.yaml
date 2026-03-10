@@ -452,6 +452,30 @@ symbols:
     - gethostbyname
     - gethostbyname2
 
+http_functions:
+  python:
+    - requests.get
+    - requests.post
+    - requests.put
+    - requests.patch
+    - requests.delete
+    - requests.head
+    - requests.request
+    - httpx.get
+    - httpx.post
+    - httpx.put
+    - httpx.patch
+    - httpx.delete
+    - httpx.request
+    - urllib.request.urlopen
+    - aiohttp.ClientSession._request
+  nodejs:
+    - http.request
+    - http.get
+    - https.request
+    - https.get
+    - fetch
+
 network:
   deny:
     - "169.254.169.254/**"

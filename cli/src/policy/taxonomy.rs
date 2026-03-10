@@ -72,6 +72,12 @@ pub struct TaxonomySymbols {
     pub networking: Vec<String>,
 }
 
+/// Known HTTP functions per runtime, for auto-hooking when network: allow exists.
+pub struct TaxonomyHttpFunctions {
+    pub python: Vec<String>,
+    pub nodejs: Vec<String>,
+}
+
 /// Network patterns for policy generation.
 pub struct TaxonomyNetwork {
     pub deny: Vec<String>,
@@ -86,6 +92,7 @@ pub struct Taxonomy {
     pub envvars: TaxonomyEnvvars,
     pub symbols: TaxonomySymbols,
     pub network: TaxonomyNetwork,
+    pub http_functions: TaxonomyHttpFunctions,
 }
 
 impl Taxonomy {
@@ -226,12 +233,16 @@ fn parse_taxonomy(raw: &str) -> Taxonomy {
     // --- Network ---
     let network = parse_network(root_map);
 
+    // --- HTTP functions ---
+    let http_functions = parse_http_functions(root_map);
+
     Taxonomy {
         commands,
         files,
         envvars,
         symbols,
         network,
+        http_functions,
     }
 }
 
@@ -375,6 +386,29 @@ fn parse_symbols(root: &[(String, YamlValue)]) -> TaxonomySymbols {
     }
 
     symbols
+}
+
+/// Parse the `http_functions:` section into TaxonomyHttpFunctions.
+fn parse_http_functions(root: &[(String, YamlValue)]) -> TaxonomyHttpFunctions {
+    let mut http = TaxonomyHttpFunctions {
+        python: Vec::new(),
+        nodejs: Vec::new(),
+    };
+
+    let val = match find_key(root, "http_functions") {
+        Some(v) => v,
+        None => return http,
+    };
+    let map = as_mapping(val);
+
+    if let Some(py) = find_key(map, "python") {
+        http.python = as_string_list(py);
+    }
+    if let Some(js) = find_key(map, "nodejs") {
+        http.nodejs = as_string_list(js);
+    }
+
+    http
 }
 
 /// Parse the `network:` section into TaxonomyNetwork.
@@ -610,6 +644,24 @@ mod tests {
             .symbols
             .air_gap_extra
             .contains(&"getaddrinfo".to_string()));
+    }
+
+    #[test]
+    fn http_functions_present() {
+        let tax = get();
+        assert!(tax
+            .http_functions
+            .python
+            .contains(&"requests.get".to_string()));
+        assert!(tax
+            .http_functions
+            .python
+            .contains(&"urllib.request.urlopen".to_string()));
+        assert!(tax
+            .http_functions
+            .nodejs
+            .contains(&"http.request".to_string()));
+        assert!(tax.http_functions.nodejs.contains(&"fetch".to_string()));
     }
 
     #[test]

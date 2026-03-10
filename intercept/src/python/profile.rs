@@ -221,47 +221,63 @@ unsafe extern "C" fn profile_hook(
     }
 
     // Python function call — extract name from frame's code object
-    let qualified_name = match get_qualified_function_name(frame) {
-        Some(name) => name,
-        None => return 0,
+    let result = 'py: {
+        let qualified_name = match get_qualified_function_name(frame) {
+            Some(name) => name,
+            None => break 'py 0,
+        };
+
+        // Intercept envvar access: _Environ.__getitem__ is the funnel for all
+        // os.environ['KEY'], os.environ.get('KEY'), and os.getenv('KEY') calls.
+        if super::is_envvar_monitoring_enabled() && qualified_name.ends_with("_Environ.__getitem__")
+        {
+            break 'py handle_envvar_access(frame);
+        }
+
+        // Check filter and get capture_stack setting
+        let (matches, capture_stack) = matches_filter(&qualified_name);
+        if !matches {
+            break 'py 0;
+        }
+
+        let mut arguments = extract_function_arguments(frame);
+
+        // Apply Python-specific formatting for networking functions
+        let network_info = super::format::format_python_arguments(&qualified_name, &mut arguments);
+
+        let runtime_stack = maybe_capture_stack(frame, capture_stack);
+        let (caller_file, caller_line) = extract_caller_location(frame);
+
+        // Build trace event using EventBuilder
+        let event = crate::tracing::event::python_enter(&qualified_name)
+            .arguments(arguments)
+            .network_info(network_info)
+            .runtime_stack(runtime_stack)
+            .source_location(caller_file, caller_line)
+            .build();
+
+        // Send to CLI (handles review mode internally)
+        if super::helpers::send_trace_event(event).is_err() {
+            // User denied - raise PermissionError to abort the call
+            raise_permission_error();
+            break 'py -1;
+        }
+
+        0
     };
 
-    // Intercept envvar access: _Environ.__getitem__ is the funnel for all
-    // os.environ['KEY'], os.environ.get('KEY'), and os.getenv('KEY') calls.
-    if super::is_envvar_monitoring_enabled() && qualified_name.ends_with("_Environ.__getitem__") {
-        return handle_envvar_access(frame);
+    // Clear any pending exceptions from CPython API calls (same pattern as c_call path).
+    // On Python 3.12+, PEP 669 wraps legacy profile hooks and checks for pending
+    // exceptions — returning 0 with an exception set causes SystemError.
+    if result == 0 {
+        if let Some(api) = PYTHON_API.get() {
+            if let Some(err_clear) = api.err_clear {
+                err_clear();
+            }
+        }
     }
 
-    // Check filter and get capture_stack setting
-    let (matches, capture_stack) = matches_filter(&qualified_name);
-    if !matches {
-        return 0;
-    }
-
-    let mut arguments = extract_function_arguments(frame);
-
-    // Apply Python-specific formatting for networking functions
-    let network_info = super::format::format_python_arguments(&qualified_name, &mut arguments);
-
-    let runtime_stack = maybe_capture_stack(frame, capture_stack);
-    let (caller_file, caller_line) = extract_caller_location(frame);
-
-    // Build trace event using EventBuilder
-    let event = crate::tracing::event::python_enter(&qualified_name)
-        .arguments(arguments)
-        .network_info(network_info)
-        .runtime_stack(runtime_stack)
-        .source_location(caller_file, caller_line)
-        .build();
-
-    // Send to CLI (handles review mode internally)
-    if super::helpers::send_trace_event(event).is_err() {
-        // User denied - raise PermissionError to abort the call
-        raise_permission_error();
-        return -1;
-    }
-
-    0
+    result
 }
 
 /// Handle a PYTRACE_C_CALL event — trace C built-in function calls.
@@ -337,6 +353,10 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     // Get co_varnames tuple to find the 'key' parameter (index 1, after 'self')
     let varnames = (api.get_attr_string)(code, c"co_varnames".as_ptr());
     if varnames.is_null() {
+        // get_attr_string sets AttributeError — clear it
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
         return 0;
     }
 
@@ -344,6 +364,10 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     let key_name_obj = tuple_get_item(varnames, 1);
     (api.py_decref)(varnames);
     if key_name_obj.is_null() {
+        // tuple_get_item sets IndexError — clear it
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
         return 0;
     }
 
@@ -375,6 +399,10 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     let key_str = if !key_ptr.is_null() {
         super::helpers::cstr_to_string(key_ptr)
     } else {
+        // Non-string key (e.g., bytes from env.get(b'PATH')) — clear TypeError
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
         None
     };
     (api.py_decref)(key_obj);

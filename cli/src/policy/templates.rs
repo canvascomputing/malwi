@@ -56,20 +56,20 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_python_block_and_warn_coexist() {
+    fn test_comfyui_python_block_and_allow_coexist() {
         let engine = comfyui_engine();
 
-        // os.system → Block (from python:)
-        let d = engine.evaluate_function(Runtime::Python, "os.system", &[]);
+        // getpass.getpass → Block (from python: deny:)
+        let d = engine.evaluate_function(Runtime::Python, "getpass.getpass", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Block);
 
-        // subprocess.run → Warn (from warn: key)
-        let d = engine.evaluate_function(Runtime::Python, "subprocess.run", &[]);
+        // ctypes.CDLL → Block (from python: deny:)
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
+        assert_eq!(d.section_mode(), EnforcementMode::Block);
 
-        // Unlisted function → allowed
+        // Unlisted function → allowed (no warn section, HTTP handled by network allowlist)
         let d = engine.evaluate_function(Runtime::Python, "json.loads", &[]);
         assert_eq!(d.action, PolicyAction::Allow);
     }
@@ -104,16 +104,20 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_attack_c_pypi_upload() {
+    fn test_comfyui_pypi_allowed() {
         let engine = comfyui_engine();
 
-        let d =
-            engine.evaluate_http_url("https://upload.pypi.org/legacy/", "upload.pypi.org/legacy/");
-        assert_eq!(d.action, PolicyAction::Deny);
-
+        // pypi.org is broadly allowed (install + download)
         let d = engine.evaluate_http_url(
             "https://pypi.org/simple/requests/",
             "pypi.org/simple/requests/",
+        );
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        // *.pypi.org subdomains allowed too
+        let d = engine.evaluate_http_url(
+            "https://files.pythonhosted.org/packages/requests-2.31.0.tar.gz",
+            "files.pythonhosted.org/packages/requests-2.31.0.tar.gz",
         );
         assert_eq!(d.action, PolicyAction::Allow);
     }
@@ -214,20 +218,15 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_suspicious_domains_warned() {
+    fn test_comfyui_unlisted_domains_blocked() {
         let engine = comfyui_engine();
 
-        let d = engine.evaluate_domain("hidden.onion");
+        // Domains not in the allow list are implicitly denied
+        let d = engine.evaluate_http_url("https://evil.com/exfil", "evil.com/exfil");
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
 
-        let d = engine.evaluate_domain("service.i2p");
+        let d = engine.evaluate_http_url("https://hidden.onion/", "hidden.onion/");
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
-
-        let d = engine.evaluate_domain("tunnel.loki");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
     }
 
     #[test]
@@ -879,23 +878,24 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_blocks_network_symbols() {
+    fn test_comfyui_warns_symbols() {
         let engine = comfyui_engine();
 
-        for sym in &["connect", "socket", "sendto", "bind"] {
+        // symbols: warn: [getpass, crypt, keyring] — Warn mode, not Block
+        for sym in &["getpass", "crypt", "keyring"] {
             let d = engine.evaluate_native_function(sym, &[]);
             assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
+            assert_eq!(
+                d.section_mode(),
+                EnforcementMode::Warn,
+                "{} should be Warn mode",
+                sym
+            );
         }
-    }
 
-    #[test]
-    fn test_comfyui_blocks_filesystem_bypass_symbols() {
-        let engine = comfyui_engine();
-
-        for sym in &["symlink", "link", "syscall"] {
-            let d = engine.evaluate_native_function(sym, &[]);
-            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
-        }
+        // Network symbols NOT in policy — allowed (network allowlist handles via HTTP hooks)
+        let d = engine.evaluate_native_function("connect", &[]);
+        assert_eq!(d.action, PolicyAction::Allow);
     }
 
     #[test]
