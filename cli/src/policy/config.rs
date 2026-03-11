@@ -84,7 +84,6 @@ pub(crate) fn reset_policies() -> Result<()> {
         "openclaw",
         "bash-install",
         "air-gap",
-        "base",
     ];
 
     for name in &names {
@@ -113,7 +112,7 @@ pub(crate) fn write_policy(name: &str) -> Result<()> {
     } else {
         super::templates::embedded_policy(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown policy '{}'. Available: default, npm-install, pip-install, comfyui, openclaw, bash-install, air-gap, base",
+                "Unknown policy '{}'. Available: default, npm-install, pip-install, comfyui, openclaw, bash-install, air-gap",
                 name
             )
         })?
@@ -201,7 +200,6 @@ mod tests {
             "openclaw",
             "bash-install",
             "air-gap",
-            "base",
         ];
         for name in &expected {
             let path = dir.join(format!("{}.yaml", name));

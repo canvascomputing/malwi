@@ -13,7 +13,6 @@ const COMFYUI_YAML: &str = include_str!("presets/comfyui.yaml");
 const OPENCLAW_YAML: &str = include_str!("presets/openclaw.yaml");
 const BASH_INSTALL_YAML: &str = include_str!("presets/bash-install.yaml");
 const AIR_GAP_YAML: &str = include_str!("presets/air-gap.yaml");
-const BASE_YAML: &str = include_str!("presets/base.yaml");
 
 /// Return the embedded YAML template for a given policy name.
 pub fn embedded_policy(name: &str) -> Option<String> {
@@ -24,7 +23,6 @@ pub fn embedded_policy(name: &str) -> Option<String> {
         "openclaw" => Some(OPENCLAW_YAML.to_string()),
         "bash-install" => Some(BASH_INSTALL_YAML.to_string()),
         "air-gap" => Some(AIR_GAP_YAML.to_string()),
-        "base" => Some(BASE_YAML.to_string()),
         _ => None,
     }
 }
@@ -483,32 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_install_blocks_cloud_metadata() {
-        let engine = bash_install_engine();
-
-        let d = engine.evaluate_http_url(
-            "http://169.254.169.254/latest/meta-data/",
-            "169.254.169.254/latest/meta-data/",
-        );
-        assert_eq!(d.action, PolicyAction::Deny);
-
-        let d = engine.evaluate_http_url(
-            "http://metadata.google.internal/computeMetadata/v1/",
-            "metadata.google.internal/computeMetadata/v1/",
-        );
-        assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_bash_install_warns_anonymity_domains() {
-        let engine = bash_install_engine();
-
-        let d = engine.evaluate_domain("hidden.onion");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
-    }
-
-    #[test]
     fn test_bash_install_blocks_env_secrets() {
         let engine = bash_install_engine();
 
@@ -568,16 +540,6 @@ mod tests {
 
         let d = engine.evaluate_native_function("syscall", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_bash_install_blocks_network_symbols() {
-        let engine = bash_install_engine();
-
-        for sym in &["connect", "socket", "sendto", "bind"] {
-            let d = engine.evaluate_native_function(sym, &[]);
-            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
-        }
     }
 
     #[test]
@@ -697,16 +659,6 @@ mod tests {
     }
 
     #[test]
-    fn test_npm_install_blocks_network_symbols() {
-        let engine = npm_install_engine();
-
-        for sym in &["connect", "socket", "sendto", "bind"] {
-            let d = engine.evaluate_native_function(sym, &[]);
-            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
-        }
-    }
-
-    #[test]
     fn test_npm_install_blocks_filesystem_bypass_symbols() {
         let engine = npm_install_engine();
 
@@ -731,15 +683,6 @@ mod tests {
             "metadata.google.internal/computeMetadata/v1/",
         );
         assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_npm_install_warns_anonymity_domains() {
-        let engine = npm_install_engine();
-
-        let d = engine.evaluate_domain("hidden.onion");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
     }
 
     // =====================================================================
@@ -798,16 +741,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pip_install_blocks_network_symbols() {
-        let engine = pip_install_engine();
-
-        for sym in &["connect", "socket", "sendto", "bind"] {
-            let d = engine.evaluate_native_function(sym, &[]);
-            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
-        }
-    }
-
-    #[test]
     fn test_pip_install_blocks_filesystem_bypass_symbols() {
         let engine = pip_install_engine();
 
@@ -826,15 +759,6 @@ mod tests {
             "169.254.169.254/latest/meta-data/",
         );
         assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_pip_install_warns_anonymity_domains() {
-        let engine = pip_install_engine();
-
-        let d = engine.evaluate_domain("hidden.onion");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
     }
 
     // =====================================================================
@@ -933,17 +857,6 @@ mod tests {
         let d = engine.evaluate_envvar("HF_TOKEN");
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Block);
-    }
-
-    // =====================================================================
-    // base policy: parse test
-    // =====================================================================
-
-    #[test]
-    fn test_base_policy_parses() {
-        let yaml = embedded_policy("base").expect("base policy must exist");
-        PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name))
-            .expect("base policy must parse");
     }
 
     // =====================================================================
@@ -1435,16 +1348,6 @@ mod tests {
     }
 
     #[test]
-    fn test_openclaw_blocks_network_symbols() {
-        let engine = openclaw_engine();
-
-        for sym in &["connect", "socket", "sendto", "bind"] {
-            let d = engine.evaluate_native_function(sym, &[]);
-            assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
-        }
-    }
-
-    #[test]
     fn test_openclaw_blocks_filesystem_bypass_symbols() {
         let engine = openclaw_engine();
 
@@ -1454,20 +1357,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_openclaw_anonymity_domains_warned() {
-        let engine = openclaw_engine();
-
-        let d = engine.evaluate_domain("hidden.onion");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
-
-        let d = engine.evaluate_domain("service.i2p");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
-
-        let d = engine.evaluate_domain("tunnel.loki");
-        assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Warn);
-    }
 }

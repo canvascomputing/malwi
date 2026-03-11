@@ -867,15 +867,15 @@ commands:
     }
 
     #[test]
-    fn test_pip_install_native_getpass_still_blocked() {
+    fn test_pip_install_native_getpass_warned() {
         let policy = pip_install_policy();
 
-        // Non-networking symbols should still be blocked
+        // Non-networking symbols should be warned
         let event = make_trace_event(HookType::Native, "getpass", &[]);
         let disp = policy.evaluate_trace(&event);
         assert!(
-            disp.is_blocked(),
-            "native getpass should still be blocked (not a networking symbol)"
+            matches!(disp, EventDisposition::Warn { .. }),
+            "native getpass should be warned (not a networking symbol)"
         );
     }
 
