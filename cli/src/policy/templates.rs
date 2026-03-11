@@ -1356,5 +1356,4 @@ mod tests {
             assert_eq!(d.action, PolicyAction::Deny, "{} should be denied", sym);
         }
     }
-
 }

@@ -19,6 +19,7 @@ pub struct EventBuilder {
     network_info: Option<NetworkInfo>,
     source_file: Option<String>,
     source_line: Option<u32>,
+    source_column: Option<u32>,
 }
 
 impl EventBuilder {
@@ -37,6 +38,7 @@ impl EventBuilder {
             network_info: None,
             source_file: None,
             source_line: None,
+            source_column: None,
         }
     }
 
@@ -56,6 +58,7 @@ impl EventBuilder {
             network_info: None,
             source_file: None,
             source_line: None,
+            source_column: None,
         }
     }
 
@@ -89,10 +92,16 @@ impl EventBuilder {
         self
     }
 
-    /// Set the caller's source file and line number.
-    pub fn source_location(mut self, file: Option<String>, line: Option<u32>) -> Self {
+    /// Set the caller's source file, line, and column number.
+    pub fn source_location(
+        mut self,
+        file: Option<String>,
+        line: Option<u32>,
+        column: Option<u32>,
+    ) -> Self {
         self.source_file = file;
         self.source_line = line;
+        self.source_column = column;
         self
     }
 
@@ -108,6 +117,7 @@ impl EventBuilder {
             network_info: self.network_info,
             source_file: self.source_file,
             source_line: self.source_line,
+            source_column: self.source_column,
             timestamp_ns: super::time::elapsed_ns(),
             ..Default::default()
         }
@@ -251,10 +261,11 @@ mod tests {
     #[test]
     fn test_source_location() {
         let event = python_enter("json.loads")
-            .source_location(Some("script.py".to_string()), Some(42))
+            .source_location(Some("script.py".to_string()), Some(42), Some(10))
             .build();
         assert_eq!(event.source_file.as_deref(), Some("script.py"));
         assert_eq!(event.source_line, Some(42));
+        assert_eq!(event.source_column, Some(10));
     }
 
     #[test]
@@ -262,6 +273,7 @@ mod tests {
         let event = js_enter("fs.readFile").build();
         assert!(event.source_file.is_none());
         assert!(event.source_line.is_none());
+        assert!(event.source_column.is_none());
     }
 
     #[test]
@@ -276,11 +288,12 @@ mod tests {
     #[test]
     fn test_envvar_source_location() {
         let event = envvar_enter("SECRET_KEY")
-            .source_location(Some("script.sh".to_string()), Some(5))
+            .source_location(Some("script.sh".to_string()), Some(5), None)
             .build();
         assert_eq!(event.hook_type, HookType::EnvVar);
         assert_eq!(event.function, "SECRET_KEY");
         assert_eq!(event.source_file.as_deref(), Some("script.sh"));
         assert_eq!(event.source_line, Some(5));
+        assert!(event.source_column.is_none());
     }
 }

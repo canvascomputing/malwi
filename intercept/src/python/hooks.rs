@@ -582,7 +582,7 @@ unsafe fn handle_replacement(
         .arguments(arguments)
         .network_info(network_info)
         .runtime_stack(runtime_stack)
-        .source_location(source_file, source_line)
+        .source_location(source_file, source_line, None)
         .build();
 
     if super::helpers::send_trace_event(event).is_err() {

@@ -171,6 +171,18 @@ type GetPlatformInfoFn = unsafe extern "C" fn() -> *const c_char;
 type GetTypeNameFn = unsafe extern "C" fn(c_int) -> *const c_char;
 type GetCurrentFunctionNameFn = unsafe extern "C" fn(*mut c_void) -> *mut c_char;
 type CaptureStackTraceFn = unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_char;
+type GetCallerSourceLocationFn = unsafe extern "C" fn(*mut c_void) -> *mut MalwiSourceLocationFfi;
+type GetTopSourceLocationFn = unsafe extern "C" fn(*mut c_void) -> *mut MalwiSourceLocationFfi;
+type FreeSourceLocationFn = unsafe extern "C" fn(*mut MalwiSourceLocationFfi);
+
+/// FFI structure for caller source location.
+/// Matches MalwiSourceLocation from stack_parser.h.
+#[repr(C)]
+struct MalwiSourceLocationFfi {
+    script: *mut c_char,
+    line: i32,
+    column: i32,
+}
 
 // =============================================================================
 // DYNAMIC FFI LOADING
@@ -190,6 +202,9 @@ struct StackParserFfi {
     get_type_name: GetTypeNameFn,
     get_current_function_name: GetCurrentFunctionNameFn,
     capture_stack_trace: CaptureStackTraceFn,
+    get_caller_source_location: GetCallerSourceLocationFn,
+    get_top_source_location: GetTopSourceLocationFn,
+    free_source_location: FreeSourceLocationFn,
 }
 
 /// Global FFI - resolved once when addon is loaded
@@ -254,6 +269,15 @@ pub fn resolve_stack_parser_ffi(addon_path: &std::path::Path) -> bool {
                 GetCurrentFunctionNameFn
             ),
             capture_stack_trace: resolve_sym!("malwi_capture_stack_trace", CaptureStackTraceFn),
+            get_caller_source_location: resolve_sym!(
+                "malwi_get_caller_source_location",
+                GetCallerSourceLocationFn
+            ),
+            get_top_source_location: resolve_sym!(
+                "malwi_get_top_source_location",
+                GetTopSourceLocationFn
+            ),
+            free_source_location: resolve_sym!("malwi_free_source_location", FreeSourceLocationFn),
         };
 
         let _ = STACK_PARSER_FFI.set(ffi);
@@ -715,28 +739,6 @@ pub fn format_parameters(params: Option<&FrameParameters>) -> String {
 // FUNCTION NAME AND STACK TRACE
 // =============================================================================
 
-/// Get the script path for the current JavaScript function.
-///
-/// Returns the script/file path of the function at the top of the stack.
-/// Returns None if the function is from eval/inline code or FFI is not loaded.
-///
-/// # Arguments
-/// * `isolate` - Pointer to v8::Isolate.
-///
-/// # Returns
-/// * `Some(String)` - The script path (may be empty for eval/inline code).
-/// * `None` - FFI not loaded or error capturing stack.
-///
-/// # Safety
-/// The caller must ensure `isolate` is a valid v8::Isolate pointer.
-pub unsafe fn get_current_script_path(isolate: *mut c_void) -> Option<String> {
-    let frames = unsafe { capture_stack_trace(isolate, 1) }?;
-    if frames.is_empty() {
-        return None;
-    }
-    Some(frames[0].script.clone())
-}
-
 /// Get the current function name from V8's StackTrace API.
 ///
 /// Uses V8's public StackTrace API to get the name of the function
@@ -765,6 +767,107 @@ pub unsafe fn get_current_function_name(isolate: *mut c_void) -> Option<String> 
         libc::free(name_ptr as *mut c_void);
         Some(name)
     }
+}
+
+/// Get the caller's source location from V8 stack frames.
+///
+/// Uses direct frame reading (no `v8::StackTrace::CurrentStackTrace`) to avoid
+/// heap allocations that can trigger GC inside replaced Runtime functions.
+///
+/// # Arguments
+/// * `isolate` - Pointer to v8::Isolate.
+///
+/// # Returns
+/// `(script_path, line, column)` — each field is `None` if unavailable
+/// (FFI not loaded, no caller frame, etc.).
+///
+/// # Safety
+/// The caller must ensure `isolate` is a valid v8::Isolate pointer.
+pub unsafe fn get_caller_source_location(
+    isolate: *mut c_void,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    let ffi = match STACK_PARSER_FFI.get() {
+        Some(ffi) => ffi,
+        None => return (None, None, None),
+    };
+
+    let loc = (ffi.get_caller_source_location)(isolate);
+    if loc.is_null() {
+        return (None, None, None);
+    }
+
+    let script = if (*loc).script.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr((*loc).script).to_string_lossy().into_owned())
+    };
+
+    let line = if (*loc).line > 0 {
+        Some((*loc).line as u32)
+    } else {
+        None
+    };
+
+    let column = if (*loc).column > 0 {
+        Some((*loc).column as u32)
+    } else {
+        None
+    };
+
+    (ffi.free_source_location)(loc);
+
+    (script, line, column)
+}
+
+/// Get the top JS frame's source location from V8 stack frames.
+///
+/// Returns the source location of the first (top) JS frame directly,
+/// without walking up a frame. Used by the addon callback path where
+/// the wrapped function is native (no JS frame), so the top JS frame
+/// is already the caller.
+///
+/// # Arguments
+/// * `isolate` - Pointer to v8::Isolate.
+///
+/// # Returns
+/// `(script_path, line, column)` — each field is `None` if unavailable.
+///
+/// # Safety
+/// The caller must ensure `isolate` is a valid v8::Isolate pointer.
+pub unsafe fn get_top_source_location(
+    isolate: *mut c_void,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    let ffi = match STACK_PARSER_FFI.get() {
+        Some(ffi) => ffi,
+        None => return (None, None, None),
+    };
+
+    let loc = (ffi.get_top_source_location)(isolate);
+    if loc.is_null() {
+        return (None, None, None);
+    }
+
+    let script = if (*loc).script.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr((*loc).script).to_string_lossy().into_owned())
+    };
+
+    let line = if (*loc).line > 0 {
+        Some((*loc).line as u32)
+    } else {
+        None
+    };
+
+    let column = if (*loc).column > 0 {
+        Some((*loc).column as u32)
+    } else {
+        None
+    };
+
+    (ffi.free_source_location)(loc);
+
+    (script, line, column)
 }
 
 /// V8 stack frame information.

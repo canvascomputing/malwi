@@ -101,6 +101,7 @@ pub(crate) unsafe extern "C" fn on_shell_execve_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            source_column: None,
             hook_type: Some(crate::HookType::Bash),
         });
     }
@@ -217,6 +218,7 @@ pub(crate) unsafe extern "C" fn on_execute_command_internal_enter(
                     source_file,
                     source_line,
                     runtime_stack: None,
+                    source_column: None,
                     hook_type: Some(crate::HookType::Bash),
                 });
             }
@@ -271,6 +273,7 @@ pub(crate) unsafe extern "C" fn on_eval_builtin_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            source_column: None,
             hook_type: Some(crate::HookType::Bash),
         });
     }
@@ -319,6 +322,7 @@ pub(crate) unsafe extern "C" fn on_source_builtin_enter(
             source_file,
             source_line,
             runtime_stack: None,
+            source_column: None,
             hook_type: Some(crate::HookType::Bash),
         });
     }
@@ -382,7 +386,7 @@ pub(crate) unsafe extern "C" fn on_find_variable_leave(
     if let Some(agent) = crate::Agent::get() {
         let (source_file, source_line) = get_bash_source_location();
         let event = crate::tracing::event::envvar_enter(&name)
-            .source_location(source_file, source_line)
+            .source_location(source_file, source_line, None)
             .build();
         let _ = agent.send_event(event);
     }

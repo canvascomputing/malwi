@@ -379,7 +379,7 @@ fn test_review_mode_approve_allows_v8_execution() {
         );
         assert!(
             stdout.contains("[eval]:") || has_review_prompt(&stdout),
-            "Expected [eval] source location. stdout: {}",
+            "Expected source location ([eval]:) or review prompt. stdout: {}",
             stdout
         );
 

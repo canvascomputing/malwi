@@ -796,4 +796,125 @@ char* malwi_capture_stack_trace(void* isolate_ptr, int max_frames) {
     return result;
 }
 
+// Shared helper: extract source location from a JS frame at the given fp.
+// Validates the frame, reads the JSFunction, and extracts script/line/column.
+static MalwiSourceLocation* source_location_from_js_frame(
+    v8::Isolate* isolate, uintptr_t js_fp) {
+    using namespace malwi::v8_internal;
+
+    // Validate frame looks like a JS frame (has a JSFunction in function slot)
+    Address func_addr = static_cast<Address>(js_fp) + kFunctionOffset;
+    if (!IsValidPointer(func_addr)) {
+        return nullptr;
+    }
+
+    Tagged func_tagged = *reinterpret_cast<Tagged*>(func_addr);
+    if (!IsHeapObject(func_tagged)) {
+        return nullptr;
+    }
+
+    // Create v8::Local pointing to the frame's function slot
+    Tagged* func_slot = reinterpret_cast<Tagged*>(func_addr);
+    v8::Local<v8::Value> local;
+    memcpy(static_cast<void*>(&local), &func_slot, sizeof(func_slot));
+
+    if (!local->IsFunction()) {
+        return nullptr;
+    }
+
+    v8::Local<v8::Function> func = local.As<v8::Function>();
+
+    // Extract script name from the function's ScriptOrigin.
+    // These V8 APIs read metadata from SharedFunctionInfo without stack walking
+    // or significant heap allocation — same safety level as func->GetName().
+    char* script_cstr = nullptr;
+    v8::Local<v8::Value> resource_name = func->GetScriptOrigin().ResourceName();
+    if (!resource_name.IsEmpty() && resource_name->IsString()) {
+        v8::Local<v8::String> script_str = resource_name.As<v8::String>();
+        if (script_str->Length() > 0) {
+            script_cstr = V8StringToCString(isolate, script_str);
+        }
+    }
+
+    // Extract line number (0-based from V8, convert to 1-based)
+    int line = func->GetScriptLineNumber();
+    int column = func->GetScriptColumnNumber();
+
+    MalwiSourceLocation* loc = static_cast<MalwiSourceLocation*>(
+        malloc(sizeof(MalwiSourceLocation)));
+    if (!loc) {
+        if (script_cstr) free(script_cstr);
+        return nullptr;
+    }
+
+    loc->script = script_cstr;
+    loc->line = (line >= 0) ? line + 1 : -1;
+    loc->column = (column >= 0) ? column + 1 : -1;
+
+    return loc;
+}
+
+MalwiSourceLocation* malwi_get_caller_source_location(void* isolate_ptr) {
+    v8::Isolate* isolate = isolate_ptr
+        ? static_cast<v8::Isolate*>(isolate_ptr)
+        : v8::Isolate::GetCurrent();
+
+    if (!isolate) {
+        return nullptr;
+    }
+
+    v8::HandleScope handle_scope(isolate);
+
+    // Get the top JS frame (callee) from isolate
+    uintptr_t callee_fp = malwi_get_js_frame_from_isolate(isolate);
+    if (callee_fp == 0) {
+        return nullptr;
+    }
+
+    // Walk one frame up to get the caller's frame.
+    // Read saved_fp from callee frame (at offset 0 from fp).
+    using namespace malwi::v8_internal;
+    Address saved_fp_addr = static_cast<Address>(callee_fp);
+    Address caller_fp;
+    if (!SafeReadPointer(saved_fp_addr, &caller_fp)) {
+        return nullptr;
+    }
+    if (caller_fp == 0 || !IsValidPointer(caller_fp)) {
+        return nullptr;
+    }
+
+    return source_location_from_js_frame(isolate, caller_fp);
+}
+
+MalwiSourceLocation* malwi_get_top_source_location(void* isolate_ptr) {
+    v8::Isolate* isolate = isolate_ptr
+        ? static_cast<v8::Isolate*>(isolate_ptr)
+        : v8::Isolate::GetCurrent();
+
+    if (!isolate) {
+        return nullptr;
+    }
+
+    v8::HandleScope handle_scope(isolate);
+
+    // Get the top JS frame directly from isolate.
+    // In the addon callback path, the wrapped function is native (no JS frame),
+    // so the top JS frame is already the CALLER — no need to walk up.
+    uintptr_t js_fp = malwi_get_js_frame_from_isolate(isolate);
+    if (js_fp == 0) {
+        return nullptr;
+    }
+
+    return source_location_from_js_frame(isolate, js_fp);
+}
+
+void malwi_free_source_location(MalwiSourceLocation* loc) {
+    if (loc) {
+        if (loc->script) {
+            free(loc->script);
+        }
+        free(loc);
+    }
+}
+
 } // extern "C"

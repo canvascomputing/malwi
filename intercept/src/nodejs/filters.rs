@@ -45,6 +45,9 @@ static NODEJS_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| {
 /// Add a Node.js function pattern to the filter list.
 pub fn add_filter(pattern: &str, capture_stack: bool) {
     NODEJS_FILTERS.add(pattern, capture_stack);
+    if capture_stack {
+        super::bytecode::enable_stack_capture();
+    }
 }
 
 /// Check if any Node.js filters are registered.

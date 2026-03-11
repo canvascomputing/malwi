@@ -326,6 +326,7 @@ fn encode_trace_event(w: &mut WireWriter, event: &TraceEvent) {
     encode_opt_network_info(w, &event.network_info);
     w.put_opt_str(event.source_file.as_deref());
     w.put_opt_u32(event.source_line);
+    w.put_opt_u32(event.source_column);
     w.put_u64(event.timestamp_ns);
     // seq, source, category, disposition are CLI-only — not sent on wire
 }
@@ -348,6 +349,7 @@ fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
     let network_info = decode_opt_network_info(r)?;
     let source_file = r.get_opt_string()?;
     let source_line = r.get_opt_u32()?;
+    let source_column = r.get_opt_u32()?;
     let timestamp_ns = r.get_u64()?;
     Ok(TraceEvent {
         hook_type,
@@ -359,6 +361,7 @@ fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
         network_info,
         source_file,
         source_line,
+        source_column,
         timestamp_ns,
         // CLI-only fields default to zero/None
         seq: 0,
@@ -392,6 +395,7 @@ fn encode_child_info(w: &mut WireWriter, info: &HostChildInfo) {
     }
     w.put_opt_str(info.source_file.as_deref());
     w.put_opt_u32(info.source_line);
+    w.put_opt_u32(info.source_column);
     encode_opt_runtime_stack(w, &info.runtime_stack);
     // hook_type: Option<HookType> — 0 = None, 1+ = Some(type+1)
     match &info.hook_type {
@@ -425,6 +429,7 @@ fn decode_child_info(r: &mut WireReader) -> io::Result<HostChildInfo> {
     }
     let source_file = r.get_opt_string()?;
     let source_line = r.get_opt_u32()?;
+    let source_column = r.get_opt_u32()?;
     let runtime_stack = decode_opt_runtime_stack(r)?;
     let hook_type = match r.get_u8()? {
         0 => None,
@@ -445,6 +450,7 @@ fn decode_child_info(r: &mut WireReader) -> io::Result<HostChildInfo> {
         native_stack,
         source_file,
         source_line,
+        source_column,
         runtime_stack,
         hook_type,
     })
@@ -1061,6 +1067,7 @@ mod tests {
             network_info: None,
             source_file: Some("app.js".to_string()),
             source_line: Some(7),
+            source_column: Some(15),
             timestamp_ns: 123456789,
             ..Default::default()
         };
@@ -1078,6 +1085,7 @@ mod tests {
                 assert!(matches!(e.runtime_stack, Some(RuntimeStack::Nodejs(_))));
                 assert_eq!(e.source_file, Some("app.js".to_string()));
                 assert_eq!(e.source_line, Some(7));
+                assert_eq!(e.source_column, Some(15));
                 assert_eq!(e.timestamp_ns, 123456789);
                 // CLI-only fields should be default
                 assert_eq!(e.seq, 0);
@@ -1143,8 +1151,9 @@ mod tests {
             path: Some("/usr/bin/curl".to_string()),
             argv: Some(vec!["curl".to_string(), "--version".to_string()]),
             native_stack: vec![0x1000],
-            source_file: None,
-            source_line: None,
+            source_file: Some("/app/index.js".to_string()),
+            source_line: Some(42),
+            source_column: Some(8),
             runtime_stack: None,
             hook_type: None,
         };
@@ -1160,6 +1169,9 @@ mod tests {
                     i.argv,
                     Some(vec!["curl".to_string(), "--version".to_string()])
                 );
+                assert_eq!(i.source_file, Some("/app/index.js".to_string()));
+                assert_eq!(i.source_line, Some(42));
+                assert_eq!(i.source_column, Some(8));
             }
             _ => panic!("wrong variant"),
         }
@@ -1349,6 +1361,7 @@ mod tests {
             native_stack: vec![],
             source_file: Some("script.py".to_string()),
             source_line: Some(42),
+            source_column: None,
             runtime_stack: Some(RuntimeStack::Python(vec![PythonFrame {
                 function: "run".to_string(),
                 filename: "script.py".to_string(),

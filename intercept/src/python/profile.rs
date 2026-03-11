@@ -253,7 +253,7 @@ unsafe extern "C" fn profile_hook(
             .arguments(arguments)
             .network_info(network_info)
             .runtime_stack(runtime_stack)
-            .source_location(caller_file, caller_line)
+            .source_location(caller_file, caller_line, None)
             .build();
 
         // Send to CLI (handles review mode internally)

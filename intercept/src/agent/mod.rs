@@ -598,6 +598,7 @@ impl ForkHandler for Agent {
             native_stack: vec![],
             source_file: None,
             source_line: None,
+            source_column: None,
             runtime_stack: None,
             hook_type: None,
         };
@@ -634,6 +635,7 @@ impl SpawnHandler for Agent {
             native_stack: info.native_stack,
             source_file: info.source_file,
             source_line: info.source_line,
+            source_column: info.source_column,
             runtime_stack: info.runtime_stack,
             hook_type: info.hook_type,
         };
@@ -650,6 +652,7 @@ impl SpawnHandler for Agent {
             native_stack: info.native_stack,
             source_file: info.source_file,
             source_line: info.source_line,
+            source_column: info.source_column,
             runtime_stack: info.runtime_stack,
             hook_type: info.hook_type,
         };

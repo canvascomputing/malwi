@@ -11,8 +11,9 @@
 //! - Validation checks (`CHECK_UNLESS_FUZZING`)
 //! - Return value passthrough (TraceExit returns args[0])
 
+use std::cell::RefCell;
 use std::ffi::{c_char, c_void, CString};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use log::{debug, error, info, warn};
 
@@ -20,6 +21,25 @@ use super::stack;
 use super::state::BytecodePhase;
 use crate::native;
 use core::ptr;
+
+// =============================================================================
+// SHADOW STACK FOR --st SUPPORT
+// =============================================================================
+
+/// Whether any filter has capture_stack=true (set once, never unset).
+/// When false, skip shadow stack maintenance for zero overhead.
+static STACK_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable shadow stack maintenance (called when a filter has capture_stack=true).
+pub fn enable_stack_capture() {
+    STACK_CAPTURE_ENABLED.store(true, Ordering::Release);
+}
+
+thread_local! {
+    /// Shadow call stack: function names pushed on TraceEnter, popped on TraceExit.
+    /// Only maintained when STACK_CAPTURE_ENABLED is true.
+    static TRACED_JS_CALL_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
 
 // =============================================================================
 // V8 SYMBOL NAMES
@@ -376,6 +396,14 @@ unsafe extern "C" fn replacement_trace_enter(
     // Extract function name from the V8 stack
     let function_name = extract_function_name(isolate);
 
+    // Maintain shadow stack for --st support (only when any filter has capture_stack)
+    let stack_enabled = STACK_CAPTURE_ENABLED.load(Ordering::Acquire);
+    if stack_enabled {
+        TRACED_JS_CALL_STACK.with(|stack| {
+            stack.borrow_mut().push(function_name.clone());
+        });
+    }
+
     // Consume the addon-handled flag eagerly, before any early returns.
     // This prevents stale flags from JIT-compiled addon calls (which bypass
     // the bytecode path entirely) from leaking to the next bytecode call.
@@ -412,36 +440,36 @@ unsafe extern "C" fn replacement_trace_enter(
         }
     };
 
-    // Capture V8 stack for caller location (and full stack if enabled)
-    // When capture_stack is true, get more frames to avoid capturing twice
-    let max_frames = if capture_stack { 10 } else { 2 };
-    let v8_frames = stack::capture_stack_trace(isolate, max_frames);
+    // Get caller source location via direct frame reading (GC-safe).
+    // We avoid v8::StackTrace::CurrentStackTrace here because it allocates
+    // heap objects that can trigger GC scavenge. The GC stack walker then
+    // encounters an ExitFrame whose PC points into frida-gum's trampoline,
+    // which can't be resolved → CHECK(maybe_code.has_value()) crash.
+    let (caller_file, caller_line, caller_column) =
+        unsafe { stack::get_caller_source_location(isolate) };
 
-    // Extract caller source location from frame[1] (frame[0] is callee)
-    let (caller_file, caller_line) = v8_frames
-        .as_ref()
-        .and_then(|frames| frames.get(1))
-        .map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32)))
-        .unwrap_or((None, None));
-
-    // Build runtime stack from captured frames if enabled
+    // Capture shadow stack as runtime_stack when --st flag is set.
+    // This is GC-safe (pure Rust, no V8 API calls) unlike the removed
+    // capture_stack_trace_safe() C++ FP-chain walker.
     let runtime_stack = if capture_stack {
-        let nodejs_frames: Vec<crate::NodejsFrame> = v8_frames
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| crate::NodejsFrame {
-                function: f.function,
-                script: f.script.clone(),
-                line: f.line.max(0) as u32,
-                column: f.column.max(0) as u32,
-                is_user_javascript: !f.script.starts_with("node:"),
-            })
-            .collect();
-        if !nodejs_frames.is_empty() {
-            Some(crate::RuntimeStack::Nodejs(nodejs_frames))
-        } else {
-            None
-        }
+        TRACED_JS_CALL_STACK.with(|stack| {
+            let borrowed = stack.borrow();
+            if borrowed.len() <= 1 {
+                return None; // Only the current function, no callers
+            }
+            let frames: Vec<crate::NodejsFrame> = borrowed
+                .iter()
+                .rev()
+                .map(|name| crate::NodejsFrame {
+                    function: name.clone(),
+                    script: String::new(),
+                    line: 0,
+                    column: 0,
+                    is_user_javascript: true,
+                })
+                .collect();
+            Some(crate::RuntimeStack::Nodejs(frames))
+        })
     } else {
         None
     };
@@ -450,7 +478,7 @@ unsafe extern "C" fn replacement_trace_enter(
     let event = crate::tracing::event::js_enter(&function_name)
         .arguments(arguments)
         .runtime_stack(runtime_stack)
-        .source_location(caller_file, caller_line)
+        .source_location(caller_file, caller_line, caller_column)
         .build();
 
     if let Some(agent) = crate::Agent::get() {
@@ -485,6 +513,13 @@ unsafe extern "C" fn replacement_trace_exit(
     // Extract function name
     let function_name = extract_function_name(isolate);
 
+    // Pop shadow stack
+    if STACK_CAPTURE_ENABLED.load(Ordering::Acquire) {
+        TRACED_JS_CALL_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+
     // Consume the addon-handled flag eagerly (see replacement_trace_enter).
     let addon_handled = should_skip_for_addon(isolate);
 
@@ -494,7 +529,7 @@ unsafe extern "C" fn replacement_trace_exit(
     }
 
     // Check if this function matches our filter
-    let (matches, capture_stack) = super::check_filter(&function_name);
+    let (matches, _capture_stack) = super::check_filter(&function_name);
     if !matches {
         return result;
     }
@@ -504,22 +539,10 @@ unsafe extern "C" fn replacement_trace_exit(
         return result;
     }
 
-    // Capture V8 stack if enabled via -t flag
-    let runtime_stack = if capture_stack {
-        let v8_frames = super::capture_stack();
-        if !v8_frames.is_empty() {
-            Some(crate::RuntimeStack::Nodejs(v8_frames))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // Leave events don't need runtime_stack — only Enter events show the call chain.
 
     // Emit trace event using EventBuilder
-    let event = crate::tracing::event::js_leave(&function_name, None)
-        .runtime_stack(runtime_stack)
-        .build();
+    let event = crate::tracing::event::js_leave(&function_name, None).build();
 
     if let Some(agent) = crate::Agent::get() {
         // Leave events in review mode: just send normally (no blocking)

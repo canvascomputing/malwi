@@ -192,6 +192,11 @@ fn test_nodejs_execsync_does_not_crash_v8() {
         "V8 crashed in OptimizedFrame::Summarize. stderr: {}",
         stderr
     );
+    assert!(
+        !stderr.contains("maybe_code"),
+        "V8 GC crash in InnerPointerToCodeCache. stderr: {}",
+        stderr
+    );
 
     // Should complete successfully
     assert!(

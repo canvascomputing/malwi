@@ -347,6 +347,7 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
                         native_stack,
                         source_file,
                         source_line,
+                        source_column: None,
                         runtime_stack,
                         hook_type: None,
                     });
@@ -394,7 +395,7 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
     let trace_event = crate::tracing::event::python_enter(&event_str)
         .arguments(arguments)
         .runtime_stack(runtime_stack)
-        .source_location(caller_file, caller_line)
+        .source_location(caller_file, caller_line, None)
         .build();
 
     // Send to CLI (handles review mode internally)

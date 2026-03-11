@@ -281,7 +281,8 @@ fn print_trace_event(
         "[malwi]".to_string()
     };
 
-    let src = crate::format_source_location(&event.source_file, event.source_line);
+    let src =
+        crate::format_source_location(&event.source_file, event.source_line, event.source_column);
 
     if let Some((section, rule)) = policy_info {
         let action = if is_blocked { "denied" } else { "warning" };

@@ -211,6 +211,7 @@ pub struct SpawnInfo {
     pub native_stack: Vec<usize>,
     pub source_file: Option<String>,
     pub source_line: Option<u32>,
+    pub source_column: Option<u32>,
     pub runtime_stack: Option<crate::RuntimeStack>,
     /// Override hook type for the resulting TraceEvent (e.g. HookType::Bash).
     pub hook_type: Option<crate::HookType>,
@@ -631,6 +632,7 @@ unsafe extern "C" fn on_posix_spawn_leave(
                     native_stack: spawn_ctx.native_stack,
                     source_file: None,
                     source_line: None,
+                    source_column: None,
                     runtime_stack: None,
                     hook_type: None,
                 });
@@ -683,7 +685,7 @@ pub(crate) fn check_exec_review(
 
     // Build trace event for the exec
     let event = crate::tracing::event::exec_event(cmd, argv.clone())
-        .source_location(source_file.map(|s| s.to_string()), source_line)
+        .source_location(source_file.map(|s| s.to_string()), source_line, None)
         .build();
 
     // Wait for user decision
@@ -773,6 +775,7 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
             native_stack,
             source_file: None,
             source_line: None,
+            source_column: None,
             runtime_stack: None,
             hook_type: None,
         });

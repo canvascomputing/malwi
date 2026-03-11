@@ -64,6 +64,9 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
         // Check if this is an Enter event
         let is_enter = e.event_type == 0;
 
+        // Check filter for capture_stack flag
+        let (_matches, capture_stack) = crate::nodejs::check_filter(&function);
+
         // Extract script path (module)
         let _script_path = extract_string(e.script_path, e.script_path_len);
 
@@ -91,17 +94,28 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
                 .collect()
         };
 
-        // Capture caller source location from V8 stack (Enter events only)
-        let (caller_file, caller_line) = if is_enter {
-            crate::nodejs::stack::capture_stack_trace(std::ptr::null_mut(), 2)
-                .and_then(|frames| {
-                    frames
-                        .get(1)
-                        .map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32)))
-                })
-                .unwrap_or((None, None))
+        // Capture caller source location (Enter events only).
+        // Use get_top_source_location: in the addon callback path, the wrapped
+        // function is native (no JS frame), so the top JS frame is already
+        // the caller — no need to walk up a frame.
+        let (caller_file, caller_line, caller_column) = if is_enter {
+            crate::nodejs::stack::get_top_source_location(std::ptr::null_mut())
         } else {
-            (None, None)
+            (None, None, None)
+        };
+
+        // Capture runtime stack trace if --st flag is set.
+        // The addon callback runs from JS → N-API → Rust (no frida-gum trampoline),
+        // so v8::StackTrace::CurrentStackTrace is safe here.
+        let runtime_stack = if capture_stack {
+            crate::nodejs::capture_stack()
+        } else {
+            Vec::new()
+        };
+        let runtime_stack = if runtime_stack.is_empty() {
+            None
+        } else {
+            Some(crate::RuntimeStack::Nodejs(runtime_stack))
         };
 
         // Extract NetworkInfo from arguments for networking functions
@@ -120,7 +134,8 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
 
         let event = builder
             .network_info(network_info)
-            .source_location(caller_file, caller_line)
+            .runtime_stack(runtime_stack)
+            .source_location(caller_file, caller_line, caller_column)
             .build();
 
         (event, is_enter)

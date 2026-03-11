@@ -1397,7 +1397,7 @@ fn emit_blocked(
         return;
     }
     let full = format_event_display_name(event);
-    let src = format_source_location(&event.source_file, event.source_line);
+    let src = format_source_location(&event.source_file, event.source_line, event.source_column);
     if let Some(client) = monitor {
         let mut blocked_event = event.clone();
         blocked_event.function = format!(
@@ -1429,7 +1429,7 @@ fn emit_warning(
         return;
     }
     let full = format_event_display_name(event);
-    let src = format_source_location(&event.source_file, event.source_line);
+    let src = format_source_location(&event.source_file, event.source_line, event.source_column);
     if let Some(client) = monitor {
         let _ = client.send_event(event);
     } else if let Some(out) = out {
@@ -1456,7 +1456,11 @@ fn prompt_review_decision(
         match input.trim().to_lowercase().as_str() {
             "n" => {
                 let full = format_event_display_name(event);
-                let src = format_source_location(&event.source_file, event.source_line);
+                let src = format_source_location(
+                    &event.source_file,
+                    event.source_line,
+                    event.source_column,
+                );
                 if let Some(out) = out {
                     let _ = writeln!(out, "{}[malwi] denied:{} {}{}", RED, RESET, full, src);
                 }
@@ -1564,7 +1568,7 @@ fn build_json_stack<'a>(event: &'a TraceEvent) -> Vec<JsonStackFrame<'a>> {
             function: None,
             file: Some(file),
             line: event.source_line,
-            column: None,
+            column: event.source_column,
             address: None,
         });
     }
@@ -1785,7 +1789,7 @@ fn print_review_summary(event: &TraceEvent) {
         args.join(", ")
     };
 
-    let src = format_source_location(&event.source_file, event.source_line);
+    let src = format_source_location(&event.source_file, event.source_line, event.source_column);
 
     if args_str.is_empty() {
         println!("{}[malwi]{} {}{}", YELLOW, RESET, name, src);
@@ -1891,12 +1895,19 @@ fn format_native_frame(frame: &malwi_intercept::NativeFrame) -> String {
 /// Format source location as a dimmed suffix for display.
 ///
 /// Returns `"  filepath:line"` for known locations, or empty string if unknown.
-pub fn format_source_location(source_file: &Option<String>, source_line: Option<u32>) -> String {
-    match (source_file, source_line) {
-        (Some(file), Some(line)) => {
+pub fn format_source_location(
+    source_file: &Option<String>,
+    source_line: Option<u32>,
+    source_column: Option<u32>,
+) -> String {
+    match (source_file, source_line, source_column) {
+        (Some(file), Some(line), Some(col)) => {
+            format!("  {}{}:{}:{}{}", DIM, file, line, col, RESET)
+        }
+        (Some(file), Some(line), None) => {
             format!("  {}{}:{}{}", DIM, file, line, RESET)
         }
-        (Some(file), None) => {
+        (Some(file), None, _) => {
             format!("  {}{}{}", DIM, file, RESET)
         }
         _ => String::new(),
@@ -1924,7 +1935,7 @@ fn print_trace_event(
 
     let name = display_name(&event.function);
     let color = LIGHT_BLUE;
-    let src = format_source_location(&event.source_file, event.source_line);
+    let src = format_source_location(&event.source_file, event.source_line, event.source_column);
 
     if event.hook_type == HookType::Exec || event.hook_type == HookType::Bash {
         // Exec/Bash: "cmd arg1 arg2" style (skip argv[0] which is the function name)
@@ -2060,27 +2071,34 @@ mod tests {
         let result = format_source_location(
             &Some("/usr/lib/python3.12/json/__init__.py".to_string()),
             Some(42),
+            None,
         );
         assert!(result.contains("__init__.py:42"));
     }
 
     #[test]
     fn test_format_source_location_with_relative_path() {
-        let result = format_source_location(&Some("<string>".to_string()), Some(1));
+        let result = format_source_location(&Some("<string>".to_string()), Some(1), None);
         assert!(result.contains("<string>:1"));
     }
 
     #[test]
     fn test_format_source_location_none() {
-        let result = format_source_location(&None, None);
+        let result = format_source_location(&None, None, None);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_format_source_location_file_only() {
-        let result = format_source_location(&Some("script.py".to_string()), None);
+        let result = format_source_location(&Some("script.py".to_string()), None, None);
         assert!(result.contains("script.py"));
         assert!(!result.contains(":"));
+    }
+
+    #[test]
+    fn test_format_source_location_with_column() {
+        let result = format_source_location(&Some("app.js".to_string()), Some(10), Some(5));
+        assert!(result.contains("app.js:10:5"));
     }
 
     // --- parse_call_spec ---

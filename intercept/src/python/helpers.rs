@@ -134,7 +134,15 @@ pub unsafe fn get_code_filename(code: *mut c_void) -> Option<String> {
 
     let result = cstr_to_string((api.unicode_as_utf8)(filename_obj));
     (api.py_decref)(filename_obj);
-    result
+    // Map Python's "<string>" (used for -c scripts and exec()) to "<eval>"
+    // for consistency with Node.js's "[eval]"
+    result.map(|s| {
+        if s == "<string>" {
+            "<eval>".to_string()
+        } else {
+            s
+        }
+    })
 }
 
 /// Get co_argcount from code object (number of positional arguments).

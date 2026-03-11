@@ -237,6 +237,64 @@ char* malwi_get_current_function_name(void* isolate);
 __attribute__((visibility("default")))
 char* malwi_capture_stack_trace(void* isolate, int max_frames);
 
+// =============================================================================
+// Caller Source Location (GC-safe)
+// =============================================================================
+
+// Source location of the caller (one frame above the current function).
+// Extracted by reading JSFunction metadata directly from V8 frames,
+// without calling v8::StackTrace::CurrentStackTrace (which triggers GC).
+typedef struct {
+    char* script;       // Heap-allocated script path (caller must free)
+    int32_t line;       // 1-based line number, -1 if unknown
+    int32_t column;     // 1-based column number, -1 if unknown
+} MalwiSourceLocation;
+
+// Get the caller's source location from the V8 stack.
+//
+// Walks one frame up from the top JS frame (callee) to find the caller.
+// Used by the bytecode tracing path (Runtime_TraceEnter) where the top
+// JS frame is the callee function.
+//
+// Uses direct frame reading (no heap allocation, no GC trigger).
+// Safe to call from within replaced V8 Runtime functions.
+//
+// Parameters:
+//   isolate: Pointer to v8::Isolate
+//
+// Returns:
+//   Heap-allocated MalwiSourceLocation. Caller must free with
+//   malwi_free_source_location(). Returns NULL on failure.
+//
+__attribute__((visibility("default")))
+MalwiSourceLocation* malwi_get_caller_source_location(void* isolate);
+
+// Get the top JS frame's source location from the V8 stack.
+//
+// Returns the source location of the first (top) JS frame directly,
+// without walking up a frame. Used by the addon callback path where
+// the wrapped function is native (no JS frame), so the top JS frame
+// is already the caller.
+//
+// Parameters:
+//   isolate: Pointer to v8::Isolate
+//
+// Returns:
+//   Heap-allocated MalwiSourceLocation. Caller must free with
+//   malwi_free_source_location(). Returns NULL on failure.
+//
+__attribute__((visibility("default")))
+MalwiSourceLocation* malwi_get_top_source_location(void* isolate);
+
+// Free a source location result.
+//
+// Parameters:
+//   loc: Result returned by malwi_get_caller_source_location() or
+//   malwi_get_top_source_location(). May be NULL.
+//
+__attribute__((visibility("default")))
+void malwi_free_source_location(MalwiSourceLocation* loc);
+
 #ifdef __cplusplus
 }
 #endif

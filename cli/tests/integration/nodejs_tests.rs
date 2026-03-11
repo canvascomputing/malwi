@@ -445,6 +445,99 @@ fn test_nodejs_stack_trace_omitted_without_t_flag() {
 }
 
 #[test]
+fn test_nodejs_bytecode_stack_trace_with_eval() {
+    setup();
+
+    skip_if_no_node!(node => {
+        // 3-level call chain via --eval (bytecode path, NOT addon path).
+        // This test specifically exercises the GC-safe stack capture in
+        // replacement_trace_enter (bytecode.rs). If capture_stack is silenced
+        // with an _ prefix, this test will fail.
+        let output = run_tracer_with_timeout(&[
+            "x",
+            "--js", "deepTarget",
+            "--st",  // Enable stack traces
+            "--",
+            node.to_str().unwrap(),
+            "--eval", "function topCaller() { middleFunc(); } function middleFunc() { deepTarget(); } function deepTarget() { return 99; } topCaller();",
+        ], STACK_TRACE_TIMEOUT);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Bytecode stack trace test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // The traced function must appear
+        assert!(
+            stdout.contains("deepTarget"),
+            "Expected deepTarget in output. stdout: {}",
+            stdout
+        );
+
+        // Must have stack trace frames (the whole point of this test)
+        assert!(
+            has_stack_trace(&stdout),
+            "Expected V8 stack frames (    at ...) from bytecode path. stdout: {}",
+            stdout
+        );
+
+        // The caller functions should appear in the stack trace
+        assert!(
+            stdout.contains("topCaller") || stdout.contains("middleFunc"),
+            "Expected caller function names in stack trace. stdout: {}",
+            stdout
+        );
+    });
+}
+
+#[test]
+fn test_nodejs_addon_stack_trace_with_module_function() {
+    setup();
+
+    skip_if_no_node!(node => {
+        // Test the addon callback path for stack capture.
+        // fs.readFileSync goes through the addon (N-API wrapped function).
+        let output = run_tracer_with_timeout(&[
+            "x",
+            "--js", "fs.readFileSync",
+            "--st",
+            "--",
+            node.to_str().unwrap(),
+            "--eval", "const fs = require('fs'); function myReader() { try { fs.readFileSync('/tmp/nonexistent-malwi-test'); } catch(e) {} } myReader();",
+        ], STACK_TRACE_TIMEOUT);
+
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = strip_ansi_codes(&stdout_raw);
+
+        assert!(
+            output.status.success(),
+            "Addon stack trace test failed. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
+
+        // Should have traced fs.readFileSync
+        assert!(
+            stdout.contains("readFileSync"),
+            "Expected fs.readFileSync trace. stdout: {}",
+            stdout
+        );
+
+        // Should have stack trace frames showing the call chain
+        assert!(
+            has_stack_trace(&stdout),
+            "Expected V8 stack frames from addon path. stdout: {}",
+            stdout
+        );
+    });
+}
+
+#[test]
 fn test_nodejs_tracing_propagates_to_spawned_child_process() {
     setup();
 
@@ -1777,5 +1870,65 @@ setTimeout(() => {}, 500);
                       This may indicate axios bypasses http.request on this Node version. \
                       stderr: {}", stderr);
         }
+    });
+}
+
+// ============================================================================
+// V8 GC Safety Tests
+// ============================================================================
+
+/// Regression test: V8 GC scavenge during bytecode hook must not crash.
+///
+/// With `--max-semi-space-size=1`, V8's semi-space is 1MB so every allocation
+/// risks triggering scavenge GC. With `--js '*'` tracing 500 function calls,
+/// the bytecode hook fires frequently. Before the fix, `capture_stack_trace`
+/// called `v8::StackTrace::CurrentStackTrace` which allocated heap objects →
+/// triggered GC → GC stack walker hit an ExitFrame with PC in frida-gum's
+/// trampoline → `CHECK(maybe_code.has_value())` crash.
+#[test]
+fn test_nodejs_tracing_survives_gc_pressure() {
+    setup();
+
+    skip_if_no_node!(node => {
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "--js", "*",
+                "--",
+                node.to_str().unwrap(),
+                "--max-semi-space-size=1",
+                "-e",
+                "function alloc(n) { return Array.from({length: 100}, (_, i) => i + n); }\n\
+                 for (let i = 0; i < 500; i++) alloc(i);",
+            ],
+            std::time::Duration::from_secs(30),
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !stderr.contains("Fatal error"),
+            "V8 crashed with fatal error under GC pressure. stderr: {}",
+            stderr
+        );
+        assert!(
+            !stderr.contains("maybe_code.has_value"),
+            "V8 GC crash: InnerPointerToCodeCache failed. stderr: {}",
+            stderr
+        );
+        assert!(
+            output.status.success(),
+            "GC pressure test should succeed. stderr: {}",
+            stderr
+        );
+
+        // Should have traced some function calls (name may be "alloc" or
+        // "<function>" depending on Node.js version and addon availability)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("alloc") || stdout.contains("<function>"),
+            "Should trace function calls. stdout: {}",
+            stdout
+        );
     });
 }

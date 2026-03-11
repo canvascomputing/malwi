@@ -396,7 +396,7 @@ fn test_python_stack_trace_works_for_c_extension_calls() {
         );
 
         // Should have stack trace for C extension function (via audit hook)
-        // The stack trace shows the Python caller, e.g. "<module> (<string>:1)"
+        // The stack trace shows the Python caller, e.g. "<module> (<eval>:1)"
         assert!(
             has_stack_trace(&stdout),
             "Expected stack traces for C extension function. stdout: {}",
@@ -763,8 +763,8 @@ except Exception:
             stdout
         );
         assert!(
-            stdout.contains("<string>:"),
-            "Expected <string> source location. stdout: {}",
+            stdout.contains("<eval>:"),
+            "Expected <eval> source location. stdout: {}",
             stdout
         );
     });

@@ -153,13 +153,8 @@ unsafe extern "C" fn replacement_modify_codegen(
         return original(context, source, is_code_like);
     }
 
-    let (caller_file, caller_line) = stack::capture_stack_trace(std::ptr::null_mut(), 2)
-        .and_then(|frames| {
-            frames
-                .get(1)
-                .map(|f| (Some(f.script.clone()), Some(f.line.max(0) as u32)))
-        })
-        .unwrap_or((None, None));
+    let (caller_file, caller_line, caller_column) =
+        unsafe { stack::get_caller_source_location(std::ptr::null_mut()) };
 
     let runtime_stack = if capture_stack {
         let frames = super::capture_stack();
@@ -186,7 +181,7 @@ unsafe extern "C" fn replacement_modify_codegen(
     let event = crate::tracing::event::js_enter("eval")
         .arguments(arguments)
         .runtime_stack(runtime_stack)
-        .source_location(caller_file, caller_line)
+        .source_location(caller_file, caller_line, caller_column)
         .build();
 
     if let Some(agent) = crate::Agent::get() {

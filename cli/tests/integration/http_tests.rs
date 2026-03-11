@@ -72,8 +72,8 @@ except Exception:
 
         // Source location should reference the inline script
         assert!(
-            stdout.contains("<string>:"),
-            "Expected <string> source location. stdout: {}",
+            stdout.contains("<eval>:"),
+            "Expected <eval> source location. stdout: {}",
             stdout
         );
     });
@@ -121,8 +121,8 @@ except Exception:
 
         // Source location should reference the inline script
         assert!(
-            stdout.contains("<string>:"),
-            "Expected <string> source location. stdout: {}",
+            stdout.contains("<eval>:"),
+            "Expected <eval> source location. stdout: {}",
             stdout
         );
     });
@@ -173,8 +173,8 @@ except Exception:
 
         // Source location should reference the inline script
         assert!(
-            stdout.contains("<string>:"),
-            "Expected <string> source location. stdout: {}",
+            stdout.contains("<eval>:"),
+            "Expected <eval> source location. stdout: {}",
             stdout
         );
     });
@@ -220,9 +220,11 @@ req.destroy();
             "Expected 127.0.0.1:1/test-path in http.request arguments. stdout: {}",
             stdout
         );
+        // Source location: addon-traced functions use get_top_source_location
+        // to capture the caller's location. The caller here is the -e eval script.
         assert!(
-            stdout.contains("node:"),
-            "Expected node: source location. stdout: {}",
+            stdout.contains("[eval]:1:"),
+            "Expected [eval]:1: source location for addon-traced http.request. stdout: {}",
             stdout
         );
     });
