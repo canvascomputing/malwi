@@ -46,6 +46,8 @@ pub enum AgentEvent {
 struct SharedState {
     hook_configs: Vec<HookConfig>,
     review_mode: bool,
+    /// Envvar allow patterns for agent-side filtering.
+    envvar_allow_patterns: Vec<String>,
     event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
     active_agents: Arc<AtomicU32>,
     /// Suppresses duplicate exec events caused by libc PATH iteration.
@@ -123,6 +125,7 @@ impl AgentServer {
     pub fn new(
         hook_configs: Vec<HookConfig>,
         review_mode: bool,
+        envvar_allow_patterns: Vec<String>,
         event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
         active_agents: Arc<AtomicU32>,
         reconnected_pids: Arc<Mutex<HashSet<u32>>>,
@@ -134,6 +137,7 @@ impl AgentServer {
         let shared = Arc::new(SharedState {
             hook_configs,
             review_mode,
+            envvar_allow_patterns,
             event_tx,
             active_agents,
             seen_events: Mutex::new(HashSet::new()),
@@ -308,6 +312,7 @@ async fn handle_message(
             let resp = CliMessage::ConfigureResponse(ConfigureResponse {
                 hooks: shared.hook_configs.clone(),
                 review_mode: shared.review_mode,
+                envvar_allow_patterns: shared.envvar_allow_patterns.clone(),
             });
             send_response(codec, stream, &resp).await?;
         }

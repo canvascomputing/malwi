@@ -720,15 +720,12 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     // Load policy (if applicable)
     let active_policy: Option<policy::ActivePolicy> = if let Some(ref path) = config.policy_file {
         // Explicit --policy flag: try as named policy first, then as file path.
+        // Named policies resolve through ~/.config/malwi/policies/<name>.yaml so
+        // user edits are preserved (embedded template is only written on first use).
         let path_str = path.to_string_lossy();
-        let p = if !path.exists() {
-            if let Some(yaml) = policy::embedded_policy(&path_str) {
-                policy::ActivePolicy::from_yaml(&yaml).map_err(|e| {
-                    anyhow::anyhow!("Failed to parse named policy '{}': {}", path_str, e)
-                })?
-            } else {
-                policy::ActivePolicy::from_file(&path_str)?
-            }
+        let p = if !path.exists() && policy::embedded_policy(&path_str).is_some() {
+            let resolved = policy::ensure_auto_policy(&path_str)?;
+            policy::ActivePolicy::from_file(&resolved.to_string_lossy())?
         } else {
             policy::ActivePolicy::from_file(&path_str)?
         };
@@ -916,9 +913,15 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     let active_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let reconnected_pids = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<u32>::new()));
 
+    let envvar_allow_patterns = active_policy
+        .as_ref()
+        .map(|p| p.envvar_allow_patterns())
+        .unwrap_or_default();
+
     let server = AgentServer::new(
         hook_configs,
         effective_review,
+        envvar_allow_patterns,
         event_tx,
         active_count.clone(),
         reconnected_pids.clone(),

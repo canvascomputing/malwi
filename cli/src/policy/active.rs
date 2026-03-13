@@ -25,6 +25,10 @@ pub struct ActivePolicy {
     /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
     /// Computed once at construction time since the policy is immutable after load.
     has_network_allow: bool,
+    /// Whether the policy has any commands allow rules (implicit deny for unlisted).
+    /// When true, a wildcard `*` exec filter is emitted so the agent intercepts
+    /// all spawned commands, letting the CLI evaluate them against the allowlist.
+    has_commands_allow: bool,
 }
 
 /// The disposition of a trace event after policy evaluation.
@@ -65,10 +69,12 @@ impl ActivePolicy {
     /// Create an ActivePolicy from a PolicyEngine, computing cached fields.
     pub(super) fn new(engine: PolicyEngine) -> Self {
         let has_network_allow = compute_has_network_allow(&engine);
+        let has_commands_allow = compute_has_commands_allow(&engine);
         Self {
             engine,
             fn_cache: Default::default(),
             has_network_allow,
+            has_commands_allow,
         }
     }
 
@@ -82,6 +88,7 @@ impl ActivePolicy {
     }
 
     /// Load a policy from a YAML string, resolving `includes:` directives.
+    #[cfg(test)]
     pub fn from_yaml(yaml: &str) -> anyhow::Result<Self> {
         let engine = PolicyEngine::from_yaml_with_includes(yaml, &include_resolver)
             .map_err(|e| anyhow::anyhow!("Failed to parse policy YAML: {}", e))?;
@@ -111,6 +118,22 @@ impl ActivePolicy {
             let key = (format!("{:?}", config.hook_type), config.symbol.clone());
             if seen.insert(key) {
                 configs.push(config);
+            }
+        }
+
+        // Auto-add wildcard exec filter when commands: allow exists.
+        // Unlisted commands need to be intercepted so the CLI can evaluate
+        // them against the allowlist and block them (implicit deny).
+        if self.has_commands_allow {
+            let key = ("Exec".to_string(), "*".to_string());
+            if seen.insert(key) {
+                configs.push(HookConfig {
+                    hook_type: HookType::Exec,
+                    symbol: "*".to_string(),
+                    arg_count: None,
+                    capture_return: false,
+                    capture_stack,
+                });
             }
         }
 
@@ -222,6 +245,21 @@ impl ActivePolicy {
         self.evaluate_command_phase(event, disp)
     }
 
+    /// Extract envvar allow patterns from the policy for agent-side filtering.
+    /// Returns the original pattern strings from `envvars: allow:` rules.
+    pub fn envvar_allow_patterns(&self) -> Vec<String> {
+        let policy = self.engine.policy();
+        let key = SectionKey::global(Category::EnvVars);
+        match policy.get_section(&key) {
+            Some(section) => section
+                .allow_rules
+                .iter()
+                .map(|r| r.pattern.original().to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Check if the policy has any sections with review or block mode.
     /// Used to determine if review mode should be enabled in the agent.
     pub fn has_blocking_sections(&self) -> bool {
@@ -313,6 +351,18 @@ fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
                 return true;
             }
         }
+    }
+    false
+}
+
+/// Check if a policy engine has any commands allow rules (Execution category).
+/// When commands: allow exists, unlisted commands are implicitly denied,
+/// so we need a wildcard exec filter to intercept all spawned commands.
+fn compute_has_commands_allow(engine: &PolicyEngine) -> bool {
+    let policy = engine.policy();
+    let key = SectionKey::global(Category::Execution);
+    if let Some(section) = policy.get_section(&key) {
+        return section.has_allow_rules();
     }
     false
 }
@@ -820,12 +870,91 @@ commands:
             .iter()
             .filter(|c| matches!(c.hook_type, HookType::Exec))
             .collect();
-        assert_eq!(
-            exec_configs.len(),
-            1,
-            "should deduplicate to single 'curl' filter"
+        // "curl" from allow+deny (deduplicated) + "*" from has_commands_allow
+        assert!(
+            exec_configs.iter().any(|c| c.symbol == "curl"),
+            "should have 'curl' filter"
         );
-        assert_eq!(exec_configs[0].symbol, "curl");
+        assert!(
+            exec_configs.iter().any(|c| c.symbol == "*"),
+            "should have wildcard filter from commands allow"
+        );
+    }
+
+    #[test]
+    fn test_commands_allowlist_emits_wildcard_exec_filter() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+commands:
+  allow:
+    - "git clone *"
+    - "pip install *"
+"#,
+        )
+        .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let exec_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Exec))
+            .collect();
+        assert!(
+            exec_configs.iter().any(|c| c.symbol == "*"),
+            "commands allow should emit wildcard exec filter"
+        );
+    }
+
+    #[test]
+    fn test_commands_deny_only_no_wildcard_exec_filter() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+commands:
+  deny:
+    - curl
+    - wget
+"#,
+        )
+        .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let exec_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Exec))
+            .collect();
+        assert!(
+            !exec_configs.iter().any(|c| c.symbol == "*"),
+            "commands deny-only should NOT emit wildcard exec filter"
+        );
+    }
+
+    #[test]
+    fn test_commands_allowlist_blocks_unlisted_command() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+commands:
+  allow:
+    - "git clone *"
+    - "pip install *"
+"#,
+        )
+        .unwrap();
+
+        // Unlisted command should be blocked (implicit deny)
+        let event = make_exec_event("curl", &["https://evil.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "unlisted command 'curl' should be blocked by commands allowlist"
+        );
+
+        // Allowed command should pass
+        let event = make_exec_event("git", &["clone", "https://github.com/example/repo.git"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "'git clone' should be allowed by commands allowlist"
+        );
     }
 
     // =====================================================================

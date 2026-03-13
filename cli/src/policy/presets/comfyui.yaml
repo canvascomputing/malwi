@@ -20,6 +20,9 @@ python:
     - getpass.getpass
     - keyring.get_password
     - keyring.set_password
+    # Shell execution — bypasses command allowlist
+    - os.system
+    - os.popen
     # Native code loading — bypasses all Python-level controls
     - ctypes.CDLL
     - ctypes.cdll.LoadLibrary

@@ -22,6 +22,10 @@ pub struct ConfigureResponse {
     pub hooks: Vec<HookConfig>,
     #[serde(default)]
     pub review_mode: bool,
+    /// Envvar allow patterns for agent-side filtering.
+    /// Variables matching any allow pattern bypass deny checks.
+    #[serde(default)]
+    pub envvar_allow_patterns: Vec<String>,
 }
 
 /// Information about a loaded module in the target process.

@@ -165,6 +165,19 @@ mod tests {
     }
 
     #[test]
+    fn test_comfyui_shell_execution_blocked() {
+        let engine = comfyui_engine();
+
+        let d = engine.evaluate_function(Runtime::Python, "os.system", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.section_mode(), EnforcementMode::Block);
+
+        let d = engine.evaluate_function(Runtime::Python, "os.popen", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.section_mode(), EnforcementMode::Block);
+    }
+
+    #[test]
     fn test_comfyui_dangerous_commands_blocked() {
         let engine = comfyui_engine();
 

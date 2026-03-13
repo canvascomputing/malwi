@@ -252,6 +252,9 @@ impl Codec for BinaryCodec {
                     w.put_bool(h.capture_stack);
                 });
                 w.put_bool(resp.review_mode);
+                w.put_vec(&resp.envvar_allow_patterns, |w, p| {
+                    w.put_str(p);
+                });
             }
             CliMessage::ReviewResponse {
                 request_id,
@@ -284,9 +287,11 @@ impl Codec for BinaryCodec {
                     })
                 })?;
                 let review_mode = r.get_bool()?;
+                let envvar_allow_patterns = r.get_vec(|r| r.get_string())?;
                 Ok(CliMessage::ConfigureResponse(ConfigureResponse {
                     hooks,
                     review_mode,
+                    envvar_allow_patterns,
                 }))
             }
             TAG_REVIEW_RESPONSE => {
@@ -1242,6 +1247,7 @@ mod tests {
                 },
             ],
             review_mode: true,
+            envvar_allow_patterns: vec!["HF_HUB_*".to_string(), "HF_TOKEN_PATH".to_string()],
         });
         let decoded = roundtrip_cli(&msg);
         match decoded {
@@ -1255,6 +1261,9 @@ mod tests {
                 assert!(matches!(resp.hooks[1].hook_type, HookType::Python));
                 assert_eq!(resp.hooks[1].arg_count, None);
                 assert!(resp.review_mode);
+                assert_eq!(resp.envvar_allow_patterns.len(), 2);
+                assert_eq!(resp.envvar_allow_patterns[0], "HF_HUB_*");
+                assert_eq!(resp.envvar_allow_patterns[1], "HF_TOKEN_PATH");
             }
             _ => panic!("wrong variant"),
         }

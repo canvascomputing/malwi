@@ -42,7 +42,7 @@ fn setup_server() -> (String, tokio::runtime::Runtime) {
     let active = Arc::new(AtomicU32::new(0));
     let reconnected = Arc::new(Mutex::new(HashSet::new()));
     let server = rt
-        .block_on(async { AgentServer::new(make_hook_configs(), false, tx, active, reconnected) })
+        .block_on(async { AgentServer::new(make_hook_configs(), false, vec![], tx, active, reconnected) })
         .expect("create server");
     let url = server.url().to_string();
     rt.spawn(async move { server.run().await });

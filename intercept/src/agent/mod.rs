@@ -314,6 +314,13 @@ impl Agent {
         // Single wire call to get all configuration
         let config = self.client.configure(pid, nodejs_version)?;
 
+        // Install envvar allow patterns before hooks (so they're active
+        // when envvar monitoring hooks are installed below).
+        for pattern in &config.envvar_allow_patterns {
+            crate::exec::envvar::add_allow_pattern(pattern);
+            debug!("Added envvar allow pattern: {}", pattern);
+        }
+
         // Install hooks locally
         for hook_config in &config.hooks {
             if let Err(e) = self.add_hook_local(hook_config.clone()) {
