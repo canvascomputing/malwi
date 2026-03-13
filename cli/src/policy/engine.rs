@@ -1627,7 +1627,12 @@ files:
             assert!(patterns.contains(&s), "missing native: {}", sym);
         }
         // Bare Python file funcs from taxonomy should be present
-        for func in tax.file_functions.python.iter().filter(|f| !f.contains('.')) {
+        for func in tax
+            .file_functions
+            .python
+            .iter()
+            .filter(|f| !f.contains('.'))
+        {
             let s: &str = func;
             assert!(patterns.contains(&s), "missing python: {}", func);
         }

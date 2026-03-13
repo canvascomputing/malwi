@@ -708,24 +708,15 @@ mod tests {
     #[test]
     fn file_functions_present() {
         let tax = get();
-        assert!(tax
-            .file_functions
-            .python
-            .contains(&"open".to_string()));
+        assert!(tax.file_functions.python.contains(&"open".to_string()));
         assert!(tax
             .file_functions
             .python
             .contains(&"builtins.open".to_string()));
-        assert!(tax
-            .file_functions
-            .python
-            .contains(&"io.open".to_string()));
+        assert!(tax.file_functions.python.contains(&"io.open".to_string()));
         assert_eq!(tax.file_functions.nodejs_prefix, "fs.");
         assert!(tax.file_functions.native.contains(&"open".to_string()));
-        assert!(tax
-            .file_functions
-            .native
-            .contains(&"openat".to_string()));
+        assert!(tax.file_functions.native.contains(&"openat".to_string()));
     }
 
     #[test]

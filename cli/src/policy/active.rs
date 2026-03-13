@@ -1,8 +1,18 @@
 //! Core policy evaluation bridge.
 //!
 //! Contains the `ActivePolicy` struct, `EventDisposition` type, and the
-//! top-level `evaluate_trace()` dispatch. Phase-specific evaluation methods
-//! (network, files, commands) are in sibling modules.
+//! top-level `evaluate_trace()` dispatch that runs four sequential phases:
+//!
+//! ```text
+//! evaluate_trace                  (orchestrator: runs all 4 phases in order)
+//! +-- evaluate_function_phase     (phase 1: function-level, cached for Python/Node/Native)
+//! |   +-- compute_function_decision  (raw engine dispatch)
+//! +-- apply_network_passthrough   (phase 2: passthrough + network eval, in network.rs)
+//! +-- evaluate_file_phase         (phase 3: file path checks, in files.rs)
+//! +-- evaluate_command_phase      (phase 4: command triage, in commands.rs)
+//! ```
+//!
+//! Phase-specific evaluation methods (network, files, commands) are in sibling modules.
 
 use crate::policy::{
     Category, EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
@@ -10,26 +20,7 @@ use crate::policy::{
 };
 use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
-/// Resolve an `includes:` name to a YAML string using the embedded policy templates.
-fn include_resolver(name: &str) -> Option<String> {
-    super::templates::embedded_policy(name)
-}
-
-/// Active policy loaded and ready for evaluation.
-pub struct ActivePolicy {
-    pub(super) engine: PolicyEngine,
-    /// Cache: (hook_type discriminant, function_name) → function-level disposition.
-    /// Only caches results for functions without arg-filter constraints.
-    pub(super) fn_cache:
-        std::cell::RefCell<std::collections::HashMap<(u8, String), EventDisposition>>,
-    /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
-    /// Computed once at construction time since the policy is immutable after load.
-    has_network_allow: bool,
-    /// Whether the policy has any commands allow rules (implicit deny for unlisted).
-    /// When true, a wildcard `*` exec filter is emitted so the agent intercepts
-    /// all spawned commands, letting the CLI evaluate them against the allowlist.
-    has_commands_allow: bool,
-}
+// ── Types ──────────────────────────────────────────────────────
 
 /// The disposition of a trace event after policy evaluation.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +55,24 @@ impl EventDisposition {
         matches!(self, EventDisposition::Block { .. })
     }
 }
+
+/// Active policy loaded and ready for evaluation.
+pub struct ActivePolicy {
+    pub(super) engine: PolicyEngine,
+    /// Cache: (hook_type discriminant, function_name) → function-level disposition only.
+    /// Arg-dependent phases (network, file, command) always run regardless of cache hits.
+    pub(super) fn_cache:
+        std::cell::RefCell<std::collections::HashMap<(u8, String), EventDisposition>>,
+    /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
+    /// Computed once at construction time since the policy is immutable after load.
+    has_network_allow: bool,
+    /// Whether the policy has any commands allow rules (implicit deny for unlisted).
+    /// When true, a wildcard `*` exec filter is emitted so the agent intercepts
+    /// all spawned commands, letting the CLI evaluate them against the allowlist.
+    has_commands_allow: bool,
+}
+
+// ── Construction ───────────────────────────────────────────────
 
 impl ActivePolicy {
     /// Create an ActivePolicy from a PolicyEngine, computing cached fields.
@@ -102,7 +111,77 @@ impl ActivePolicy {
             .map_err(|e| anyhow::anyhow!("Failed to parse default security policy: {}", e))?;
         Ok(Self::new(engine))
     }
+}
 
+/// Resolve an `includes:` name to a YAML string using the embedded policy templates.
+fn include_resolver(name: &str) -> Option<String> {
+    super::templates::embedded_policy(name)
+}
+
+/// Check if a policy engine has any network allow rules (Http, Domains, or Endpoints).
+/// Called once at construction time; result is cached on `ActivePolicy`.
+///
+/// `Category::Protocols` is intentionally excluded: a protocol-only allowlist
+/// (e.g. `protocols: [https]`) constrains *how* connections are made, not *where*
+/// they go. Passthrough exists to let URL/domain allow rules work; a protocol
+/// allowlist alone doesn't express "allow specific hosts" and shouldn't unlock
+/// native socket passthrough.
+fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
+    let policy = engine.policy();
+    for cat in &[Category::Http, Category::Domains, Category::Endpoints] {
+        let key = SectionKey::global(*cat);
+        if let Some(section) = policy.get_section(&key) {
+            if section.has_allow_rules() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if a policy engine has any commands allow rules (Execution category).
+/// When commands: allow exists, unlisted commands are implicitly denied,
+/// so we need a wildcard exec filter to intercept all spawned commands.
+fn compute_has_commands_allow(engine: &PolicyEngine) -> bool {
+    let policy = engine.policy();
+    let key = SectionKey::global(Category::Execution);
+    if let Some(section) = policy.get_section(&key) {
+        return section.has_allow_rules();
+    }
+    false
+}
+
+// ── Public Queries ─────────────────────────────────────────────
+
+impl ActivePolicy {
+    /// Extract envvar allow patterns from the policy for agent-side filtering.
+    /// Returns the original pattern strings from `envvars: allow:` rules.
+    pub fn envvar_allow_patterns(&self) -> Vec<String> {
+        let policy = self.engine.policy();
+        let key = SectionKey::global(Category::EnvVars);
+        match policy.get_section(&key) {
+            Some(section) => section
+                .allow_rules
+                .iter()
+                .map(|r| r.pattern.original().to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Check if the policy has any sections with review or block mode.
+    /// Used to determine if review mode should be enabled in the agent.
+    pub fn has_blocking_sections(&self) -> bool {
+        self.engine
+            .policy()
+            .iter_sections()
+            .any(|(_, section)| section.mode.is_blocking())
+    }
+}
+
+// ── Hook Derivation ────────────────────────────────────────────
+
+impl ActivePolicy {
     /// Derive hook configurations from policy rules.
     /// Each policy rule (allow or deny) needs an agent-side hook so we can intercept the call.
     /// When the policy has `network: allow:` rules, also auto-adds known HTTP functions
@@ -170,37 +249,133 @@ impl ActivePolicy {
 
         configs
     }
+}
 
-    /// Evaluate a trace event against the policy.
+/// Convert a PolicyHookSpec to a HookConfig for the agent.
+fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig {
+    match spec.kind {
+        HookSpecKind::EnvVar => {
+            return HookConfig {
+                hook_type: HookType::EnvVar,
+                symbol: spec.pattern.clone(),
+                arg_count: None,
+                capture_return: false,
+                capture_stack: false,
+            };
+        }
+        _ => {}
+    }
+    if spec.kind == HookSpecKind::Command {
+        HookConfig {
+            hook_type: HookType::Exec,
+            symbol: exec_filter_name(&spec.pattern),
+
+            arg_count: None,
+            capture_return: false,
+            capture_stack,
+        }
+    } else {
+        match spec.runtime {
+            Some(Runtime::Python) => HookConfig {
+                hook_type: HookType::Python,
+                symbol: spec.pattern.clone(),
+
+                arg_count: None,
+                capture_return: true,
+                capture_stack,
+            },
+            Some(Runtime::Node) => HookConfig {
+                hook_type: HookType::Nodejs,
+                symbol: spec.pattern.clone(),
+
+                arg_count: None,
+                capture_return: true,
+                capture_stack,
+            },
+            None => HookConfig {
+                hook_type: HookType::Native,
+                symbol: spec.pattern.clone(),
+
+                arg_count: Some(6),
+                capture_return: true,
+                capture_stack,
+            },
+        }
+    }
+}
+
+/// Extract the command name from an exec pattern for agent-side filtering.
+///
+/// The exec filter only checks command basenames, so multi-word patterns
+/// like "curl wikipedia.org" or "curl *" need to be reduced to just the
+/// command name "curl". The CLI's evaluate_execution() handles full
+/// command string matching with specificity.
+fn exec_filter_name(pattern: &str) -> String {
+    pattern
+        .split_whitespace()
+        .next()
+        .unwrap_or(pattern)
+        .to_string()
+}
+
+// ── Evaluation Pipeline ────────────────────────────────────────
+
+impl ActivePolicy {
+    /// Evaluate a trace event against the full policy pipeline.
     ///
-    /// Performs three levels of evaluation:
-    /// 1. Function-level: matches against python, node, etc.
-    /// 2. Network info: uses structured `NetworkInfo` if available, otherwise
-    ///    falls back to text-based extraction from argument display strings.
+    /// Four sequential phases:
+    /// 1. Function-level — is this function allowed/denied? (cached for Python/Node/Native)
+    /// 2. Network — URL, domain, endpoint, protocol checks (from NetworkInfo or args)
+    /// 3. File — file path extraction and evaluation against files: rules
+    /// 4. Command — deterministic command triage (Exec/Bash only)
     ///
-    /// Returns the strictest disposition (most restrictive wins).
+    /// Returns the strictest disposition across all phases.
     pub fn evaluate_trace(&self, event: &TraceEvent) -> EventDisposition {
+        // Phase 1: Function-level (cached for Python/Node/Native)
+        let disp = self.evaluate_function_phase(event);
+
+        // Phase 2: Network passthrough + network evaluation.
+        // Returns None when blocked and not eligible for passthrough → early exit.
+        let disp = match self.apply_network_passthrough(event, disp.clone()) {
+            Some(disp) => disp,
+            None => return disp,
+        };
+
+        // Phase 3: File access evaluation
+        let disp = self.evaluate_file_phase(event, disp);
+
+        // Phase 4: Command triage (no-op for non-Exec/Bash)
+        self.evaluate_command_phase(event, disp)
+    }
+
+    /// Phase 1: Evaluate function name against policy rules.
+    ///
+    /// Caches results for Python/Node/Native (deterministic per function name).
+    /// Exec/Bash/EnvVar are not cached — their names vary per call.
+    fn evaluate_function_phase(&self, event: &TraceEvent) -> EventDisposition {
         let func = &event.function;
 
-        // Cache lookup for function-level disposition (skip Exec/Bash/EnvVar — names vary per call)
-        let cache_key = if !matches!(
+        // Cache lookup (Python/Node/Native only)
+        if !matches!(
             event.hook_type,
             HookType::Exec | HookType::Bash | HookType::EnvVar
         ) {
             let key = (hook_type_discriminant(&event.hook_type), func.to_string());
             if let Some(cached) = self.fn_cache.borrow().get(&key) {
-                let disp = cached.clone();
-                if let Some(disp) = self.apply_network_passthrough(event, disp) {
-                    return disp;
-                }
-                // Blocked and not a passthrough — return immediately
                 return cached.clone();
             }
-            Some(key)
-        } else {
-            None
-        };
+            let disp = self.compute_function_decision(event);
+            self.fn_cache.borrow_mut().insert(key, disp.clone());
+            return disp;
+        }
 
+        self.compute_function_decision(event)
+    }
+
+    /// Dispatch to the appropriate engine evaluation method based on hook type.
+    /// Returns the raw function-level disposition (no caching, no phase chaining).
+    fn compute_function_decision(&self, event: &TraceEvent) -> EventDisposition {
+        let func = &event.function;
         let args: Vec<&str> = event
             .arguments
             .iter()
@@ -212,9 +387,7 @@ impl ActivePolicy {
             HookType::Nodejs => self.engine.evaluate_function(Runtime::Node, func, &args),
             HookType::Native => self.engine.evaluate_native_function(func, &args),
             HookType::Exec | HookType::Bash => {
-                // Unwrap shell wrappers: sh -c "curl ..." → evaluate as "curl ..."
                 let full_cmd = unwrap_shell_exec_args(func, &args).unwrap_or_else(|| {
-                    // Build full command string: "cmd arg1 arg2" (skip argv[0])
                     let cmd_args: Vec<&str> = args.get(1..).unwrap_or(&[]).to_vec();
                     if cmd_args.is_empty() {
                         func.to_string()
@@ -227,46 +400,7 @@ impl ActivePolicy {
             HookType::EnvVar => self.engine.evaluate_envvar(func),
         };
 
-        let disp = decision_to_disposition(decision);
-
-        // Cache the function-level result
-        if let Some(key) = cache_key {
-            self.fn_cache.borrow_mut().insert(key, disp.clone());
-        }
-
-        // Apply network passthrough: if blocked but eligible, downgrade to Display
-        // and continue to network phase. Otherwise return the block immediately.
-        let disp = match self.apply_network_passthrough(event, disp.clone()) {
-            Some(disp) => disp,
-            None => return disp, // Blocked, not a passthrough
-        };
-
-        let disp = self.evaluate_file_phase(event, disp);
-        self.evaluate_command_phase(event, disp)
-    }
-
-    /// Extract envvar allow patterns from the policy for agent-side filtering.
-    /// Returns the original pattern strings from `envvars: allow:` rules.
-    pub fn envvar_allow_patterns(&self) -> Vec<String> {
-        let policy = self.engine.policy();
-        let key = SectionKey::global(Category::EnvVars);
-        match policy.get_section(&key) {
-            Some(section) => section
-                .allow_rules
-                .iter()
-                .map(|r| r.pattern.original().to_string())
-                .collect(),
-            None => Vec::new(),
-        }
-    }
-
-    /// Check if the policy has any sections with review or block mode.
-    /// Used to determine if review mode should be enabled in the agent.
-    pub fn has_blocking_sections(&self) -> bool {
-        self.engine
-            .policy()
-            .iter_sections()
-            .any(|(_, section)| section.mode.is_blocking())
+        decision_to_disposition(decision)
     }
 
     /// Apply network passthrough logic to a disposition.
@@ -334,37 +468,27 @@ fn has_hostname_context(event: &TraceEvent) -> bool {
     }
 }
 
-/// Check if a policy engine has any network allow rules (Http, Domains, or Endpoints).
-/// Called once at construction time; result is cached on `ActivePolicy`.
-///
-/// `Category::Protocols` is intentionally excluded: a protocol-only allowlist
-/// (e.g. `protocols: [https]`) constrains *how* connections are made, not *where*
-/// they go. Passthrough exists to let URL/domain allow rules work; a protocol
-/// allowlist alone doesn't express "allow specific hosts" and shouldn't unlock
-/// native socket passthrough.
-fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
-    let policy = engine.policy();
-    for cat in &[Category::Http, Category::Domains, Category::Endpoints] {
-        let key = SectionKey::global(*cat);
-        if let Some(section) = policy.get_section(&key) {
-            if section.has_allow_rules() {
-                return true;
-            }
-        }
-    }
-    false
-}
+// ── Disposition Utilities ──────────────────────────────────────
 
-/// Check if a policy engine has any commands allow rules (Execution category).
-/// When commands: allow exists, unlisted commands are implicitly denied,
-/// so we need a wildcard exec filter to intercept all spawned commands.
-fn compute_has_commands_allow(engine: &PolicyEngine) -> bool {
-    let policy = engine.policy();
-    let key = SectionKey::global(Category::Execution);
-    if let Some(section) = policy.get_section(&key) {
-        return section.has_allow_rules();
+/// Convert a PolicyDecision to an EventDisposition.
+pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposition {
+    if decision.is_allowed() {
+        return EventDisposition::Suppress;
     }
-    false
+
+    // Denied — disposition depends on enforcement mode
+    let rule = decision
+        .matched_rule
+        .unwrap_or_else(|| "(implicit)".to_string());
+    let section = decision.section;
+
+    match decision.mode {
+        EnforcementMode::Block => EventDisposition::Block { rule, section },
+        EnforcementMode::Review => EventDisposition::Review { rule, section },
+        EnforcementMode::Warn => EventDisposition::Warn { rule, section },
+        EnforcementMode::Log => EventDisposition::Display,
+        EnforcementMode::Noop => EventDisposition::Suppress,
+    }
 }
 
 /// Severity ranking for dispositions (higher = stricter).
@@ -398,38 +522,7 @@ pub(super) fn pick_stricter_opt(
     }
 }
 
-/// Compact discriminant for HookType used as cache key.
-fn hook_type_discriminant(ht: &HookType) -> u8 {
-    match ht {
-        HookType::Native => 0,
-        HookType::Python => 1,
-        HookType::Nodejs => 2,
-        HookType::Exec => 3,
-        HookType::EnvVar => 4,
-        HookType::Bash => 5,
-    }
-}
-
-/// Convert a PolicyDecision to an EventDisposition.
-pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposition {
-    if decision.is_allowed() {
-        return EventDisposition::Suppress;
-    }
-
-    // Denied — disposition depends on enforcement mode
-    let rule = decision
-        .matched_rule
-        .unwrap_or_else(|| "(implicit)".to_string());
-    let section = decision.section;
-
-    match decision.mode {
-        EnforcementMode::Block => EventDisposition::Block { rule, section },
-        EnforcementMode::Review => EventDisposition::Review { rule, section },
-        EnforcementMode::Warn => EventDisposition::Warn { rule, section },
-        EnforcementMode::Log => EventDisposition::Display,
-        EnforcementMode::Noop => EventDisposition::Suppress,
-    }
-}
+// ── Shell Utilities ────────────────────────────────────────────
 
 /// Unwrap shell wrappers in exec event arguments for policy evaluation.
 /// Given func="sh" and args=["sh", "-c", "curl -s https://evil.com"],
@@ -459,76 +552,21 @@ fn unwrap_shell_exec_args(func: &str, args: &[&str]) -> Option<String> {
     }
 }
 
-/// Extract the command name from an exec pattern for agent-side filtering.
-///
-/// The exec filter only checks command basenames, so multi-word patterns
-/// like "curl wikipedia.org" or "curl *" need to be reduced to just the
-/// command name "curl". The CLI's evaluate_execution() handles full
-/// command string matching with specificity.
-fn exec_filter_name(pattern: &str) -> String {
-    pattern
-        .split_whitespace()
-        .next()
-        .unwrap_or(pattern)
-        .to_string()
-}
+// ── Internal Utilities ─────────────────────────────────────────
 
-/// Convert a PolicyHookSpec to a HookConfig for the agent.
-fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig {
-    match spec.kind {
-        HookSpecKind::EnvVar => {
-            return HookConfig {
-                hook_type: HookType::EnvVar,
-                symbol: spec.pattern.clone(),
-                arg_count: None,
-                capture_return: false,
-                capture_stack: false,
-            };
-        }
-        _ => {}
-    }
-    if spec.kind == HookSpecKind::Command {
-        HookConfig {
-            hook_type: HookType::Exec,
-            symbol: exec_filter_name(&spec.pattern),
-
-            arg_count: None,
-            capture_return: false,
-            capture_stack,
-        }
-    } else {
-        match spec.runtime {
-            Some(Runtime::Python) => HookConfig {
-                hook_type: HookType::Python,
-                symbol: spec.pattern.clone(),
-
-                arg_count: None,
-                capture_return: true,
-                capture_stack,
-            },
-            Some(Runtime::Node) => HookConfig {
-                hook_type: HookType::Nodejs,
-                symbol: spec.pattern.clone(),
-
-                arg_count: None,
-                capture_return: true,
-                capture_stack,
-            },
-            None => HookConfig {
-                hook_type: HookType::Native,
-                symbol: spec.pattern.clone(),
-
-                arg_count: Some(6),
-                capture_return: true,
-                capture_stack,
-            },
-        }
+/// Compact discriminant for HookType used as cache key.
+fn hook_type_discriminant(ht: &HookType) -> u8 {
+    match ht {
+        HookType::Native => 0,
+        HookType::Python => 1,
+        HookType::Nodejs => 2,
+        HookType::Exec => 3,
+        HookType::EnvVar => 4,
+        HookType::Bash => 5,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers (shared with sibling test modules)
-// ---------------------------------------------------------------------------
+// ── Test Helpers + Tests ───────────────────────────────────────
 
 #[cfg(test)]
 pub(super) mod test_helpers {

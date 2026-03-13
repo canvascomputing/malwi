@@ -38,9 +38,7 @@ impl ActivePolicy {
         match event.hook_type {
             HookType::Exec | HookType::Bash => self.evaluate_file_args_from_exec(event, disp),
             HookType::Native => self.evaluate_file_from_native(event, disp),
-            HookType::Python | HookType::Nodejs => {
-                self.evaluate_file_from_runtime(event, disp)
-            }
+            HookType::Python | HookType::Nodejs => self.evaluate_file_from_runtime(event, disp),
             _ => disp,
         }
     }
@@ -388,9 +386,93 @@ mod tests {
             PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
         let policy = ActivePolicy::new(engine);
 
-        let event =
-            make_trace_event(HookType::Python, "json.loads", &["'{\"key\": \"value\"}'"]);
+        let event = make_trace_event(HookType::Python, "json.loads", &["'{\"key\": \"value\"}'"]);
         let disp = policy.evaluate_trace(&event);
         assert!(!disp.should_display());
+    }
+
+    // =====================================================================
+    // Cache-hit regression: file phase must run even on 2nd+ call
+    // =====================================================================
+
+    #[test]
+    fn test_native_open_cache_hit_still_evaluates_file_policy() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nsymbols:\n  warn:\n    - open\nfiles:\n  deny:\n    - \"~/.ssh/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        // 1st call: safe path — triggers warn from symbols warn, caches function-level
+        let event = make_trace_event(HookType::Native, "open", &["/lib/libc.so"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            matches!(disp, EventDisposition::Warn { .. }),
+            "1st open (safe path) should be warned by symbols warn"
+        );
+
+        // 2nd call: sensitive path — cache hit for function-level, but file phase must still run
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+        let sensitive = format!("{}/.ssh/id_rsa", home);
+        let event = make_trace_event(HookType::Native, "open", &[&sensitive]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "2nd open (~/.ssh/id_rsa) must be blocked even on cache hit"
+        );
+    }
+
+    #[test]
+    fn test_python_open_cache_hit_still_evaluates_file_policy() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\npython:\n  warn:\n    - open\nfiles:\n  deny:\n    - \"~/.ssh/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        // 1st call: safe path
+        let event = make_trace_event(HookType::Python, "open", &["'/tmp/safe.txt'"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            matches!(disp, EventDisposition::Warn { .. }),
+            "1st Python open (safe path) should be warned"
+        );
+
+        // 2nd call: sensitive path — must still evaluate file phase
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+        let sensitive = format!("'{}/{}'", home, ".ssh/id_rsa");
+        let event = make_trace_event(HookType::Python, "open", &[&sensitive]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "2nd Python open (~/.ssh/id_rsa) must be blocked even on cache hit"
+        );
+    }
+
+    #[test]
+    fn test_nodejs_fs_cache_hit_still_evaluates_file_policy() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnodejs:\n  warn:\n    - fs.readFileSync\nfiles:\n  deny:\n    - \"~/.ssh/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        // 1st call: safe path
+        let event = make_trace_event(HookType::Nodejs, "fs.readFileSync", &["'/tmp/safe.txt'"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            matches!(disp, EventDisposition::Warn { .. }),
+            "1st fs.readFileSync (safe path) should be warned"
+        );
+
+        // 2nd call: sensitive path — must still evaluate file phase
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+        let sensitive = format!("'{}/{}'", home, ".ssh/id_rsa");
+        let event = make_trace_event(HookType::Nodejs, "fs.readFileSync", &[&sensitive]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "2nd fs.readFileSync (~/.ssh/id_rsa) must be blocked even on cache hit"
+        );
     }
 }

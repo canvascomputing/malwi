@@ -881,4 +881,51 @@ mod tests {
         let disp = policy.evaluate_trace(&event);
         assert!(disp.should_display(), "text fallback should still work");
     }
+
+    #[test]
+    fn test_network_phase_evaluates_on_cache_hit() {
+        // Verify that network phase runs on 2nd+ calls (cache hit path).
+        // The function-level cache only stores the function disposition;
+        // network evaluation must still run for each event's NetworkInfo.
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        // 1st call: safe URL — Suppress (no function deny, no network deny)
+        let safe_net = malwi_intercept::NetworkInfo {
+            host: Some("safe.example.com".to_string()),
+            url: Some("https://safe.example.com/api".to_string()),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "requests.get",
+            &["url='https://safe.example.com/api'"],
+            safe_net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.should_display(),
+            "1st requests.get (safe URL) should be suppressed"
+        );
+
+        // 2nd call: evil URL — cache hit for function-level, but network must still evaluate
+        let evil_net = malwi_intercept::NetworkInfo {
+            host: Some("malware.evil.com".to_string()),
+            url: Some("https://malware.evil.com/payload".to_string()),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "requests.get",
+            &["url='https://malware.evil.com/payload'"],
+            evil_net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.should_display(),
+            "2nd requests.get (evil URL) must be caught even on cache hit"
+        );
+    }
 }
