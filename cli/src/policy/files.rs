@@ -4,12 +4,32 @@ use super::active::{decision_to_disposition, pick_stricter, ActivePolicy, EventD
 use crate::policy::{Category, SectionKey};
 use malwi_intercept::{HookType, TraceEvent};
 
+/// Check if a Python or Node.js function is a known file-access function.
+/// Sources from `taxonomy.yaml` `file_functions:` section.
+fn is_runtime_file_func(hook_type: &HookType, function: &str) -> bool {
+    let tax = super::taxonomy::get();
+    match *hook_type {
+        HookType::Python => tax.file_functions.python.iter().any(|f| f == function),
+        HookType::Nodejs => function.starts_with(&tax.file_functions.nodejs_prefix),
+        _ => false,
+    }
+}
+
+/// Convert absolute path to ~/... form if under user's home directory.
+fn to_tilde_path(path: &str) -> Option<String> {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let home = HOME.get_or_init(|| std::env::var("HOME").ok());
+    let home = home.as_deref()?;
+    path.strip_prefix(home).map(|rest| format!("~{rest}"))
+}
+
 impl ActivePolicy {
     /// Evaluate file access against the `files:` policy section.
     ///
-    /// Two paths:
-    /// - Exec events: check command arguments for file paths
+    /// Three paths:
+    /// - Exec/Bash events: check command arguments for file paths
     /// - Native open/openat: extract the path from the call arguments
+    /// - Python/Node.js: check known file functions for path in first argument
     pub(super) fn evaluate_file_phase(
         &self,
         event: &TraceEvent,
@@ -18,8 +38,30 @@ impl ActivePolicy {
         match event.hook_type {
             HookType::Exec | HookType::Bash => self.evaluate_file_args_from_exec(event, disp),
             HookType::Native => self.evaluate_file_from_native(event, disp),
+            HookType::Python | HookType::Nodejs => {
+                self.evaluate_file_from_runtime(event, disp)
+            }
             _ => disp,
         }
+    }
+
+    /// Evaluate a file path against the files: policy section.
+    /// Checks both the normalized path and the ~/... form.
+    fn check_file_path(&self, path: &str) -> EventDisposition {
+        let normalized = normalize_path(path);
+        let decision = self.engine.evaluate_file(&normalized);
+        let disp = decision_to_disposition(decision);
+        if disp.should_display() {
+            return disp;
+        }
+        if let Some(tilde) = to_tilde_path(&normalized) {
+            let decision = self.engine.evaluate_file(&tilde);
+            let d = decision_to_disposition(decision);
+            if d.should_display() {
+                return d;
+            }
+        }
+        disp
     }
 
     /// Check command arguments for file paths (covers SIP-protected binaries).
@@ -40,9 +82,7 @@ impl ActivePolicy {
             if arg.starts_with('-') || arg.is_empty() {
                 continue;
             }
-            let normalized = normalize_path(arg);
-            let decision = self.engine.evaluate_file(&normalized);
-            let file_disp = decision_to_disposition(decision);
+            let file_disp = self.check_file_path(arg);
             if file_disp.should_display() {
                 strictest = pick_stricter(strictest, file_disp);
                 if strictest.is_blocked() {
@@ -59,24 +99,57 @@ impl ActivePolicy {
         event: &TraceEvent,
         disp: EventDisposition,
     ) -> EventDisposition {
-        let func = &event.function;
+        let tax = super::taxonomy::get();
+        // Normalize _open → open (macOS underscore-prefixed aliases)
+        let func = event.function.trim_start_matches('_');
+        if !tax.file_functions.native.iter().any(|f| f == func) {
+            return disp;
+        }
         let args: Vec<&str> = event
             .arguments
             .iter()
             .filter_map(|a| a.display.as_deref())
             .collect();
 
-        // Extract file path based on function
-        let path_str = match func.as_str() {
-            "open" | "_open" => args.first().and_then(|a| strip_quotes(a)),
-            "openat" | "_openat" => args.get(1).and_then(|a| strip_quotes(a)),
+        // Arg extraction stays in code — position depends on the specific syscall
+        debug_assert!(
+            matches!(func, "open" | "openat"),
+            "native file function '{}' in taxonomy but missing from extraction match",
+            func
+        );
+        let path_str = match func {
+            "open" => args.first().map(|a| strip_any_quotes(a)),
+            "openat" => args.get(1).map(|a| strip_any_quotes(a)),
             _ => return disp,
         };
 
         if let Some(path) = path_str {
-            let normalized = normalize_path(path);
-            let decision = self.engine.evaluate_file(&normalized);
-            let file_disp = decision_to_disposition(decision);
+            let file_disp = self.check_file_path(path);
+            if file_disp.should_display() {
+                return pick_stricter(disp, file_disp);
+            }
+        }
+        disp
+    }
+
+    /// Extract path from known Python/Node.js file functions and evaluate.
+    fn evaluate_file_from_runtime(
+        &self,
+        event: &TraceEvent,
+        disp: EventDisposition,
+    ) -> EventDisposition {
+        let is_file_func = is_runtime_file_func(&event.hook_type, &event.function);
+        if !is_file_func {
+            return disp;
+        }
+        // First arg is the file path
+        let path_str = event
+            .arguments
+            .first()
+            .and_then(|a| a.display.as_deref())
+            .map(strip_any_quotes);
+        if let Some(path) = path_str {
+            let file_disp = self.check_file_path(path);
             if file_disp.should_display() {
                 return pick_stricter(disp, file_disp);
             }
@@ -116,11 +189,12 @@ pub(crate) fn normalize_path(path: &str) -> String {
     }
 }
 
-/// Remove surrounding double quotes from a formatted display string.
-fn strip_quotes(s: &str) -> Option<&str> {
+/// Remove surrounding quotes (single or double) from a display string.
+fn strip_any_quotes(s: &str) -> &str {
     s.strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
-        .or(Some(s))
+        .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(s)
 }
 
 #[cfg(test)]
@@ -223,13 +297,18 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_quotes_removes_double_quotes() {
-        assert_eq!(strip_quotes("\"/tmp/file\""), Some("/tmp/file"));
+    fn test_strip_any_quotes_removes_double_quotes() {
+        assert_eq!(strip_any_quotes("\"/tmp/file\""), "/tmp/file");
     }
 
     #[test]
-    fn test_strip_quotes_passes_through_unquoted() {
-        assert_eq!(strip_quotes("/tmp/file"), Some("/tmp/file"));
+    fn test_strip_any_quotes_removes_single_quotes() {
+        assert_eq!(strip_any_quotes("'/tmp/file'"), "/tmp/file");
+    }
+
+    #[test]
+    fn test_strip_any_quotes_passes_through_unquoted() {
+        assert_eq!(strip_any_quotes("/tmp/file"), "/tmp/file");
     }
 
     #[test]
@@ -262,12 +341,55 @@ mod tests {
     }
 
     #[test]
-    fn test_file_phase_skips_non_exec_non_native() {
+    fn test_file_phase_blocks_python_open_to_denied_path() {
         let engine =
             PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
         let policy = ActivePolicy::new(engine);
 
-        let event = make_trace_event(HookType::Python, "open", &["~/.ssh/id_rsa"]);
+        let event = make_trace_event(HookType::Python, "open", &["'~/.ssh/id_rsa'"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "Python open to .ssh should be blocked by files: deny"
+        );
+    }
+
+    #[test]
+    fn test_native_open_absolute_path_matches_tilde_pattern() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"~/.zshrc\"\n").unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let home = std::env::var("HOME").unwrap();
+        let abs_path = format!("\"{}/.zshrc\"", home);
+        let event = make_trace_event(HookType::Native, "open", &[&abs_path, "O_WRONLY"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "absolute path should match ~/ pattern");
+    }
+
+    #[test]
+    fn test_nodejs_fs_write_to_denied_path_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_trace_event(
+            HookType::Nodejs,
+            "fs.writeFileSync",
+            &["'/home/user/.ssh/authorized_keys'"],
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked());
+    }
+
+    #[test]
+    fn test_python_non_file_func_skipped() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nfiles:\n  deny:\n    - \"*/.ssh/**\"\n").unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event =
+            make_trace_event(HookType::Python, "json.loads", &["'{\"key\": \"value\"}'"]);
         let disp = policy.evaluate_trace(&event);
         assert!(!disp.should_display());
     }

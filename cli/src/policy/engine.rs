@@ -471,15 +471,36 @@ impl PolicyEngine {
                     );
                 }
                 Category::Files => {
-                    // Hook open/openat to monitor file access.
-                    // CLI-side evaluate_trace() extracts paths and checks against files: policy.
-                    for sym in &["open", "openat"] {
+                    let tax = super::taxonomy::get();
+                    // Native file syscalls from taxonomy
+                    for sym in &tax.file_functions.native {
                         specs.push(PolicyHookSpec {
                             runtime: None,
-                            pattern: sym.to_string(),
+                            pattern: sym.clone(),
                             kind: HookSpecKind::Function,
                         });
                     }
+                    // Python file functions from taxonomy.
+                    // Only emit bare names (no dots) as hook specs. Module-qualified
+                    // names like "builtins.open" trigger eager C hook resolution in
+                    // the agent, which replaces the C function and can interfere with
+                    // Python startup. The full list (including qualified names) is
+                    // used for evaluation in files.rs.
+                    for func in &tax.file_functions.python {
+                        if !func.contains('.') {
+                            specs.push(PolicyHookSpec {
+                                runtime: Some(Runtime::Python),
+                                pattern: func.clone(),
+                                kind: HookSpecKind::Function,
+                            });
+                        }
+                    }
+                    // Node.js fs module (prefix → wildcard)
+                    specs.push(PolicyHookSpec {
+                        runtime: Some(Runtime::Node),
+                        pattern: format!("{}*", tax.file_functions.nodejs_prefix),
+                        kind: HookSpecKind::Function,
+                    });
                 }
                 Category::EnvVars => {
                     // Emit a wildcard spec to signal envvar monitoring enablement,
@@ -1574,7 +1595,7 @@ python:
     }
 
     #[test]
-    fn test_extract_hook_specs_files_emits_open_openat() {
+    fn test_extract_hook_specs_files_emits_native_and_runtime_hooks() {
         let engine = engine_from_yaml(
             r#"
 version: 1
@@ -1585,13 +1606,50 @@ files:
         );
 
         let specs = engine.extract_hook_specs();
+        let tax = crate::policy::taxonomy::get();
 
-        // files: section should emit open and openat native function specs
-        assert_eq!(specs.len(), 2);
+        // Only bare Python names (no dots) become hook specs — module-qualified
+        // names like builtins.open trigger eager C hook resolution in the agent.
+        let py_bare_count = tax
+            .file_functions
+            .python
+            .iter()
+            .filter(|f| !f.contains('.'))
+            .count();
+        let expected_count = tax.file_functions.native.len() + py_bare_count + 1;
+        assert_eq!(specs.len(), expected_count);
+
         let patterns: Vec<&str> = specs.iter().map(|s| s.pattern.as_str()).collect();
-        assert!(patterns.contains(&"open"));
-        assert!(patterns.contains(&"openat"));
-        assert!(specs.iter().all(|s| s.runtime.is_none()));
+
+        // All native syscalls from taxonomy should be present
+        for sym in &tax.file_functions.native {
+            let s: &str = sym;
+            assert!(patterns.contains(&s), "missing native: {}", sym);
+        }
+        // Bare Python file funcs from taxonomy should be present
+        for func in tax.file_functions.python.iter().filter(|f| !f.contains('.')) {
+            let s: &str = func;
+            assert!(patterns.contains(&s), "missing python: {}", func);
+        }
+        // Node.js prefix -> wildcard
+        let expected_node_pattern = format!("{}*", tax.file_functions.nodejs_prefix);
+        assert!(patterns.contains(&expected_node_pattern.as_str()));
+
+        // Native specs have no runtime
+        let native_specs: Vec<_> = specs.iter().filter(|s| s.runtime.is_none()).collect();
+        assert_eq!(native_specs.len(), tax.file_functions.native.len());
+        // Python specs (bare names only)
+        let py_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.runtime == Some(Runtime::Python))
+            .collect();
+        assert_eq!(py_specs.len(), py_bare_count);
+        // Node.js specs
+        let node_specs: Vec<_> = specs
+            .iter()
+            .filter(|s| s.runtime == Some(Runtime::Node))
+            .collect();
+        assert_eq!(node_specs.len(), 1);
         assert!(specs.iter().all(|s| s.kind == HookSpecKind::Function));
     }
 

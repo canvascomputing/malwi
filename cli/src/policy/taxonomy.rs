@@ -72,6 +72,13 @@ pub struct TaxonomySymbols {
     pub networking: Vec<String>,
 }
 
+/// Known file-access functions per runtime, for auto-hooking when files: section exists.
+pub struct TaxonomyFileFunctions {
+    pub python: Vec<String>,
+    pub nodejs_prefix: String,
+    pub native: Vec<String>,
+}
+
 /// Known HTTP functions per runtime, for auto-hooking when network: allow exists.
 pub struct TaxonomyHttpFunctions {
     pub python: Vec<String>,
@@ -93,6 +100,7 @@ pub struct Taxonomy {
     pub symbols: TaxonomySymbols,
     pub network: TaxonomyNetwork,
     pub http_functions: TaxonomyHttpFunctions,
+    pub file_functions: TaxonomyFileFunctions,
 }
 
 impl Taxonomy {
@@ -236,6 +244,9 @@ fn parse_taxonomy(raw: &str) -> Taxonomy {
     // --- HTTP functions ---
     let http_functions = parse_http_functions(root_map);
 
+    // --- File functions ---
+    let file_functions = parse_file_functions(root_map);
+
     Taxonomy {
         commands,
         files,
@@ -243,6 +254,7 @@ fn parse_taxonomy(raw: &str) -> Taxonomy {
         symbols,
         network,
         http_functions,
+        file_functions,
     }
 }
 
@@ -409,6 +421,35 @@ fn parse_http_functions(root: &[(String, YamlValue)]) -> TaxonomyHttpFunctions {
     }
 
     http
+}
+
+/// Parse the `file_functions:` section into TaxonomyFileFunctions.
+fn parse_file_functions(root: &[(String, YamlValue)]) -> TaxonomyFileFunctions {
+    let mut ff = TaxonomyFileFunctions {
+        python: Vec::new(),
+        nodejs_prefix: String::new(),
+        native: Vec::new(),
+    };
+
+    let val = match find_key(root, "file_functions") {
+        Some(v) => v,
+        None => return ff,
+    };
+    let map = as_mapping(val);
+
+    if let Some(py) = find_key(map, "python") {
+        ff.python = as_string_list(py);
+    }
+    if let Some(prefix) = find_key(map, "nodejs_prefix") {
+        if let YamlValue::String(s) = prefix {
+            ff.nodejs_prefix = s.clone();
+        }
+    }
+    if let Some(native) = find_key(map, "native") {
+        ff.native = as_string_list(native);
+    }
+
+    ff
 }
 
 /// Parse the `network:` section into TaxonomyNetwork.
@@ -662,6 +703,29 @@ mod tests {
             .nodejs
             .contains(&"http.request".to_string()));
         assert!(tax.http_functions.nodejs.contains(&"fetch".to_string()));
+    }
+
+    #[test]
+    fn file_functions_present() {
+        let tax = get();
+        assert!(tax
+            .file_functions
+            .python
+            .contains(&"open".to_string()));
+        assert!(tax
+            .file_functions
+            .python
+            .contains(&"builtins.open".to_string()));
+        assert!(tax
+            .file_functions
+            .python
+            .contains(&"io.open".to_string()));
+        assert_eq!(tax.file_functions.nodejs_prefix, "fs.");
+        assert!(tax.file_functions.native.contains(&"open".to_string()));
+        assert!(tax
+            .file_functions
+            .native
+            .contains(&"openat".to_string()));
     }
 
     #[test]

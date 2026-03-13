@@ -476,6 +476,16 @@ http_functions:
     - https.get
     - fetch
 
+file_functions:
+  python:
+    - open
+    - builtins.open
+    - io.open
+  nodejs_prefix: "fs."
+  native:
+    - open
+    - openat
+
 network:
   deny:
     - "169.254.169.254/**"
