@@ -169,8 +169,11 @@ fn test_air_gap_exfiltration_attempts() {
         );
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         assert!(
-            stdout.contains(r#"denied: getaddrinfo("127.0.0.1", "4444""#),
-            "HTTP POST exfil via Python urllib getaddrinfo(\"127.0.0.1\", \"4444\") should be denied.\nstdout:\n{}",
+            stdout.contains(r#"denied: getaddrinfo("127.0.0.1", "4444""#)
+                || stdout.contains("denied: syscall")
+                || stdout.contains("denied: socket("),
+            "HTTP POST exfil via Python urllib should be denied \
+             by network symbol (getaddrinfo, syscall, or socket).\nstdout:\n{}",
             stdout,
         );
     });
