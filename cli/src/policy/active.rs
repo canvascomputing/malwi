@@ -296,7 +296,7 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
                 hook_type: HookType::Native,
                 symbol: spec.pattern.clone(),
 
-                arg_count: Some(6),
+                arg_count: Some(6), // default capture for native hooks (covers most libc signatures)
                 capture_return: true,
                 capture_stack,
             },

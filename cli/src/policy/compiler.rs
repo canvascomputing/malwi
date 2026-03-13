@@ -79,20 +79,20 @@ fn classify_network_pattern(pattern: &str) -> PatternType {
 
 /// Compute the section-level enforcement mode from which keys have rules.
 /// This is the fallback mode for implicit denials (unmatched patterns).
-fn compute_section_mode(ad: &AllowDenySection) -> EnforcementMode {
-    if !ad.deny.is_empty() {
+fn compute_section_mode(section: &AllowDenySection) -> EnforcementMode {
+    if !section.deny.is_empty() {
         return EnforcementMode::Block;
     }
-    if !ad.review.is_empty() {
+    if !section.review.is_empty() {
         return EnforcementMode::Review;
     }
-    if !ad.warn.is_empty() {
+    if !section.warn.is_empty() {
         return EnforcementMode::Warn;
     }
-    if !ad.log.is_empty() {
+    if !section.log.is_empty() {
         return EnforcementMode::Log;
     }
-    if !ad.noop.is_empty() {
+    if !section.noop.is_empty() {
         return EnforcementMode::Noop;
     }
     // Default: Block (unmatched patterns are blocked)
@@ -171,8 +171,8 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
 ///
 /// The `protocols` field becomes a Protocols section with allowed_values.
 fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, CompiledSection)>> {
-    let ad = match value {
-        SectionValue::AllowDeny(ad) => ad,
+    let section = match value {
+        SectionValue::AllowDeny(s) => s,
         _ => {
             return Err(PolicyError::Validation(
                 super::error::ValidationError::UnknownSection(
@@ -190,7 +190,7 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
     let mut endpoint_deny = vec![];
 
     // Allow rules
-    for rule in &ad.allow {
+    for rule in &section.allow {
         let pattern_str = rule_pattern(rule);
         let mode = EnforcementMode::Block; // mode on allow rules is not used for matching
         match classify_network_pattern(pattern_str) {
@@ -206,11 +206,11 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
 
     // Deny-side rules: each key's rules get their respective mode
     let deny_keys: &[(&Vec<Rule>, EnforcementMode)] = &[
-        (&ad.deny, EnforcementMode::Block),
-        (&ad.review, EnforcementMode::Review),
-        (&ad.warn, EnforcementMode::Warn),
-        (&ad.log, EnforcementMode::Log),
-        (&ad.noop, EnforcementMode::Noop),
+        (&section.deny, EnforcementMode::Block),
+        (&section.review, EnforcementMode::Review),
+        (&section.warn, EnforcementMode::Warn),
+        (&section.log, EnforcementMode::Log),
+        (&section.noop, EnforcementMode::Noop),
     ];
     for (rules, mode) in deny_keys {
         for rule in *rules {
@@ -231,51 +231,34 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
 
     let mut results = vec![];
 
-    if !url_allow.is_empty() || !url_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&url_deny, ad);
-        results.push((
-            SectionKey::global(Category::Http),
-            CompiledSection {
-                mode,
-                allow_rules: url_allow,
-                deny_rules: url_deny,
-                ..Default::default()
-            },
-        ));
-    }
-    if !domain_allow.is_empty() || !domain_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&domain_deny, ad);
-        results.push((
-            SectionKey::global(Category::Domains),
-            CompiledSection {
-                mode,
-                allow_rules: domain_allow,
-                deny_rules: domain_deny,
-                ..Default::default()
-            },
-        ));
-    }
-    if !endpoint_allow.is_empty() || !endpoint_deny.is_empty() {
-        let mode = strictest_mode_of_rules(&endpoint_deny, ad);
-        results.push((
-            SectionKey::global(Category::Endpoints),
-            CompiledSection {
-                mode,
-                allow_rules: endpoint_allow,
-                deny_rules: endpoint_deny,
-                ..Default::default()
-            },
-        ));
+    let subsections: [(Category, Vec<CompiledRule>, Vec<CompiledRule>); 3] = [
+        (Category::Http, url_allow, url_deny),
+        (Category::Domains, domain_allow, domain_deny),
+        (Category::Endpoints, endpoint_allow, endpoint_deny),
+    ];
+    for (category, allow_rules, deny_rules) in subsections {
+        if !allow_rules.is_empty() || !deny_rules.is_empty() {
+            let mode = strictest_mode_of_rules(&deny_rules, section);
+            results.push((
+                SectionKey::global(category),
+                CompiledSection {
+                    mode,
+                    allow_rules,
+                    deny_rules,
+                    ..Default::default()
+                },
+            ));
+        }
     }
 
     // Protocols from the special field
-    if !ad.protocols.is_empty() {
-        let mode = compute_section_mode(ad);
+    if !section.protocols.is_empty() {
+        let mode = compute_section_mode(section);
         results.push((
             SectionKey::global(Category::Protocols),
             CompiledSection {
                 mode,
-                allowed_values: ad.protocols.clone(),
+                allowed_values: section.protocols.clone(),
                 ..Default::default()
             },
         ));
@@ -286,7 +269,10 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
 
 /// Compute the strictest mode among deny rules assigned to a sub-section,
 /// falling back to `compute_section_mode` if there are no rules.
-fn strictest_mode_of_rules(deny_rules: &[CompiledRule], ad: &AllowDenySection) -> EnforcementMode {
+fn strictest_mode_of_rules(
+    deny_rules: &[CompiledRule],
+    section: &AllowDenySection,
+) -> EnforcementMode {
     let mut strictest = None;
     for rule in deny_rules {
         let sev = mode_severity(rule.mode);
@@ -309,7 +295,7 @@ fn strictest_mode_of_rules(deny_rules: &[CompiledRule], ad: &AllowDenySection) -
                 EnforcementMode::Noop
             }
         }
-        None => compute_section_mode(ad),
+        None => compute_section_mode(section),
     }
 }
 
@@ -322,66 +308,40 @@ fn rule_pattern(rule: &Rule) -> &str {
 }
 
 fn compile_allow_deny_section(
-    ad: &AllowDenySection,
+    section: &AllowDenySection,
     case_insensitive: bool,
     category: Category,
 ) -> Result<CompiledSection> {
-    let mode = compute_section_mode(ad);
-    let mut section = CompiledSection {
+    let mode = compute_section_mode(section);
+    let mut compiled = CompiledSection {
         mode,
         ..Default::default()
     };
 
     // Allow rules
-    for rule in &ad.allow {
-        section
+    for rule in &section.allow {
+        compiled
             .allow_rules
             .push(compile_rule(rule, case_insensitive, category, mode)?);
     }
 
     // Deny-side rules, each with their key's mode
-    for rule in &ad.deny {
-        section.deny_rules.push(compile_rule(
-            rule,
-            case_insensitive,
-            category,
-            EnforcementMode::Block,
-        )?);
-    }
-    for rule in &ad.review {
-        section.deny_rules.push(compile_rule(
-            rule,
-            case_insensitive,
-            category,
-            EnforcementMode::Review,
-        )?);
-    }
-    for rule in &ad.warn {
-        section.deny_rules.push(compile_rule(
-            rule,
-            case_insensitive,
-            category,
-            EnforcementMode::Warn,
-        )?);
-    }
-    for rule in &ad.log {
-        section.deny_rules.push(compile_rule(
-            rule,
-            case_insensitive,
-            category,
-            EnforcementMode::Log,
-        )?);
-    }
-    for rule in &ad.noop {
-        section.deny_rules.push(compile_rule(
-            rule,
-            case_insensitive,
-            category,
-            EnforcementMode::Noop,
-        )?);
+    let deny_keys: &[(&Vec<Rule>, EnforcementMode)] = &[
+        (&section.deny, EnforcementMode::Block),
+        (&section.review, EnforcementMode::Review),
+        (&section.warn, EnforcementMode::Warn),
+        (&section.log, EnforcementMode::Log),
+        (&section.noop, EnforcementMode::Noop),
+    ];
+    for (rules, deny_mode) in deny_keys {
+        for rule in *rules {
+            compiled
+                .deny_rules
+                .push(compile_rule(rule, case_insensitive, category, *deny_mode)?);
+        }
     }
 
-    Ok(section)
+    Ok(compiled)
 }
 
 fn compile_rule(
@@ -527,13 +487,7 @@ fn merge_section_values(child: &mut SectionValue, included: SectionValue) {
         (SectionValue::AllowDeny(child_ad), SectionValue::AllowDeny(included_ad)) => {
             // Collect all patterns the child defines at any disposition.
             let child_patterns: std::collections::HashSet<String> = child_ad
-                .allow
-                .iter()
-                .chain(child_ad.deny.iter())
-                .chain(child_ad.warn.iter())
-                .chain(child_ad.log.iter())
-                .chain(child_ad.review.iter())
-                .chain(child_ad.noop.iter())
+                .all_rules()
                 .map(|r| rule_pattern(r).to_string())
                 .collect();
 

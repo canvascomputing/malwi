@@ -43,6 +43,19 @@ pub struct AllowDenySection {
     pub protocols: Vec<String>,
 }
 
+impl AllowDenySection {
+    /// Iterate over all rules across every disposition (allow, deny, warn, log, review, noop).
+    pub fn all_rules(&self) -> impl Iterator<Item = &Rule> {
+        self.allow
+            .iter()
+            .chain(self.deny.iter())
+            .chain(self.warn.iter())
+            .chain(self.log.iter())
+            .chain(self.review.iter())
+            .chain(self.noop.iter())
+    }
+}
+
 /// A single rule - either a simple pattern or pattern with constraints.
 #[derive(Debug, Clone)]
 pub enum Rule {

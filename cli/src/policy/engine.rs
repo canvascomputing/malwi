@@ -261,18 +261,6 @@ impl PolicyEngine {
         }
     }
 
-    #[allow(dead_code)]
-    fn decision_severity(d: &PolicyDecision) -> u8 {
-        match (d.action, d.mode) {
-            (PolicyAction::Allow, _) => 0,
-            (PolicyAction::Deny, EnforcementMode::Noop) => 0,
-            (PolicyAction::Deny, EnforcementMode::Log) => 1,
-            (PolicyAction::Deny, EnforcementMode::Warn) => 2,
-            (PolicyAction::Deny, EnforcementMode::Review) => 3,
-            (PolicyAction::Deny, EnforcementMode::Block) => 4,
-        }
-    }
-
     /// Evaluate a native/C function call (no runtime prefix).
     /// Uses the global `symbols:` section (SectionKey { runtime: None, category: Functions }).
     pub fn evaluate_native_function(&self, name: &str, arguments: &[&str]) -> PolicyDecision {
@@ -549,6 +537,7 @@ impl PolicyEngine {
 /// Exact patterns score highest (len * 2), globs score by literal character count.
 fn pattern_specificity(pattern: &CompiledPattern) -> usize {
     match pattern {
+        // Double so an exact match always outscores a glob of the same length
         CompiledPattern::Exact(s) => s.len() * 2,
         CompiledPattern::Glob { original, .. } => {
             original.chars().filter(|c| *c != '*' && *c != '?').count()

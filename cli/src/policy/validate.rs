@@ -53,23 +53,8 @@ fn validate_section(name: &str, value: &SectionValue) -> Result<(), ValidationEr
     // Validate section content based on type
     match value {
         SectionValue::AllowDeny(ad) => {
-            // Validate all rules
-            for rule in &ad.allow {
-                validate_rule(rule, &parsed.category)?;
-            }
-            for rule in &ad.deny {
-                validate_rule(rule, &parsed.category)?;
-            }
-            for rule in &ad.warn {
-                validate_rule(rule, &parsed.category)?;
-            }
-            for rule in &ad.log {
-                validate_rule(rule, &parsed.category)?;
-            }
-            for rule in &ad.review {
-                validate_rule(rule, &parsed.category)?;
-            }
-            for rule in &ad.noop {
+            // Validate all rules across every disposition
+            for rule in ad.all_rules() {
                 validate_rule(rule, &parsed.category)?;
             }
             // Validate protocols field (only meaningful in network sections)
