@@ -1,0 +1,7 @@
+# Dangerous native symbols.
+# Native functions used for credential interception, symlink bypass, or raw syscalls.
+- getpass
+- crypt
+- symlink
+- link
+- syscall

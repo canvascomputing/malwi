@@ -1,0 +1,13 @@
+# Package commands (Linux).
+# Linux-specific package managers and installer tools.
+- apt
+- apt-get
+- yum
+- dnf
+- pacman
+- apk
+- zypper
+- dpkg
+- rpm
+- snap
+- flatpak

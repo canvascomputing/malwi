@@ -1,0 +1,10 @@
+# Exfiltration commands.
+# Commands that can send data to external destinations.
+- open
+- sqlite3
+- xdg-open
+- profiles
+- screencapture
+- sysdiagnose
+- shortcuts
+- automator

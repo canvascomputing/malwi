@@ -1,0 +1,11 @@
+# Reconnaissance commands.
+# System enumeration and file search tools.
+- locate
+- mlocate
+- plocate
+- system_profiler
+- ioreg
+- log
+- powermetrics
+- praudit
+- auditreduce

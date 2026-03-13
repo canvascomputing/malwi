@@ -1,0 +1,13 @@
+# Networking native symbols.
+# Socket and DNS functions used for network communication.
+- socket
+- connect
+- sendto
+- send
+- bind
+- listen
+- accept
+- accept4
+- getaddrinfo
+- gethostbyname
+- gethostbyname2

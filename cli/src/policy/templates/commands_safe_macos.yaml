@@ -1,0 +1,12 @@
+# Safe commands (macOS).
+# macOS-specific read-only system utilities.
+- sw_vers
+- sysctl
+- scutil
+- hostinfo
+- vm_stat
+- dscacheutil
+- dsmemberutil
+- odutil
+- syslog
+- osalang

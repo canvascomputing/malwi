@@ -1,0 +1,6 @@
+# Browser data patterns.
+# Glob patterns matching browser credential databases and cookies.
+- "~/Library/Application Support/Google/Chrome/*/Login Data*"
+- "~/Library/Application Support/Firefox/Profiles/**/*.sqlite"
+- "~/.mozilla/firefox/**/*.sqlite"
+- "~/.config/google-chrome/*/Login Data*"

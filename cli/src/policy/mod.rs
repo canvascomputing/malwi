@@ -29,14 +29,11 @@ pub(crate) mod config;
 mod detect;
 mod files;
 mod network;
-pub(super) mod presets;
-pub(crate) mod taxonomy;
-mod templates;
+pub(crate) mod templates;
 
 // Module-internal re-exports for sibling access via crate::policy::X
 pub(self) use compiled::{Category, EnforcementMode, Runtime, SectionKey};
 pub(self) use engine::{HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec};
-pub(self) use yaml::{parse as parse_yaml, YamlValue};
 
 // Re-export CLI policy types
 pub use active::{ActivePolicy, EventDisposition};

@@ -1,0 +1,4 @@
+# Anti-tracing environment variables.
+# Variables used to inject libraries into processes or bypass tracing.
+- DYLD_INSERT_LIBRARIES
+- LD_PRELOAD

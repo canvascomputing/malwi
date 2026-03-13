@@ -1,0 +1,11 @@
+# Kernel commands.
+# Tools that load, unload, or manipulate kernel modules and extensions.
+- insmod
+- modprobe
+- rmmod
+- kexec
+- kextload
+- kextunload
+- kmutil
+- kextutil
+- kextcache

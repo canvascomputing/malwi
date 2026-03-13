@@ -1,0 +1,5 @@
+# Anti-tracing commands.
+# Process killing commands used to terminate monitoring or tracing tools.
+- kill
+- pkill
+- killall

@@ -1,0 +1,5 @@
+# Python file-access functions.
+# Function names checked against file policy rules.
+- open
+- builtins.open
+- io.open

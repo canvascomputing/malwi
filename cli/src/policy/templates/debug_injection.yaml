@@ -1,0 +1,20 @@
+# Debug and injection commands.
+# Debuggers, tracers, and memory inspection tools.
+- strace
+- ltrace
+- gdb
+- gcore
+- lldb
+- dtrace
+- dtruss
+- ktrace
+- fs_usage
+- sc_usage
+- eslogger
+- xctrace
+- sample
+- heap
+- leaks
+- vmmap
+- malloc_history
+- spindump

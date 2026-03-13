@@ -1,0 +1,30 @@
+# Build commands.
+# Compilers, linkers, and build system toolchain commands.
+- make
+- cmake
+- gcc
+- g++
+- cc
+- c++
+- clang
+- clang++
+- cpp
+- ar
+- ld
+- nm
+- strip
+- ranlib
+- objcopy
+- objdump
+- pkg-config
+- autoconf
+- automake
+- libtool
+- rustc
+- rustup
+- rustfmt
+- clippy-driver
+- go
+- configure
+- install
+- size

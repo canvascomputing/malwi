@@ -1,0 +1,5 @@
+# IPC commands.
+# D-Bus and inter-process communication tools.
+- dbus-send
+- gdbus
+- busctl

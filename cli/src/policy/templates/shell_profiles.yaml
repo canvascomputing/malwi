@@ -1,0 +1,6 @@
+# Shell profile patterns.
+# Paths to shell startup files that can be modified for persistence.
+- ~/.bashrc
+- ~/.zshrc
+- ~/.profile
+- ~/.bash_profile

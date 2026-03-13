@@ -1,0 +1,8 @@
+# Filesystem hardening commands.
+# Tools that modify file attributes, capabilities, and firmware settings.
+- chattr
+- setcap
+- getcap
+- debugfs
+- xattr
+- nvram

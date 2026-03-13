@@ -1,0 +1,20 @@
+# Mandatory access control commands.
+# Tools that disable or reconfigure OS security policies and protections.
+- setenforce
+- aa-disable
+- apparmor_parser
+- csrutil
+- tccutil
+- pfctl
+- fdesetup
+- firmwarepasswd
+- DevToolsSecurity
+- automationmodetool
+- gktool
+- xprotect
+- trustcachectl
+- systemextensionsctl
+- syspolicy_check
+- xartutil
+- audit
+- accton

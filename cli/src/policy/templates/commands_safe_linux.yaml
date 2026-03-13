@@ -1,0 +1,5 @@
+# Safe commands (Linux).
+# Linux-specific read-only system utilities.
+- lsb_release
+- dpkg-architecture
+- lsof

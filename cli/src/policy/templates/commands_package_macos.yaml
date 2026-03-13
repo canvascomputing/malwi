@@ -1,0 +1,8 @@
+# Package commands (macOS).
+# macOS-specific package managers and installer tools.
+- brew
+- installer
+- pkgutil
+- pkgbuild
+- productbuild
+- stapler

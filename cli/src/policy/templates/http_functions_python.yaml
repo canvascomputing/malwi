@@ -1,0 +1,17 @@
+# Python HTTP functions.
+# Function names hooked when a policy has network allow rules.
+- requests.get
+- requests.post
+- requests.put
+- requests.patch
+- requests.delete
+- requests.head
+- requests.request
+- httpx.get
+- httpx.post
+- httpx.put
+- httpx.patch
+- httpx.delete
+- httpx.request
+- urllib.request.urlopen
+- aiohttp.ClientSession._request

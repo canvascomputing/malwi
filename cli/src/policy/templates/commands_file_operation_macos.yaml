@@ -1,0 +1,4 @@
+# File operation commands (macOS).
+# macOS-specific file format conversion and image processing tools.
+- sips
+- textutil

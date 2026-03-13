@@ -5,12 +5,13 @@ use crate::policy::{Category, SectionKey};
 use malwi_intercept::{HookType, TraceEvent};
 
 /// Check if a Python or Node.js function is a known file-access function.
-/// Sources from `taxonomy.yaml` `file_functions:` section.
+/// Sources from `file_functions_python.yaml` and `NODEJS_FILE_PREFIX`.
 fn is_runtime_file_func(hook_type: &HookType, function: &str) -> bool {
-    let tax = super::taxonomy::get();
     match *hook_type {
-        HookType::Python => tax.file_functions.python.iter().any(|f| f == function),
-        HookType::Nodejs => function.starts_with(&tax.file_functions.nodejs_prefix),
+        HookType::Python => super::templates::file_functions_python()
+            .iter()
+            .any(|f| f == function),
+        HookType::Nodejs => function.starts_with(super::templates::taxonomy::NODEJS_FILE_PREFIX),
         _ => false,
     }
 }
@@ -97,10 +98,12 @@ impl ActivePolicy {
         event: &TraceEvent,
         disp: EventDisposition,
     ) -> EventDisposition {
-        let tax = super::taxonomy::get();
         // Normalize _open → open (macOS underscore-prefixed aliases)
         let func = event.function.trim_start_matches('_');
-        if !tax.file_functions.native.iter().any(|f| f == func) {
+        if !super::templates::file_functions_native()
+            .iter()
+            .any(|f| f == func)
+        {
             return disp;
         }
         let args: Vec<&str> = event

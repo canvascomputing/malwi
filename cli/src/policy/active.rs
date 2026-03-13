@@ -220,8 +220,7 @@ impl ActivePolicy {
         // These functions aren't in any deny/warn list, but the network phase
         // needs to see them fire to evaluate URLs against the allowlist.
         if self.has_network_allow {
-            let tax = super::taxonomy::get();
-            for func in &tax.http_functions.python {
+            for func in super::templates::http_functions_python() {
                 let key = ("Python".to_string(), func.clone());
                 if seen.insert(key) {
                     configs.push(HookConfig {
@@ -233,7 +232,7 @@ impl ActivePolicy {
                     });
                 }
             }
-            for func in &tax.http_functions.nodejs {
+            for func in super::templates::http_functions_nodejs() {
                 let key = ("Nodejs".to_string(), func.clone());
                 if seen.insert(key) {
                     configs.push(HookConfig {
@@ -445,10 +444,11 @@ impl ActivePolicy {
 }
 
 /// Check if a native function name is a networking symbol.
-/// Uses the taxonomy's `symbols.networking` list as single source of truth.
+/// Uses `networking_symbols.yaml` via the group macro accessor as single source of truth.
 fn is_networking_symbol(name: &str) -> bool {
-    let tax = super::taxonomy::get();
-    tax.symbols.networking.iter().any(|s| s == name)
+    super::templates::networking_symbols()
+        .iter()
+        .any(|s| s == name)
 }
 
 /// Check if a trace event has hostname context (URL or non-IP hostname).

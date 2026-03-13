@@ -1,0 +1,6 @@
+# Privilege escalation commands.
+# Tools that elevate user privileges or switch identity.
+- pkexec
+- newgrp
+- dsenableroot
+- sysadminctl

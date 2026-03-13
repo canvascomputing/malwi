@@ -1,0 +1,6 @@
+# Keyring patterns.
+# Glob patterns matching OS keychain and keyring storage locations.
+- ~/Library/Keychains/**
+- ~/Library/Cookies/**
+- ~/.local/share/keyrings/**
+- ~/.local/share/kwalletd/**

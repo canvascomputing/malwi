@@ -1,0 +1,14 @@
+# Sensitive environment variable patterns.
+# Glob patterns matching API keys, tokens, passwords, and cloud credentials.
+- "*SECRET*"
+- "*TOKEN*"
+- "*PASSWORD*"
+- "*API_KEY*"
+- "*PRIVATE_KEY*"
+- "AWS_*"
+- "GITHUB_*"
+- "GCP_*"
+- "AZURE_*"
+- "OPENAI_*"
+- "ANTHROPIC_*"
+- HF_TOKEN

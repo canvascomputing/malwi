@@ -1,0 +1,13 @@
+# Build commands (macOS).
+# macOS-specific compilers, linkers, and Xcode toolchain.
+- otool
+- lipo
+- dsymutil
+- dyld_info
+- dyld_usage
+- install_name_tool
+- codesign_allocate
+- xcodebuild
+- xcrun
+- xcode-select
+- atos

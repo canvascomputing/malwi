@@ -1,0 +1,22 @@
+# Package commands.
+# Package managers, version managers, and version control systems.
+- git
+- svn
+- hg
+- npm
+- npx
+- yarn
+- pnpm
+- bun
+- corepack
+- pip
+- pip3
+- cargo
+- gem
+- bundle
+- bundler
+- nvm
+- rbenv
+- pyenv
+- asdf
+- volta

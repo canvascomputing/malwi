@@ -1,0 +1,12 @@
+# Persistence file patterns.
+# Glob patterns matching autostart, launch agent, and cron locations.
+- ~/Library/LaunchAgents/**
+- /Library/LaunchDaemons/**
+- /Library/LaunchAgents/**
+- ~/.config/autostart/**
+- ~/.config/systemd/user/**
+- /etc/cron.d/**
+- /etc/cron.daily/**
+- /etc/crontab
+- ~/.crontab
+- /etc/ld.so.preload

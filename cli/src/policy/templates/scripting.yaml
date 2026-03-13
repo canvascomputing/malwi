@@ -1,0 +1,14 @@
+# Scripting commands.
+# Interpreters and additional shells that can execute arbitrary code.
+- osascript
+- osacompile
+- swift
+- java
+- gjs
+- expect
+- tclsh
+- wish
+- dash
+- ksh
+- csh
+- tcsh

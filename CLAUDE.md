@@ -56,7 +56,7 @@ The tool injects an agent library into target processes to intercept function ca
 
 `malwi-protocol` contains shared wire types (TraceEvent, AgentMessage, CliMessage, binary codec) and utilities (glob matching, platform detection). `malwi-intercept` depends on it and re-exports all its types, so existing `malwi_intercept::TraceEvent` imports continue to work. The `malwi-agent` crate is just a cdylib entry point that re-exports `malwi_intercept::*` and defines `__mod_init_func`/`.init_array` constructors.
 
-Policy presets are defined as Rust functions in `cli/src/policy/presets.rs` using a `rules!` macro and shared const pattern slices (e.g., `CREDENTIAL_FILES`, `WARN_BASELINE`). They are serialized to YAML on demand for user-facing config files. The `rules!` macro supports spread syntax (`..GROUP`) and inline literals to compose `Vec<Rule>` from shared const slices.
+Policy presets are defined as Rust functions in `cli/src/policy/templates/mod.rs` using a `rules!` macro and shared pattern groups loaded from YAML files (e.g., `credential_files.yaml`, `scripting.yaml`). Each group is a `static OnceLock<Vec<String>>` lazily parsed via `parse_yaml_list()` and accessed through a corresponding `macro_rules!` (e.g., `credential_files!()`, `scripting!()`). Public `pub(crate) fn` accessors expose groups to sibling modules (e.g., `networking_symbols()`, `http_functions_python()`). They are serialized to YAML on demand for user-facing config files. The `rules!` macro supports group macro invocations (`group!()`) and inline literals to compose `Vec<Rule>`. Command taxonomy data lives in per-category flat files (`commands_safe.yaml`, `commands_threat.yaml`, etc.) with OS-specific variants (`commands_threat_macos.yaml`, `commands_threat_linux.yaml`) conditionally included via `#[cfg(target_os)]` in `taxonomy.rs`.
 
 ## Platform Support
 
@@ -175,14 +175,53 @@ cli/src/
     ├── files.rs        # File access policy evaluation
     ├── commands.rs     # Command analysis integration
     ├── analysis.rs     # 7-engine command triage
-    ├── taxonomy.rs     # Command taxonomy singleton
     ├── detect.rs       # Auto-detection of command-specific policies
-    ├── presets.rs      # Rust-native presets: rules! macro, shared const slices, preset functions, YAML serializer
-    ├── templates.rs    # Bridge: embedded_policy() + DEFAULT_SECURITY_YAML (delegates to presets.rs)
     ├── config.rs       # Policy file management (~/.config/malwi/)
     │
-    └── presets/        # Data files (embedded via include_str!)
-        └── taxonomy.yaml   # Command taxonomy data
+    └── templates/      # Policy templates, taxonomy, and shared pattern groups
+        ├── mod.rs                      # rules! macro, group macros, accessor fns,
+        │                               # preset fns, embedded_policy(),
+        │                               # DEFAULT_SECURITY_YAML, YAML serializer
+        ├── taxonomy.rs                 # Category enum, Taxonomy struct, flat-file parser, singleton
+        ├── commands_safe.yaml          # Command taxonomy — per-category flat lists
+        ├── commands_safe_macos.yaml
+        ├── commands_safe_linux.yaml
+        ├── commands_build.yaml
+        ├── commands_build_macos.yaml
+        ├── commands_text.yaml
+        ├── commands_package.yaml
+        ├── commands_package_macos.yaml
+        ├── commands_package_linux.yaml
+        ├── commands_file_operation.yaml
+        ├── commands_file_operation_macos.yaml
+        ├── commands_threat.yaml
+        ├── commands_threat_macos.yaml
+        ├── commands_threat_linux.yaml
+        ├── credential_files.yaml       # Shared file pattern groups (YAML lists)
+        ├── keyrings.yaml
+        ├── browser_data.yaml
+        ├── persistence_files.yaml
+        ├── shell_profiles.yaml
+        ├── sensitive_envvars.yaml      # Shared envvar pattern groups
+        ├── anti_tracing_envvars.yaml
+        ├── dangerous_symbols.yaml      # Shared native symbol groups
+        ├── networking_symbols.yaml
+        ├── http_functions_python.yaml  # HTTP functions for network policy auto-hooking
+        ├── http_functions_nodejs.yaml
+        ├── file_functions_python.yaml  # File functions for file policy evaluation
+        ├── file_functions_native.yaml
+        ├── scripting.yaml              # Command groups for warn-baseline and presets
+        ├── exfiltration.yaml
+        ├── credential_readers.yaml
+        ├── anti_tracing.yaml
+        ├── interprocess_communication.yaml
+        ├── reconnaissance.yaml
+        ├── container_escape.yaml
+        ├── mandatory_access_control.yaml
+        ├── filesystem_hardening.yaml
+        ├── kernel.yaml
+        ├── debug_injection.yaml
+        └── privilege_escalation.yaml
 ```
 
 ## Protocol Module Structure

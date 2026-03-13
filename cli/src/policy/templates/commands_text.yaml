@@ -1,0 +1,35 @@
+# Text commands.
+# Text search, transform, and format conversion tools.
+- grep
+- egrep
+- fgrep
+- rg
+- sed
+- awk
+- gawk
+- mawk
+- sort
+- uniq
+- cut
+- tr
+- wc
+- comm
+- diff
+- patch
+- fmt
+- column
+- fold
+- expand
+- unexpand
+- nl
+- rev
+- tac
+- paste
+- join
+- strings
+- od
+- hexdump
+- jq
+- yq
+- xmllint
+- xsltproc

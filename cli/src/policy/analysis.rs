@@ -13,7 +13,7 @@
 //! 7. DangerousPatterns — cross-command catch-all for universal danger signals
 
 use super::files::normalize_path;
-use super::taxonomy::{self, Category};
+use super::templates::taxonomy::{self, Category};
 use malwi_intercept::glob::matches_glob;
 
 /// Result of command analysis when a suspicious pattern is detected.
@@ -107,7 +107,7 @@ const ENGINES: &[Engine] = &[
 
 fn engine_safe_by_identity(ctx: &EngineContext) -> Triage {
     match taxonomy::get().lookup(ctx.basename) {
-        Some((Category::Safe, _)) => Triage::Benign,
+        Some(Category::Safe) => Triage::Benign,
         _ => Triage::Unknown,
     }
 }
@@ -118,7 +118,7 @@ fn engine_safe_by_identity(ctx: &EngineContext) -> Triage {
 
 fn engine_build_and_dev(ctx: &EngineContext) -> Triage {
     match taxonomy::get().lookup(ctx.basename) {
-        Some((Category::Build, _)) => Triage::Benign,
+        Some(Category::Build) => Triage::Benign,
         _ => Triage::Unknown,
     }
 }
@@ -129,7 +129,7 @@ fn engine_build_and_dev(ctx: &EngineContext) -> Triage {
 
 fn engine_text_processing(ctx: &EngineContext) -> Triage {
     match taxonomy::get().lookup(ctx.basename) {
-        Some((Category::Text, _)) => Triage::Benign,
+        Some(Category::Text) => Triage::Benign,
         _ => Triage::Unknown,
     }
 }
@@ -140,7 +140,7 @@ fn engine_text_processing(ctx: &EngineContext) -> Triage {
 
 fn engine_package_and_vcs(ctx: &EngineContext) -> Triage {
     match taxonomy::get().lookup(ctx.basename) {
-        Some((Category::Package, _)) => Triage::Benign,
+        Some(Category::Package) => Triage::Benign,
         _ => Triage::Unknown,
     }
 }
@@ -152,7 +152,7 @@ fn engine_package_and_vcs(ctx: &EngineContext) -> Triage {
 fn engine_file_operations(ctx: &EngineContext) -> Triage {
     if !matches!(
         taxonomy::get().lookup(ctx.basename),
-        Some((Category::FileOperation, _))
+        Some(Category::FileOperation)
     ) {
         return Triage::Unknown;
     }
@@ -282,11 +282,12 @@ fn engine_network_and_shell(ctx: &EngineContext) -> Triage {
 
     // Credential database access via sqlite3
     if ctx.basename == "sqlite3" {
-        let cred_dbs = &taxonomy::get().files.credential_dbs;
+        const CREDENTIAL_DBS: &[&str] =
+            &["Login Data", "cookies.sqlite", "logins.json", "keychain"];
         for arg in args {
             if !arg.starts_with('-') {
-                for db in cred_dbs {
-                    if arg.contains(db.as_str()) {
+                for db in CREDENTIAL_DBS {
+                    if arg.contains(db) {
                         return Triage::Suspicious {
                             reason: format!("sqlite3 accessing credential database: {}", arg),
                             rule_id: "credential_db",

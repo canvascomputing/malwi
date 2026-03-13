@@ -1,0 +1,4 @@
+# Native file-access functions.
+# Libc functions checked against file policy rules.
+- open
+- openat
