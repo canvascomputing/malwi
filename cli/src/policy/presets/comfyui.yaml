@@ -145,18 +145,44 @@ envvars:
     # HF config flags — not secrets, needed by transformers/huggingface_hub
     - HF_HUB_*
     - HF_TOKEN_PATH
+  warn:
+    - "*_SECRET*"
+    - "*_TOKEN"
+    - "*_TOKEN_*"
+    - "*_PASSWORD"
+    - "*_PASSWORD_*"
+    - "*_API_KEY"
+    - "*_API_KEY_*"
+    - "*_PRIVATE_KEY*"
   deny:
-    - "*SECRET*"
-    - "*TOKEN*"
-    - "*PASSWORD*"
-    - "*API_KEY*"
-    - "*PRIVATE_KEY*"
-    - "AWS_*"
-    - "GITHUB_*"
-    - "GCP_*"
-    - "AZURE_*"
-    - "OPENAI_*"
-    - "ANTHROPIC_*"
+    # Cloud provider credentials
+    - AWS_SECRET_ACCESS_KEY
+    - AWS_ACCESS_KEY_ID
+    - AWS_SESSION_TOKEN
+    - AWS_SECURITY_TOKEN
+    - GCP_SERVICE_ACCOUNT_KEY
+    - GOOGLE_APPLICATION_CREDENTIALS
+    - GOOGLE_API_KEY
+    - AZURE_CLIENT_SECRET
+    - AZURE_CLIENT_ID
+    # AI/ML provider keys
+    - OPENAI_API_KEY
+    - ANTHROPIC_API_KEY
     - HF_TOKEN
+    - STABILITY_API_KEY
+    - REPLICATE_API_TOKEN
+    - CIVITAI_API_TOKEN
+    # Code hosting / package registries
+    - GITHUB_TOKEN
+    - NPM_TOKEN
+    # Messaging integrations
+    - DISCORD_TOKEN
+    - DISCORD_WEBHOOK_URL
+    - TELEGRAM_BOT_TOKEN
+    # Other credentials
+    - DATABASE_URL
+    - SSH_PRIVATE_KEY
+    - STRIPE_SECRET_KEY
+    # Injection vectors
     - DYLD_INSERT_LIBRARIES
     - LD_PRELOAD
