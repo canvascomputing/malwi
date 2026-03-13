@@ -29,6 +29,7 @@ pub(crate) mod config;
 mod detect;
 mod files;
 mod network;
+pub(super) mod presets;
 pub(crate) mod taxonomy;
 mod templates;
 

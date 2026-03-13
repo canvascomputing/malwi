@@ -56,7 +56,7 @@ The tool injects an agent library into target processes to intercept function ca
 
 `malwi-protocol` contains shared wire types (TraceEvent, AgentMessage, CliMessage, binary codec) and utilities (glob matching, platform detection). `malwi-intercept` depends on it and re-exports all its types, so existing `malwi_intercept::TraceEvent` imports continue to work. The `malwi-agent` crate is just a cdylib entry point that re-exports `malwi_intercept::*` and defines `__mod_init_func`/`.init_array` constructors.
 
-Policy YAML templates live in `cli/src/policy/presets/` and are embedded at compile time via `include_str!`.
+Policy presets are defined as Rust functions in `cli/src/policy/presets.rs` using a `rules!` macro and shared const pattern slices (e.g., `CREDENTIAL_FILES`, `WARN_BASELINE`). They are serialized to YAML on demand for user-facing config files. The `rules!` macro supports spread syntax (`..GROUP`) and inline literals to compose `Vec<Rule>` from shared const slices.
 
 ## Platform Support
 
@@ -177,18 +177,11 @@ cli/src/
     ├── analysis.rs     # 7-engine command triage
     ├── taxonomy.rs     # Command taxonomy singleton
     ├── detect.rs       # Auto-detection of command-specific policies
-    ├── templates.rs    # Embedded YAML strings, DEFAULT_SECURITY_YAML
+    ├── presets.rs      # Rust-native presets: rules! macro, shared const slices, preset functions, YAML serializer
+    ├── templates.rs    # Bridge: embedded_policy() + DEFAULT_SECURITY_YAML (delegates to presets.rs)
     ├── config.rs       # Policy file management (~/.config/malwi/)
     │
-    └── presets/        # YAML policy templates (embedded via include_str!)
-        ├── default.yaml    # Observe-mode policy (warn/log, no blocking)
-        ├── npm-install.yaml
-        ├── pip-install.yaml
-        ├── comfyui.yaml
-        ├── openclaw.yaml
-        ├── bash-install.yaml
-        ├── air-gap.yaml    # Total network isolation
-        ├── base.yaml       # Shared base sections reference
+    └── presets/        # Data files (embedded via include_str!)
         └── taxonomy.yaml   # Command taxonomy data
 ```
 

@@ -1,30 +1,30 @@
-//! Embedded policy YAML templates.
+//! Embedded policy templates.
 //!
-//! All policy YAML files are compiled into the binary via `include_str!`.
-//! This module provides `embedded_policy()` to look up templates by name,
-//! and the default security policy constant.
+//! Policy presets are defined as Rust functions in `super::presets` and
+//! serialized to YAML on demand. This module provides `embedded_policy()`
+//! to look up templates by name, and `DEFAULT_SECURITY_YAML` for the
+//! default observe-mode policy.
+
+use std::sync::LazyLock;
+
+use super::presets;
 
 /// Default security policy YAML (observe-mode: nothing is blocked).
-pub const DEFAULT_SECURITY_YAML: &str = include_str!("presets/default.yaml");
-
-const NPM_INSTALL_YAML: &str = include_str!("presets/npm-install.yaml");
-const PIP_INSTALL_YAML: &str = include_str!("presets/pip-install.yaml");
-const COMFYUI_YAML: &str = include_str!("presets/comfyui.yaml");
-const OPENCLAW_YAML: &str = include_str!("presets/openclaw.yaml");
-const BASH_INSTALL_YAML: &str = include_str!("presets/bash-install.yaml");
-const AIR_GAP_YAML: &str = include_str!("presets/air-gap.yaml");
+pub static DEFAULT_SECURITY_YAML: LazyLock<String> =
+    LazyLock::new(|| presets::policy_to_yaml(&presets::default_policy(), "default"));
 
 /// Return the embedded YAML template for a given policy name.
 pub fn embedded_policy(name: &str) -> Option<String> {
-    match name {
-        "npm-install" => Some(NPM_INSTALL_YAML.to_string()),
-        "pip-install" => Some(PIP_INSTALL_YAML.to_string()),
-        "comfyui" => Some(COMFYUI_YAML.to_string()),
-        "openclaw" => Some(OPENCLAW_YAML.to_string()),
-        "bash-install" => Some(BASH_INSTALL_YAML.to_string()),
-        "air-gap" => Some(AIR_GAP_YAML.to_string()),
-        _ => None,
-    }
+    let (policy, label) = match name {
+        "npm-install" => (presets::npm_install(), name),
+        "pip-install" => (presets::pip_install(), name),
+        "comfyui" => (presets::comfyui(), name),
+        "openclaw" => (presets::openclaw(), name),
+        "bash-install" => (presets::bash_install(), name),
+        "air-gap" => (presets::air_gap(), name),
+        _ => return None,
+    };
+    Some(presets::policy_to_yaml(&policy, label))
 }
 
 // ---------------------------------------------------------------------------

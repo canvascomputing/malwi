@@ -107,7 +107,7 @@ impl ActivePolicy {
     /// Load the built-in default security policy.
     #[cfg(test)]
     pub fn default_security() -> anyhow::Result<Self> {
-        let engine = PolicyEngine::from_yaml(super::templates::DEFAULT_SECURITY_YAML)
+        let engine = PolicyEngine::from_yaml(&super::templates::DEFAULT_SECURITY_YAML)
             .map_err(|e| anyhow::anyhow!("Failed to parse default security policy: {}", e))?;
         Ok(Self::new(engine))
     }
