@@ -50,10 +50,25 @@ impl ActivePolicy {
     }
 
     /// Evaluate structured networking metadata against all networking policy sections.
+    ///
+    /// Evaluation order (broadest → most specific), short-circuits on Block:
+    /// 1. Protocol — broadest constraint ("HTTPS only")
+    /// 2. URL match — full URL pattern
+    /// 3. Domain-only bridge — synthetic URL for socket events (no URL but domain known)
+    /// 4. Domain — hostname pattern
+    /// 5. Endpoint — domain:port or ip:port, most specific
     fn evaluate_network_info(&self, info: &NetworkInfo) -> Option<EventDisposition> {
         let mut s: Option<EventDisposition> = None;
 
-        // HTTP URL rules (network section, URL patterns)
+        // 1. Protocol — broadest constraint
+        if let Some(ref protocol) = info.protocol {
+            merge_decision(&mut s, self.engine.evaluate_protocol(protocol.as_str()));
+            if s.as_ref().is_some_and(|d| d.is_blocked()) {
+                return s;
+            }
+        }
+
+        // 2. HTTP URL rules (network section, URL patterns)
         if let Some(ref url) = info.url {
             if url.contains("://") {
                 if let Some(parsed) = ParsedUrl::parse(url) {
@@ -62,33 +77,41 @@ impl ActivePolicy {
                         self.engine
                             .evaluate_http_url(&parsed.full_url(), &parsed.url_without_scheme()),
                     );
+                    if s.as_ref().is_some_and(|d| d.is_blocked()) {
+                        return s;
+                    }
                 }
             }
         }
 
-        // Host-only NetworkInfo: bridge to URL patterns by constructing "{host}/".
-        // e.g. socket.create_connection("pypi.org", 443) has host="pypi.org" but no URL.
-        // Synthetic "pypi.org/" matches pattern "pypi.org/**" → Allow.
+        // 3. Domain-only bridge: synthetic URL for socket events without a URL.
+        // Only uses domain (never constructs URLs from raw IPs — meaningless for
+        // hostname-based patterns like "pypi.org/**").
         if info.url.is_none() {
-            if let Some(ref host) = info.host {
-                let synthetic = format!("{}/", host);
+            if let Some(ref domain) = info.domain {
+                let synthetic = format!("{}/", domain);
                 merge_decision(
                     &mut s,
                     self.engine.evaluate_http_url(&synthetic, &synthetic),
                 );
+                if s.as_ref().is_some_and(|d| d.is_blocked()) {
+                    return s;
+                }
             }
         }
 
-        if let Some(ref host) = info.host {
-            merge_decision(&mut s, self.engine.evaluate_domain(host));
+        // 4. Domain — hostname pattern
+        if let Some(ref domain) = info.domain {
+            merge_decision(&mut s, self.engine.evaluate_domain(domain));
+        }
+        if s.as_ref().is_some_and(|d| d.is_blocked()) {
+            return s;
         }
 
-        if let (Some(ref host), Some(port)) = (&info.host, info.port) {
+        // 5. Endpoint — domain:port or ip:port, most specific
+        let endpoint_host = info.domain.as_deref().or(info.ip.as_deref());
+        if let (Some(host), Some(port)) = (endpoint_host, info.port) {
             merge_decision(&mut s, self.engine.evaluate_endpoint(host, port));
-        }
-
-        if let Some(ref protocol) = info.protocol {
-            merge_decision(&mut s, self.engine.evaluate_protocol(protocol.as_str()));
         }
 
         s
@@ -114,23 +137,31 @@ impl ActivePolicy {
 
     /// Extract HTTP metadata (URL, domain, protocol) from argument strings
     /// and evaluate against networking policy sections.
+    ///
+    /// Evaluation order: Protocol → Domain → Endpoint (short-circuit on Block).
     fn evaluate_networking_from_args(&self, args: &[&str]) -> Option<EventDisposition> {
         let mut strictest: Option<EventDisposition> = None;
 
         for arg in args {
             if let Some(url) = extract_url_from_arg(arg) {
                 if let Some(parsed) = ParsedUrl::parse(&url) {
-                    // Evaluate domain
-                    let domain_decision = self.engine.evaluate_domain(&parsed.host);
-                    let domain_disp = decision_to_disposition(domain_decision);
-                    strictest = Some(pick_stricter_opt(strictest, domain_disp));
-
-                    // Evaluate protocol
+                    // 1. Protocol
                     let proto_decision = self.engine.evaluate_protocol(&parsed.scheme);
                     let proto_disp = decision_to_disposition(proto_decision);
                     strictest = Some(pick_stricter_opt(strictest, proto_disp));
+                    if strictest.as_ref().is_some_and(|d| d.is_blocked()) {
+                        return strictest.filter(|d| d.should_display());
+                    }
 
-                    // Evaluate endpoint (host:port)
+                    // 2. Domain
+                    let domain_decision = self.engine.evaluate_domain(&parsed.host);
+                    let domain_disp = decision_to_disposition(domain_decision);
+                    strictest = Some(pick_stricter_opt(strictest, domain_disp));
+                    if strictest.as_ref().is_some_and(|d| d.is_blocked()) {
+                        return strictest.filter(|d| d.should_display());
+                    }
+
+                    // 3. Endpoint (host:port)
                     if let Some(port) = parsed.port {
                         let ep_decision = self.engine.evaluate_endpoint(&parsed.host, port);
                         let ep_disp = decision_to_disposition(ep_decision);
@@ -666,9 +697,10 @@ mod tests {
 
         let net = NetworkInfo {
             url: Some("https://malware.evil.com/payload".to_string()),
-            host: Some("malware.evil.com".to_string()),
+            domain: Some("malware.evil.com".to_string()),
             port: Some(443),
             protocol: Some(Protocol::Https),
+            ..Default::default()
         };
         let event = make_trace_event_with_net(
             HookType::Python,
@@ -690,7 +722,7 @@ mod tests {
         let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
-            host: Some("10.0.0.1".to_string()),
+            ip: Some("10.0.0.1".to_string()),
             port: Some(22),
             protocol: Some(Protocol::Tcp),
             ..Default::default()
@@ -708,7 +740,7 @@ mod tests {
         );
 
         let net = NetworkInfo {
-            host: Some("example.com".to_string()),
+            domain: Some("example.com".to_string()),
             port: Some(80),
             protocol: Some(Protocol::Tcp),
             ..Default::default()
@@ -731,9 +763,10 @@ mod tests {
 
         let net = NetworkInfo {
             url: Some("http://example.com/insecure".to_string()),
-            host: Some("example.com".to_string()),
+            domain: Some("example.com".to_string()),
             port: Some(80),
             protocol: Some(Protocol::Http),
+            ..Default::default()
         };
         let event = make_trace_event_with_net(
             HookType::Python,
@@ -757,9 +790,10 @@ mod tests {
 
         let net = NetworkInfo {
             url: Some("https://x.evil.com/payload".to_string()),
-            host: Some("x.evil.com".to_string()),
+            domain: Some("x.evil.com".to_string()),
             port: Some(443),
             protocol: Some(Protocol::Https),
+            ..Default::default()
         };
         let event = make_trace_event_with_net(HookType::Python, "requests.get", &[], net);
         let disp = policy.evaluate_trace(&event);
@@ -773,7 +807,7 @@ mod tests {
         let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
-            host: Some("redis.internal".to_string()),
+            domain: Some("redis.internal".to_string()),
             port: Some(6379),
             protocol: Some(Protocol::Tcp),
             ..Default::default()
@@ -853,10 +887,9 @@ mod tests {
 
     #[test]
     fn test_network_allow_auto_generates_socket_hooks() {
-        let engine = PolicyEngine::from_yaml(
-            "version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n",
-        )
-        .unwrap();
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
         let policy = ActivePolicy::new(engine);
 
         let configs = policy.derive_hook_configs(false);
@@ -910,7 +943,7 @@ mod tests {
         let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
-            host: Some("evil.com".to_string()),
+            domain: Some("evil.com".to_string()),
             port: Some(443),
             ..Default::default()
         };
@@ -936,7 +969,7 @@ mod tests {
         let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
-            host: Some("huggingface.co".to_string()),
+            domain: Some("huggingface.co".to_string()),
             port: Some(443),
             ..Default::default()
         };
@@ -956,13 +989,13 @@ mod tests {
     #[test]
     fn test_native_connect_ip_not_blocked_when_network_allow_exists() {
         let engine = PolicyEngine::from_yaml(
-            "version: 1\nsymbols:\n  deny:\n    - connect\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
         )
         .unwrap();
         let policy = ActivePolicy::new(engine);
 
         let net = NetworkInfo {
-            host: Some("93.184.216.34".to_string()),
+            ip: Some("93.184.216.34".to_string()),
             port: Some(443),
             ..Default::default()
         };
@@ -1003,7 +1036,7 @@ mod tests {
 
         // 1st call: safe URL — Suppress (no function deny, no network deny)
         let safe_net = malwi_intercept::NetworkInfo {
-            host: Some("safe.example.com".to_string()),
+            domain: Some("safe.example.com".to_string()),
             url: Some("https://safe.example.com/api".to_string()),
             ..Default::default()
         };
@@ -1021,7 +1054,7 @@ mod tests {
 
         // 2nd call: evil URL — cache hit for function-level, but network must still evaluate
         let evil_net = malwi_intercept::NetworkInfo {
-            host: Some("malware.evil.com".to_string()),
+            domain: Some("malware.evil.com".to_string()),
             url: Some("https://malware.evil.com/payload".to_string()),
             ..Default::default()
         };
@@ -1035,6 +1068,84 @@ mod tests {
         assert!(
             disp.should_display(),
             "2nd requests.get (evil URL) must be caught even on cache hit"
+        );
+    }
+
+    #[test]
+    fn test_protocol_deny_short_circuits_before_domain() {
+        // Protocol deny (http not in protocols list) should short-circuit —
+        // subsequent domain/endpoint checks should not override the block.
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  protocols: [https]\n  allow:\n    - \"example.com/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            url: Some("http://example.com/data".to_string()),
+            domain: Some("example.com".to_string()),
+            port: Some(80),
+            protocol: Some(Protocol::Http),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "requests.get",
+            &["url='http://example.com/data'"],
+            net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "http protocol should be blocked even though example.com is allowed"
+        );
+    }
+
+    #[test]
+    fn test_resolved_domain_enables_domain_matching() {
+        // network: allow: ["pypi.org/**"] — domain field provides hostname context
+        // so the network phase can match allow rules against the original domain.
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        // IP-only connect without domain — Display (no hostname context,
+        // hostname check in network phase prevents escalation)
+        let net = NetworkInfo::ip_connect("151.101.0.223".to_string(), 443);
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "IP-only connect without domain should not be blocked"
+        );
+
+        // Same IP but with domain=pypi.org — should match allow rule
+        let net =
+            NetworkInfo::resolved_connect("151.101.0.223".to_string(), 443, "pypi.org".to_string());
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "connect with domain=pypi.org should match allow rule"
+        );
+    }
+
+    #[test]
+    fn test_resolved_domain_blocks_unlisted_domain() {
+        // connect() to IP with domain not in allow list should be blocked
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net =
+            NetworkInfo::resolved_connect("93.184.216.34".to_string(), 443, "evil.com".to_string());
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect with domain=evil.com should be blocked when only pypi.org is allowed"
         );
     }
 }

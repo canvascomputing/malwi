@@ -661,7 +661,8 @@ fn encode_opt_network_info(w: &mut WireWriter, info: &Option<NetworkInfo>) {
         Some(ni) => {
             w.put_u8(1);
             w.put_opt_str(ni.url.as_deref());
-            w.put_opt_str(ni.host.as_deref());
+            w.put_opt_str(ni.domain.as_deref());
+            w.put_opt_str(ni.ip.as_deref());
             w.put_opt_u16(ni.port);
             // protocol: Option<Protocol>
             match &ni.protocol {
@@ -680,7 +681,8 @@ fn decode_opt_network_info(r: &mut WireReader) -> io::Result<Option<NetworkInfo>
         0 => Ok(None),
         1 => {
             let url = r.get_opt_string()?;
-            let host = r.get_opt_string()?;
+            let domain = r.get_opt_string()?;
+            let ip = r.get_opt_string()?;
             let port = r.get_opt_u16()?;
             let protocol = match r.get_u8()? {
                 0 => None,
@@ -697,7 +699,8 @@ fn decode_opt_network_info(r: &mut WireReader) -> io::Result<Option<NetworkInfo>
             };
             Ok(Some(NetworkInfo {
                 url,
-                host,
+                domain,
+                ip,
                 port,
                 protocol,
             }))
@@ -1305,9 +1308,10 @@ mod tests {
             function: "js:http.request".to_string(),
             network_info: Some(NetworkInfo {
                 url: Some("https://example.com/api/v1/users".to_string()),
-                host: Some("example.com".to_string()),
+                domain: Some("example.com".to_string()),
                 port: Some(443),
                 protocol: Some(Protocol::Https),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -1317,9 +1321,36 @@ mod tests {
             AgentMessage::Event(e) => {
                 let ni = e.network_info.unwrap();
                 assert_eq!(ni.url, Some("https://example.com/api/v1/users".to_string()));
-                assert_eq!(ni.host, Some("example.com".to_string()));
+                assert_eq!(ni.domain, Some("example.com".to_string()));
                 assert_eq!(ni.port, Some(443));
                 assert!(matches!(ni.protocol, Some(Protocol::Https)));
+                assert_eq!(ni.ip, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_info_resolved_connect_roundtrip() {
+        let event = TraceEvent {
+            hook_type: HookType::Native,
+            function: "connect".to_string(),
+            network_info: Some(NetworkInfo::resolved_connect(
+                "93.184.216.34".into(),
+                443,
+                "example.com".into(),
+            )),
+            ..Default::default()
+        };
+        let msg = AgentMessage::Event(event);
+        let decoded = roundtrip_agent(&msg);
+        match decoded {
+            AgentMessage::Event(e) => {
+                let ni = e.network_info.unwrap();
+                assert_eq!(ni.ip, Some("93.184.216.34".to_string()));
+                assert_eq!(ni.port, Some(443));
+                assert_eq!(ni.domain, Some("example.com".to_string()));
+                assert_eq!(ni.url, None);
             }
             _ => panic!("wrong variant"),
         }

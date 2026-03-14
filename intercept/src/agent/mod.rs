@@ -622,6 +622,8 @@ impl ForkHandler for Agent {
         // No proactive reconnect — the next send() call will lazily
         // establish a fresh connection via ensure_connected().
         self.client.mark_forked_child();
+        // Clear DNS cache — parent's associations are irrelevant in child
+        crate::tracing::dns_tracker().mark_forked();
         // Register with CLI so active_agents is incremented before the parent
         // can exit and decrement it, preventing premature CLI shutdown.
         let _ = self

@@ -1620,7 +1620,7 @@ fn build_json_stack<'a>(event: &'a TraceEvent) -> Vec<JsonStackFrame<'a>> {
 /// Build a JsonEndpoint from NetworkInfo.
 fn build_json_endpoint(ni: &NetworkInfo) -> JsonEndpoint<'_> {
     JsonEndpoint {
-        host: ni.host.as_deref(),
+        host: ni.domain.as_deref().or(ni.ip.as_deref()),
         port: ni.port,
         url: ni.url.as_deref(),
         protocol: ni.protocol.as_ref().map(|p| p.as_str()),

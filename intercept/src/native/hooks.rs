@@ -18,6 +18,22 @@ thread_local! {
     static IN_HOOK: Cell<bool> = const { Cell::new(false) };
 }
 
+// Thread-local stash for DNS resolution context.
+// Saved on getaddrinfo/gethostbyname enter, consumed on leave to
+// record resolved IPs in the DnsTracker.
+thread_local! {
+    static PENDING_DNS: Cell<Option<PendingDns>> = const { Cell::new(None) };
+}
+
+/// Context stashed during DNS function entry, consumed on leave.
+struct PendingDns {
+    /// Hostname being resolved (from format.rs network_info)
+    hostname: String,
+    /// Pointer to the result pointer (getaddrinfo's `**res` arg)
+    /// or the function's return value pointer (gethostbyname)
+    res_ptr_ptr: usize,
+}
+
 /// Suppress all hook callbacks on the current thread.
 /// Call from agent-internal threads (flush, poll) to prevent amplification
 /// loops when hooked functions like malloc are called during event delivery.
@@ -367,7 +383,54 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
     }
 
     // Format display values for known functions (e.g., show paths instead of pointers)
-    let network_info = format_native_arguments(&function, &mut arguments);
+    let mut network_info = format_native_arguments(&function, &mut arguments);
+
+    // DNS resolution: stash context so on_leave can parse the result.
+    match function.as_str() {
+        "getaddrinfo" | "_getaddrinfo" => {
+            if let Some(ref ni) = network_info {
+                // Domain is in ni.domain (hostname) or ni.ip (IP literal passed to getaddrinfo)
+                let hostname = ni.domain.as_ref().or(ni.ip.as_ref());
+                if let Some(host) = hostname {
+                    // arg3 is the **addrinfo result pointer
+                    let res_ptr_ptr = if arguments.len() >= 4 {
+                        arguments[3].raw_value
+                    } else {
+                        0
+                    };
+                    PENDING_DNS.with(|p| {
+                        p.set(Some(PendingDns {
+                            hostname: host.clone(),
+                            res_ptr_ptr,
+                        }));
+                    });
+                }
+            }
+        }
+        "gethostbyname" | "_gethostbyname" | "gethostbyname2" | "_gethostbyname2" => {
+            if let Some(ref ni) = network_info {
+                if let Some(ref host) = ni.domain {
+                    PENDING_DNS.with(|p| {
+                        p.set(Some(PendingDns {
+                            hostname: host.clone(),
+                            res_ptr_ptr: 0, // return value used instead
+                        }));
+                    });
+                }
+            }
+        }
+        // Enrich connect() with resolved domain from DNS cache
+        "connect" | "_connect" => {
+            if let Some(ref mut ni) = network_info {
+                if let Some(ref ip) = ni.ip {
+                    if let Some(domain) = crate::tracing::dns_tracker().lookup(ip) {
+                        ni.domain = Some(domain);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 
     // Only capture backtrace if enabled for this hook
     let native_stack = if capture_stack {
@@ -431,6 +494,39 @@ unsafe fn on_leave_inner(context: *mut InvocationContext, user_data: *mut c_void
 
     let (function, _capture_stack) = get_hook_data(user_data, func_addr);
 
+    // DNS result capture: parse resolved IPs and record in DnsTracker.
+    match function.as_str() {
+        "getaddrinfo" | "_getaddrinfo" => {
+            let ret = return_value as usize;
+            if ret == 0 {
+                // Success — parse result chain
+                let pending = PENDING_DNS.with(|p| p.take());
+                if let Some(dns) = pending {
+                    if dns.res_ptr_ptr != 0 {
+                        record_getaddrinfo_results(&dns.hostname, dns.res_ptr_ptr);
+                    }
+                }
+            } else {
+                // Failed — discard stash
+                PENDING_DNS.with(|p| p.take());
+            }
+        }
+        "gethostbyname" | "_gethostbyname" | "gethostbyname2" | "_gethostbyname2" => {
+            let ret = return_value as usize;
+            if ret != 0 {
+                // Success — parse hostent
+                let pending = PENDING_DNS.with(|p| p.take());
+                if let Some(dns) = pending {
+                    record_hostent_results(&dns.hostname, ret);
+                }
+            } else {
+                // Failed — discard stash
+                PENDING_DNS.with(|p| p.take());
+            }
+        }
+        _ => {}
+    }
+
     let event = crate::tracing::event::EventBuilder::leave(
         &function,
         Some(format!("{:#x}", return_value as usize)),
@@ -440,6 +536,111 @@ unsafe fn on_leave_inner(context: *mut InvocationContext, user_data: *mut c_void
 
     if let Some(agent) = crate::Agent::get() {
         let _ = agent.send_event(event);
+    }
+}
+
+/// Parse getaddrinfo result chain and record IP→domain associations.
+///
+/// # Safety
+/// `res_ptr_ptr` must be the address of the `**addrinfo` output parameter
+/// from getaddrinfo. Only called when getaddrinfo returned 0 (success).
+unsafe fn record_getaddrinfo_results(hostname: &str, res_ptr_ptr: usize) {
+    let res_ptr = *(res_ptr_ptr as *const *const libc::addrinfo);
+    if res_ptr.is_null() {
+        return;
+    }
+
+    let tracker = crate::tracing::dns_tracker();
+    let mut current = res_ptr;
+    let mut count = 0u32;
+    const MAX_ADDRS: u32 = 64;
+
+    while !current.is_null() && count < MAX_ADDRS {
+        let ai = &*current;
+        if !ai.ai_addr.is_null() {
+            if let Some(ip) = extract_ip_from_sockaddr(ai.ai_addr as usize) {
+                tracker.record(hostname, &ip);
+            }
+        }
+        current = ai.ai_next;
+        count += 1;
+    }
+}
+
+/// Parse hostent result and record IP→domain associations.
+///
+/// # Safety
+/// `hostent_ptr` must point to a valid `libc::hostent` struct.
+/// Only called when gethostbyname returned non-NULL.
+unsafe fn record_hostent_results(hostname: &str, hostent_ptr: usize) {
+    let he = &*(hostent_ptr as *const libc::hostent);
+    if he.h_addr_list.is_null() {
+        return;
+    }
+
+    let tracker = crate::tracing::dns_tracker();
+    let mut i = 0usize;
+    const MAX_ADDRS: usize = 64;
+
+    while i < MAX_ADDRS {
+        let addr_ptr = *he.h_addr_list.add(i);
+        if addr_ptr.is_null() {
+            break;
+        }
+
+        let ip = if he.h_addrtype == libc::AF_INET as i32 {
+            let bytes = std::slice::from_raw_parts(addr_ptr as *const u8, 4);
+            Some(format!(
+                "{}.{}.{}.{}",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            ))
+        } else if he.h_addrtype == libc::AF_INET6 as i32 {
+            let bytes = std::slice::from_raw_parts(addr_ptr as *const u8, 16);
+            Some(crate::native::format::format_ipv6(bytes))
+        } else {
+            None
+        };
+
+        if let Some(ip) = ip {
+            tracker.record(hostname, &ip);
+        }
+        i += 1;
+    }
+}
+
+/// Extract an IP address string from a sockaddr pointer.
+///
+/// Handles AF_INET and AF_INET6. Returns None for other families.
+unsafe fn extract_ip_from_sockaddr(addr_ptr: usize) -> Option<String> {
+    if addr_ptr == 0 {
+        return None;
+    }
+
+    let family_ptr = addr_ptr as *const u16;
+    let family = {
+        #[cfg(target_os = "macos")]
+        {
+            (*family_ptr >> 8) as i32
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            *family_ptr as i32
+        }
+    };
+
+    match family {
+        libc::AF_INET => {
+            let ip_bytes = std::slice::from_raw_parts((addr_ptr + 4) as *const u8, 4);
+            Some(format!(
+                "{}.{}.{}.{}",
+                ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]
+            ))
+        }
+        libc::AF_INET6 => {
+            let ip6_bytes = std::slice::from_raw_parts((addr_ptr + 8) as *const u8, 16);
+            Some(crate::native::format::format_ipv6(ip6_bytes))
+        }
+        _ => None,
     }
 }
 

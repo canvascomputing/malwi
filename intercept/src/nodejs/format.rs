@@ -58,12 +58,15 @@ fn extract_http_network_info(args: &[Argument], default_proto: Protocol) -> Opti
             protocol: Some(default_proto),
             ..Default::default()
         };
-        ni.host = extract_object_string_field(first, "hostname")
-            .or_else(|| extract_object_string_field(first, "host"));
+        if let Some(host) = extract_object_string_field(first, "hostname")
+            .or_else(|| extract_object_string_field(first, "host"))
+        {
+            ni.set_host(host);
+        }
         ni.port = extract_object_number_field(first, "port");
 
         // Reconstruct URL if we have host
-        if let Some(ref host) = ni.host {
+        if let Some(host) = ni.domain.as_deref().or(ni.ip.as_deref()) {
             let path = extract_object_string_field(first, "path").unwrap_or_default();
             let port_suffix = ni.port.map(|p| format!(":{}", p)).unwrap_or_default();
             let scheme = ni.protocol.as_ref().map(|p| p.as_str()).unwrap_or("http");
@@ -91,7 +94,9 @@ fn extract_net_connect_info(args: &[Argument]) -> Option<NetworkInfo> {
             protocol: Some(Protocol::Tcp),
             ..Default::default()
         };
-        ni.host = extract_object_string_field(first, "host");
+        if let Some(host) = extract_object_string_field(first, "host") {
+            ni.set_host(host);
+        }
         ni.port = extract_object_number_field(first, "port");
         if !ni.is_empty() {
             return Some(ni);
@@ -100,16 +105,19 @@ fn extract_net_connect_info(args: &[Argument]) -> Option<NetworkInfo> {
 
     // Port number as first arg, host as second
     if let Ok(port) = first.parse::<u16>() {
-        let host = args
-            .get(1)
-            .and_then(|a| a.display.as_deref())
-            .map(|s| s.trim_matches('\'').trim_matches('"').to_string());
-        return Some(NetworkInfo {
-            host,
+        let mut ni = NetworkInfo {
             port: Some(port),
             protocol: Some(Protocol::Tcp),
             ..Default::default()
-        });
+        };
+        if let Some(host) = args
+            .get(1)
+            .and_then(|a| a.display.as_deref())
+            .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
+        {
+            ni.set_host(host);
+        }
+        return Some(ni);
     }
 
     None
@@ -122,7 +130,7 @@ fn extract_dns_info(args: &[Argument]) -> Option<NetworkInfo> {
     let first = args.first()?.display.as_deref()?;
     let hostname = first.trim_matches('\'').trim_matches('"');
     if !hostname.is_empty() && !hostname.starts_with('{') {
-        return Some(NetworkInfo::host_only(hostname.to_string()));
+        return Some(NetworkInfo::dns_lookup(hostname.to_string()));
     }
     None
 }
@@ -169,15 +177,15 @@ fn network_info_from_url(url: &str) -> NetworkInfo {
         .unwrap_or(authority);
 
     if let Some(colon) = authority.rfind(':') {
-        let host = &authority[..colon];
+        let host_part = &authority[..colon];
         if let Ok(port) = authority[colon + 1..].parse::<u16>() {
-            ni.host = Some(host.to_string());
+            ni.set_host(host_part.to_string());
             ni.port = Some(port);
         } else {
-            ni.host = Some(authority.to_string());
+            ni.set_host(authority.to_string());
         }
     } else {
-        ni.host = Some(authority.to_string());
+        ni.set_host(authority.to_string());
     }
 
     ni
@@ -241,7 +249,7 @@ mod tests {
         let args = vec![arg("'http://example.com/api'")];
         let ni = format_nodejs_arguments("http.request", &args).unwrap();
         assert_eq!(ni.url.as_deref(), Some("http://example.com/api"));
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
         assert_eq!(ni.protocol, Some(Protocol::Http));
     }
 
@@ -251,7 +259,7 @@ mod tests {
             "{hostname: 'api.example.com', port: 443, path: '/v1/users'}",
         )];
         let ni = format_nodejs_arguments("https.request", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("api.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("api.example.com"));
         assert_eq!(ni.port, Some(443));
         assert_eq!(ni.protocol, Some(Protocol::Https));
         assert_eq!(
@@ -264,7 +272,7 @@ mod tests {
     fn test_format_nodejs_http_get_with_host_field() {
         let args = vec![arg("{host: 'localhost', port: 3000}")];
         let ni = format_nodejs_arguments("http.get", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("localhost"));
+        assert_eq!(ni.domain.as_deref(), Some("localhost"));
         assert_eq!(ni.port, Some(3000));
     }
 
@@ -272,7 +280,7 @@ mod tests {
     fn test_format_nodejs_net_connect_with_options() {
         let args = vec![arg("{port: 6379, host: '127.0.0.1'}")];
         let ni = format_nodejs_arguments("net.connect", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(ni.ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(ni.port, Some(6379));
         assert_eq!(ni.protocol, Some(Protocol::Tcp));
     }
@@ -281,7 +289,7 @@ mod tests {
     fn test_format_nodejs_net_connect_with_port_and_host_args() {
         let args = vec![arg("6379"), arg("'127.0.0.1'")];
         let ni = format_nodejs_arguments("net.connect", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(ni.ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(ni.port, Some(6379));
     }
 
@@ -289,14 +297,14 @@ mod tests {
     fn test_format_nodejs_dns_resolve() {
         let args = vec![arg("'evil.example.com'")];
         let ni = format_nodejs_arguments("dns.resolve", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("evil.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("evil.example.com"));
     }
 
     #[test]
     fn test_format_nodejs_dns_lookup() {
         let args = vec![arg("'example.com'")];
         let ni = format_nodejs_arguments("dns.lookup", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -304,7 +312,7 @@ mod tests {
         let args = vec![arg("'https://api.example.com/data'")];
         let ni = format_nodejs_arguments("fetch", &args).unwrap();
         assert_eq!(ni.url.as_deref(), Some("https://api.example.com/data"));
-        assert_eq!(ni.host.as_deref(), Some("api.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("api.example.com"));
         assert_eq!(ni.protocol, Some(Protocol::Https));
     }
 
@@ -341,7 +349,7 @@ mod tests {
     fn test_format_nodejs_http_request_with_url_and_port() {
         let args = vec![arg("'http://127.0.0.1:4444/path'")];
         let ni = format_nodejs_arguments("http.request", &args).unwrap();
-        assert_eq!(ni.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(ni.ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(ni.port, Some(4444));
         assert_eq!(ni.protocol, Some(Protocol::Http));
     }

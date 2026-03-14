@@ -349,20 +349,20 @@ fn network_info_from_url(raw: &str) -> NetworkInfo {
     if authority.starts_with('[') {
         // IPv6
         if let Some(bracket_end) = authority.find(']') {
-            ni.host = Some(authority[1..bracket_end].to_string());
+            ni.set_host(authority[1..bracket_end].to_string());
             ni.port = authority[bracket_end + 1..]
                 .strip_prefix(':')
                 .and_then(|p| p.parse().ok());
         }
     } else if let Some((h, p)) = authority.rsplit_once(':') {
         if let Ok(port) = p.parse::<u16>() {
-            ni.host = Some(h.to_string());
+            ni.set_host(h.to_string());
             ni.port = Some(port);
         } else {
-            ni.host = Some(authority.to_string());
+            ni.set_host(authority.to_string());
         }
     } else {
-        ni.host = Some(authority.to_string());
+        ni.set_host(authority.to_string());
     }
 
     // Default port from scheme
@@ -441,7 +441,7 @@ fn format_socket_connect(args: &mut [Argument]) -> NetworkInfo {
     if args.len() > addr_idx {
         if let Some(ref display) = args[addr_idx].display {
             if let Some((host, port)) = parse_socket_address(display) {
-                ni.host = Some(host);
+                ni.set_host(host);
                 ni.port = Some(port);
             }
             args[addr_idx].display = Some(format!("address={}", display));
@@ -529,7 +529,7 @@ fn format_socket_sendto(args: &mut [Argument]) -> NetworkInfo {
     if args.len() > addr_idx {
         if let Some(ref display) = args[addr_idx].display {
             if let Some((host, port)) = parse_socket_address(display) {
-                ni.host = Some(host);
+                ni.set_host(host);
                 ni.port = Some(port);
             }
             args[addr_idx].display = Some(format!("address={}", display));
@@ -598,7 +598,7 @@ fn format_socket_getaddrinfo(args: &mut [Argument]) -> NetworkInfo {
         if let Some(ref display) = args[0].display {
             let host = display.trim_matches('\'').trim_matches('"');
             if !host.is_empty() && host != "None" {
-                ni.host = Some(host.to_string());
+                ni.set_host(host.to_string());
             }
             args[0].display = Some(format!("host={}", display));
         }
@@ -634,7 +634,7 @@ fn format_socket_gethostbyname(args: &mut [Argument]) -> NetworkInfo {
         if let Some(ref display) = args[0].display {
             let host = display.trim_matches('\'').trim_matches('"');
             if !host.is_empty() {
-                ni.host = Some(host.to_string());
+                ni.set_host(host.to_string());
             }
             args[0].display = Some(format!("hostname={}", display));
         }
@@ -652,7 +652,7 @@ fn format_socket_create_connection(args: &mut [Argument]) -> NetworkInfo {
     if !args.is_empty() {
         if let Some(ref display) = args[0].display {
             if let Some((host, port)) = parse_socket_address(display) {
-                ni.host = Some(host);
+                ni.set_host(host);
                 ni.port = Some(port);
             }
             args[0].display = Some(format!("address={}", display));
@@ -682,7 +682,7 @@ fn format_ssl_wrap_socket(args: &mut [Argument]) -> NetworkInfo {
         if let Some(ref display) = arg.display {
             if display.contains("server_hostname") || is_hostname_like(display) {
                 let host = display.trim_matches('\'').trim_matches('"');
-                ni.host = Some(host.to_string());
+                ni.set_host(host.to_string());
                 arg.display = Some(format!("server_hostname={}", display));
                 break;
             }
@@ -715,7 +715,7 @@ fn format_ssl_context_wrap_socket(args: &mut [Argument]) -> NetworkInfo {
         if let Some(ref display) = arg.display {
             if is_hostname_like(display) {
                 let host = display.trim_matches('\'').trim_matches('"');
-                ni.host = Some(host.to_string());
+                ni.set_host(host.to_string());
                 arg.display = Some(format!("server_hostname={}", display));
                 break;
             }
@@ -1300,7 +1300,7 @@ fn format_http_connection_init_net(args: &mut [Argument], scheme: &str) -> Netwo
             let val = display.strip_prefix("host=").unwrap_or(display);
             let host = val.trim_matches('\'').trim_matches('"');
             if !host.is_empty() {
-                ni.host = Some(host.to_string());
+                ni.set_host(host.to_string());
             }
         }
     }
@@ -1607,7 +1607,7 @@ fn format_dns_resolver_resolve_net(args: &mut [Argument]) -> NetworkInfo {
     if let Some(display) = args.get(qname_idx).and_then(|a| a.display.as_ref()) {
         let host = display.trim_matches('\'').trim_matches('"');
         if !host.is_empty() {
-            ni.host = Some(host.to_string());
+            ni.set_host(host.to_string());
         }
     }
     format_dns_resolver_resolve(args);
@@ -2339,12 +2339,12 @@ mod tests {
     fn test_network_info_from_url() {
         let ni = network_info_from_url("https://example.com/path");
         assert_eq!(ni.url.as_deref(), Some("https://example.com/path"));
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
         assert_eq!(ni.port, Some(443));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("https"));
 
         let ni = network_info_from_url("http://api.example.com:8080/data");
-        assert_eq!(ni.host.as_deref(), Some("api.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("api.example.com"));
         assert_eq!(ni.port, Some(8080));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("http"));
     }
@@ -2352,7 +2352,7 @@ mod tests {
     #[test]
     fn test_network_info_from_url_websocket() {
         let ni = network_info_from_url("wss://ws.example.com/chat");
-        assert_eq!(ni.host.as_deref(), Some("ws.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("ws.example.com"));
         assert_eq!(ni.port, Some(443));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("wss"));
     }
@@ -2361,7 +2361,7 @@ mod tests {
     fn test_network_info_from_url_quoted() {
         let ni = network_info_from_url("'https://example.com'");
         assert_eq!(ni.url.as_deref(), Some("https://example.com"));
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -2391,7 +2391,7 @@ mod tests {
         let mut args = make_args(&["<socket>", "('10.0.0.1', 8080)"]);
         let ni = format_python_arguments("socket.connect", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("10.0.0.1"));
+        assert_eq!(ni.ip.as_deref(), Some("10.0.0.1"));
         assert_eq!(ni.port, Some(8080));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("tcp"));
     }
@@ -2402,7 +2402,7 @@ mod tests {
         let ni = format_python_arguments("requests.get", &mut args);
         let ni = ni.unwrap();
         assert_eq!(ni.url.as_deref(), Some("https://httpbin.org/get"));
-        assert_eq!(ni.host.as_deref(), Some("httpbin.org"));
+        assert_eq!(ni.domain.as_deref(), Some("httpbin.org"));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("https"));
     }
 
@@ -2411,7 +2411,7 @@ mod tests {
         let mut args = make_args(&["'https://api.example.com/data'", "'{\"key\": 1}'"]);
         let ni = format_python_arguments("requests.post", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("api.example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("api.example.com"));
     }
 
     #[test]
@@ -2420,7 +2420,7 @@ mod tests {
         let ni = format_python_arguments("urllib.request.urlopen", &mut args);
         let ni = ni.unwrap();
         assert_eq!(ni.url.as_deref(), Some("https://example.com/page"));
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -2428,7 +2428,7 @@ mod tests {
         let mut args = make_args(&["'example.com'", "'A'"]);
         let ni = format_python_arguments("dns.resolver.resolve", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -2452,7 +2452,7 @@ mod tests {
         let mut args = make_args(&["'example.com'", "443", "2", "1"]);
         let ni = format_python_arguments("socket.getaddrinfo", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
         assert_eq!(ni.port, Some(443));
     }
 
@@ -2461,7 +2461,7 @@ mod tests {
         let mut args = make_args(&["<socket>", "b'hello'", "('8.8.8.8', 53)"]);
         let ni = format_python_arguments("socket.sendto", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("8.8.8.8"));
+        assert_eq!(ni.ip.as_deref(), Some("8.8.8.8"));
         assert_eq!(ni.port, Some(53));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("udp"));
     }
@@ -2471,7 +2471,7 @@ mod tests {
         let mut args = make_args(&["<self>", "'example.com'", "8080"]);
         let ni = format_python_arguments("http.client.HTTPSConnection.__init__", &mut args);
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
         assert_eq!(ni.port, Some(8080));
         assert_eq!(ni.protocol.as_ref().map(|p| p.as_str()), Some("https"));
     }

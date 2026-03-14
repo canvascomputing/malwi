@@ -79,14 +79,21 @@ impl<'de> Deserialize<'de> for Protocol {
 ///
 /// Provides structured fields for policy evaluation without
 /// requiring text parsing of argument display strings.
+///
+/// `domain` and `ip` are semantically disjoint: `domain` holds a DNS hostname
+/// (never an IP), and `ip` holds a raw IP address (never a hostname). Both may
+/// be populated when a DNS lookup has mapped one to the other.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkInfo {
     /// Full URL if available (e.g., "https://example.com/v1/users")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Target host/domain (e.g., "example.com")
+    /// DNS hostname — never an IP (e.g., "example.com")
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
+    pub domain: Option<String>,
+    /// IP address — never a hostname (e.g., "93.184.216.34")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
     /// Target port (e.g., 443)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
@@ -96,26 +103,61 @@ pub struct NetworkInfo {
 }
 
 impl NetworkInfo {
-    /// NetworkInfo with only a host (DNS lookups, gethostbyname).
-    pub fn host_only(host: String) -> Self {
+    /// DNS lookup target (getaddrinfo/gethostbyname).
+    pub fn dns_lookup(domain: String) -> Self {
         Self {
-            host: Some(host),
+            domain: Some(domain),
             ..Default::default()
         }
     }
 
-    /// NetworkInfo with host and port (connect, bind, sendto).
-    pub fn endpoint(host: String, port: u16) -> Self {
+    /// Socket connection to IP with no domain context.
+    pub fn ip_connect(ip: String, port: u16) -> Self {
         Self {
-            host: Some(host),
+            ip: Some(ip),
             port: Some(port),
             ..Default::default()
         }
     }
 
+    /// Socket connection to IP with known domain (from DnsTracker).
+    pub fn resolved_connect(ip: String, port: u16, domain: String) -> Self {
+        Self {
+            ip: Some(ip),
+            port: Some(port),
+            domain: Some(domain),
+            ..Default::default()
+        }
+    }
+
+    /// Full URL with parsed components.
+    pub fn from_url(url: String, domain: String, port: u16, protocol: Protocol) -> Self {
+        Self {
+            url: Some(url),
+            domain: Some(domain),
+            port: Some(port),
+            protocol: Some(protocol),
+            ..Default::default()
+        }
+    }
+
+    /// Classify a host string as either `domain` or `ip` and set the appropriate field.
+    /// Use when the caller doesn't know whether the value is an IP or hostname.
+    pub fn set_host(&mut self, host: String) {
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            self.ip = Some(host);
+        } else {
+            self.domain = Some(host);
+        }
+    }
+
     /// True if all fields are None.
     pub fn is_empty(&self) -> bool {
-        self.url.is_none() && self.host.is_none() && self.port.is_none() && self.protocol.is_none()
+        self.url.is_none()
+            && self.domain.is_none()
+            && self.ip.is_none()
+            && self.port.is_none()
+            && self.protocol.is_none()
     }
 }
 

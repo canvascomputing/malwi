@@ -803,13 +803,13 @@ fn format_fchown(args: &mut [Argument]) {
 /// Format getaddrinfo(node, service, hints, res) arguments.
 fn format_getaddrinfo(args: &mut [Argument]) -> Option<NetworkInfo> {
     let mut ni = NetworkInfo::default();
-    // arg0: node (const char* — hostname)
+    // arg0: node (const char* — hostname or IP literal)
     if !args.is_empty() {
         if args[0].raw_value == 0 {
             args[0].display = Some("NULL".to_string());
         } else if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
-            ni.host = Some(host);
+            ni.set_host(host);
         }
     }
     // arg1: service (const char* — port/service name)
@@ -832,7 +832,7 @@ fn format_getaddrinfo(args: &mut [Argument]) -> Option<NetworkInfo> {
     if args.len() >= 4 {
         args[3].display = Some(format!("res={:#x}", args[3].raw_value));
     }
-    if ni.host.is_some() {
+    if ni.domain.is_some() || ni.ip.is_some() {
         Some(ni)
     } else {
         None
@@ -844,7 +844,7 @@ fn format_gethostbyname(args: &mut [Argument]) -> Option<NetworkInfo> {
     if !args.is_empty() {
         if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
-            return Some(NetworkInfo::host_only(host));
+            return Some(NetworkInfo::dns_lookup(host));
         }
     }
     None
@@ -857,7 +857,7 @@ fn format_gethostbyname2(args: &mut [Argument]) -> Option<NetworkInfo> {
     if !args.is_empty() {
         if let Some(host) = read_c_string(args[0].raw_value) {
             args[0].display = Some(format!("\"{}\"", truncate(&host, MAX_STRING_LEN)));
-            ni = Some(NetworkInfo::host_only(host));
+            ni = Some(NetworkInfo::dns_lookup(host));
         }
     }
     // arg1: address family (int)
@@ -1185,7 +1185,7 @@ unsafe fn parse_sockaddr_info(addr_ptr: usize, _len: usize) -> Option<SockaddrIn
 }
 
 /// Format an IPv6 address from 16 bytes.
-fn format_ipv6(bytes: &[u8]) -> String {
+pub(crate) fn format_ipv6(bytes: &[u8]) -> String {
     // Check for all-zero (::)
     if bytes.iter().all(|&b| b == 0) {
         return "::".to_string();
@@ -1242,7 +1242,7 @@ fn format_sockaddr(addr_ptr: usize, len: usize) -> Option<String> {
 
 impl From<&SockaddrInfo> for NetworkInfo {
     fn from(info: &SockaddrInfo) -> Self {
-        NetworkInfo::endpoint(info.host.clone(), info.port)
+        NetworkInfo::ip_connect(info.host.clone(), info.port)
     }
 }
 
@@ -2122,7 +2122,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("93.184.216.34"));
+        assert_eq!(ni.ip.as_deref(), Some("93.184.216.34"));
         assert_eq!(ni.port, Some(443));
         // Display should also be set
         assert_eq!(args[1].display, Some("93.184.216.34:443".to_string()));
@@ -2136,7 +2136,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(ni.ip.as_deref(), Some("0.0.0.0"));
         assert_eq!(ni.port, Some(8080));
     }
 
@@ -2148,7 +2148,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("8.8.8.8"));
+        assert_eq!(ni.ip.as_deref(), Some("8.8.8.8"));
         assert_eq!(ni.port, Some(53));
     }
 
@@ -2167,7 +2167,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("10.0.0.5"));
+        assert_eq!(ni.ip.as_deref(), Some("10.0.0.5"));
         assert_eq!(ni.port, Some(54321));
     }
 
@@ -2186,7 +2186,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("192.168.1.1"));
+        assert_eq!(ni.ip.as_deref(), Some("192.168.1.1"));
         assert_eq!(ni.port, Some(9090));
     }
 
@@ -2199,7 +2199,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("pypi.org"));
+        assert_eq!(ni.domain.as_deref(), Some("pypi.org"));
         assert_eq!(ni.port, Some(443));
     }
 
@@ -2212,7 +2212,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
         assert_eq!(ni.port, None); // "https" is not numeric
     }
 
@@ -2232,7 +2232,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("evil.com"));
+        assert_eq!(ni.domain.as_deref(), Some("evil.com"));
         assert_eq!(ni.port, None);
     }
 
@@ -2244,7 +2244,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("example.com"));
+        assert_eq!(ni.domain.as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -2255,7 +2255,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("1.2.3.4"));
+        assert_eq!(ni.ip.as_deref(), Some("1.2.3.4"));
         assert_eq!(ni.port, Some(80));
     }
 
@@ -2286,7 +2286,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(ni.ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(ni.port, Some(8080));
     }
 
@@ -2299,7 +2299,7 @@ mod tests {
 
         assert!(ni.is_some());
         let ni = ni.unwrap();
-        assert_eq!(ni.host.as_deref(), Some("registry.npmjs.org"));
+        assert_eq!(ni.domain.as_deref(), Some("registry.npmjs.org"));
         assert_eq!(ni.port, Some(443));
     }
 
@@ -2310,6 +2310,6 @@ mod tests {
         let ni = format_native_arguments("gethostbyname", &mut args);
 
         assert!(ni.is_some());
-        assert_eq!(ni.unwrap().host.as_deref(), Some("evil.com"));
+        assert_eq!(ni.unwrap().domain.as_deref(), Some("evil.com"));
     }
 }

@@ -7,7 +7,7 @@
 //! evaluate_trace                  (orchestrator: runs all 4 phases in order)
 //! +-- evaluate_function_phase     (phase 1: function-level, cached for Python/Node/Native)
 //! |   +-- compute_function_decision  (raw engine dispatch)
-//! +-- apply_network_passthrough   (phase 2: passthrough + network eval, in network.rs)
+//! +-- evaluate_network_phase      (phase 2: network eval, in network.rs)
 //! +-- evaluate_file_phase         (phase 3: file path checks, in files.rs)
 //! +-- evaluate_command_phase      (phase 4: command triage, in commands.rs)
 //! ```
@@ -331,14 +331,34 @@ impl ActivePolicy {
     /// Returns the strictest disposition across all phases.
     pub fn evaluate_trace(&self, event: &TraceEvent) -> EventDisposition {
         // Phase 1: Function-level (cached for Python/Node/Native)
-        let disp = self.evaluate_function_phase(event);
+        let mut disp = self.evaluate_function_phase(event);
 
-        // Phase 2: Network passthrough + network evaluation.
-        // Returns None when blocked and not eligible for passthrough → early exit.
-        let disp = match self.apply_network_passthrough(event, disp.clone()) {
-            Some(disp) => disp,
-            None => return disp,
-        };
+        // Native `connect`/`socket` are low-level plumbing. When the policy
+        // has network destination rules (like `network: allow: [pypi.org]`),
+        // don't block on the symbol name — let the network phase decide based
+        // on the actual destination.
+        let deferred_to_network = disp.is_blocked()
+            && self.has_network_allow
+            && matches!(event.hook_type, HookType::Native)
+            && is_networking_symbol(&event.function);
+        if deferred_to_network {
+            disp = EventDisposition::Display;
+        }
+
+        // Phase 2: Network evaluation
+        let mut disp = self.evaluate_network_phase(event, disp);
+
+        // We deferred to the network phase, but it blocked because domain
+        // allow rules didn't match. If we only have a raw IP (no domain or
+        // URL), that's expected — domain rules *can't* match a bare IP.
+        // Don't block in that case; the event simply has no domain context.
+        if deferred_to_network && disp.is_blocked() {
+            if let Some(ref net) = event.network_info {
+                if !has_hostname_context(net) {
+                    disp = EventDisposition::Display;
+                }
+            }
+        }
 
         // Phase 3: File access evaluation
         let disp = self.evaluate_file_phase(event, disp);
@@ -401,46 +421,6 @@ impl ActivePolicy {
 
         decision_to_disposition(decision)
     }
-
-    /// Apply network passthrough logic to a disposition.
-    ///
-    /// If the disposition is not blocked, continues to the network evaluation phase
-    /// and returns `Some(disp)`. If blocked and the event is a native networking
-    /// symbol with network allow rules in the policy, downgrades to `Display` and
-    /// continues to network evaluation (returns `Some(disp)`). If blocked and not
-    /// eligible for passthrough, returns `None` to signal early exit.
-    ///
-    /// Native `socket`/`connect`/etc. are the low-level mechanism for all networking.
-    /// When the policy has `network: allow:` rules (e.g. pip-install allowing pypi.org),
-    /// blocking these symbols unconditionally prevents the allowed networking from working.
-    /// URL-level enforcement happens at the runtime level (Python/Node) where NetworkInfo
-    /// context is available.
-    fn apply_network_passthrough(
-        &self,
-        event: &TraceEvent,
-        disp: EventDisposition,
-    ) -> Option<EventDisposition> {
-        if !disp.is_blocked() {
-            return Some(self.evaluate_network_phase(event, disp));
-        }
-        // Blocked — check if eligible for passthrough
-        if matches!(event.hook_type, HookType::Native)
-            && is_networking_symbol(&event.function)
-            && self.has_network_allow
-        {
-            // Downgrade Block to Display so the network phase can decide
-            let net_disp = self.evaluate_network_phase(event, EventDisposition::Display);
-            // If network phase would block but we only have an IP (no hostname/URL),
-            // the hostname-based allow rules can't match — don't block on that basis.
-            if net_disp.is_blocked() && !has_hostname_context(event) {
-                Some(EventDisposition::Display)
-            } else {
-                Some(net_disp)
-            }
-        } else {
-            None // Stay blocked
-        }
-    }
 }
 
 /// Check if a native function name is a networking symbol.
@@ -451,21 +431,11 @@ fn is_networking_symbol(name: &str) -> bool {
         .any(|s| s == name)
 }
 
-/// Check if a trace event has hostname context (URL or non-IP hostname).
+/// Check if NetworkInfo has hostname context (URL or domain).
 /// IP-only events can't match hostname-based allow rules, so blocking them
 /// based on "no allow match" would be incorrect.
-fn has_hostname_context(event: &TraceEvent) -> bool {
-    match &event.network_info {
-        Some(info) => {
-            if info.url.is_some() {
-                return true;
-            }
-            info.host
-                .as_ref()
-                .is_some_and(|h| h.parse::<std::net::IpAddr>().is_err())
-        }
-        None => false,
-    }
+pub(super) fn has_hostname_context(info: &malwi_intercept::NetworkInfo) -> bool {
+    info.url.is_some() || info.domain.is_some()
 }
 
 // ── Disposition Utilities ──────────────────────────────────────
@@ -1052,7 +1022,7 @@ commands:
 
         // Python socket.create_connection to pypi.org should be allowed
         let net = malwi_intercept::NetworkInfo {
-            host: Some("pypi.org".to_string()),
+            domain: Some("pypi.org".to_string()),
             port: Some(443),
             ..Default::default()
         };
@@ -1075,7 +1045,7 @@ commands:
 
         // Python socket.create_connection to evil.com should be blocked
         let net = malwi_intercept::NetworkInfo {
-            host: Some("evil.com".to_string()),
+            domain: Some("evil.com".to_string()),
             port: Some(443),
             ..Default::default()
         };

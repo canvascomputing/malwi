@@ -9,6 +9,7 @@
 //! - `event`: TraceEvent builder for consistent event creation
 //! - `format`: Shared string formatting utilities (truncation, display)
 
+pub mod dns;
 pub mod event;
 pub mod filter;
 pub mod fork_mutex;
@@ -18,6 +19,7 @@ pub mod thread;
 pub mod time;
 
 // Re-export commonly used items
+pub use dns::dns_tracker;
 pub use event::EventBuilder;
 pub use filter::{check_filter, Filter, FilterManager};
 pub use fork_mutex::ForkSafeMutex;
