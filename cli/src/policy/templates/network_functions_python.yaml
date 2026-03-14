@@ -4,7 +4,9 @@
 
 # --- Socket (stdlib) ---
 - socket.connect
+- socket.socket.connect
 - socket.sendto
+- socket.socket.sendto
 - socket.create_connection
 - socket.getaddrinfo
 - socket.gethostbyname
@@ -12,6 +14,7 @@
 # --- SSL (stdlib) ---
 - ssl.wrap_socket
 - ssl.SSLContext.wrap_socket
+- ssl.SSLSocket.connect
 
 # --- http.client (stdlib) ---
 - http.client.HTTPConnection.request

@@ -274,17 +274,20 @@ impl PolicyEngine {
     /// Pass 2: if no explicit rule matched, match against just the command name (first word).
     /// This lets `allow: ["curl example.com"]` override `deny: [curl]` for that specific invocation.
     pub fn evaluate_execution(&self, command: &str) -> PolicyDecision {
+        // Collapse whitespace (including newlines from -c scripts) so
+        // patterns like "python -c *" match multiline content.
+        let normalized: String = command.split_whitespace().collect::<Vec<_>>().join(" ");
         let key = SectionKey::global(Category::Execution);
 
         // Pass 1: match against full command string
-        let full_result = self.evaluate_with_key(&key, command, &[]);
+        let full_result = self.evaluate_with_key(&key, &normalized, &[]);
         if full_result.matched_rule.is_some() {
             return full_result;
         }
 
         // Pass 2: match against command name only (first word)
-        let cmd_name = command.split_whitespace().next().unwrap_or(command);
-        if cmd_name != command {
+        let cmd_name = normalized.split_once(' ').map(|(name, _)| name);
+        if let Some(cmd_name) = cmd_name {
             let name_result = self.evaluate_with_key(&key, cmd_name, &[]);
             if name_result.matched_rule.is_some() {
                 return name_result;
@@ -1432,6 +1435,39 @@ commands:
         // "rm -rf /" → no match pass 1; pass 2 "rm" matches deny
         let d4 = engine.evaluate_execution("rm -rf /");
         assert_eq!(d4.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_evaluate_execution_multiline_c_flag_matches_star() {
+        let engine = engine_from_yaml(
+            r#"
+version: 1
+commands:
+  allow:
+    - "python -c *"
+    - "node -e *"
+    - "bash -c *"
+"#,
+        );
+
+        // Python multiline -c script
+        let d = engine.evaluate_execution("python -c import sys\nprint('hello')");
+        assert_eq!(d.action, PolicyAction::Allow);
+        assert_eq!(d.matched_rule, Some("python -c *".to_string()));
+
+        // Node.js multiline -e script
+        let d2 = engine.evaluate_execution("node -e const x = 1;\nconsole.log(x)");
+        assert_eq!(d2.action, PolicyAction::Allow);
+        assert_eq!(d2.matched_rule, Some("node -e *".to_string()));
+
+        // Bash multiline -c script
+        let d3 = engine.evaluate_execution("bash -c echo hello\necho world");
+        assert_eq!(d3.action, PolicyAction::Allow);
+        assert_eq!(d3.matched_rule, Some("bash -c *".to_string()));
+
+        // Tabs and multiple spaces also normalized
+        let d4 = engine.evaluate_execution("python -c import\t\tsys\n  print('x')");
+        assert_eq!(d4.action, PolicyAction::Allow);
     }
 
     // =====================================================================

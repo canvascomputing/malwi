@@ -730,7 +730,7 @@ pub fn comfyui() -> PolicyFile {
         (
             "envvars",
             ad(AllowDenySection {
-                allow: rules!["HF_HUB_*", "HF_TOKEN_PATH"],
+                allow: rules!["HF_HUB_*", "HF_TOKEN_PATH", "OAUTH_CLIENT_SECRET"],
                 warn: rules![
                     "*_SECRET*",
                     "*_TOKEN",

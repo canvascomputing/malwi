@@ -259,6 +259,8 @@ mod tests {
         assert!(py.contains(&"requests.get".to_string()));
         assert!(py.contains(&"urllib.request.urlopen".to_string()));
         assert!(py.contains(&"socket.connect".to_string()));
+        assert!(py.contains(&"socket.socket.connect".to_string()));
+        assert!(py.contains(&"ssl.SSLSocket.connect".to_string()));
         let js = super::super::network_functions_nodejs();
         assert!(js.contains(&"http.request".to_string()));
         assert!(js.contains(&"fetch".to_string()));

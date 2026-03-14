@@ -43,25 +43,29 @@ pub fn format_python_arguments(
             let ni = format_socket_socket(arguments);
             return non_empty_network_info(ni);
         }
-        ("socket" | "_socket", "connect") => {
+        ("socket" | "_socket" | "socket.socket", "connect") => {
             let ni = format_socket_connect(arguments);
             return non_empty_network_info(ni);
         }
-        ("socket" | "_socket", "bind") => {
+        ("socket" | "_socket" | "socket.socket", "bind") => {
             format_socket_address(arguments, "address");
         }
-        ("socket" | "_socket", "listen") => format_socket_listen(arguments),
-        ("socket" | "_socket", "send") => format_socket_send(arguments),
-        ("socket" | "_socket", "sendall") => format_socket_send(arguments),
-        ("socket" | "_socket", "recv") => format_socket_recv(arguments),
-        ("socket" | "_socket", "sendto") => {
+        ("socket" | "_socket" | "socket.socket", "listen") => format_socket_listen(arguments),
+        ("socket" | "_socket" | "socket.socket", "send") => format_socket_send(arguments),
+        ("socket" | "_socket" | "socket.socket", "sendall") => format_socket_send(arguments),
+        ("socket" | "_socket" | "socket.socket", "recv") => format_socket_recv(arguments),
+        ("socket" | "_socket" | "socket.socket", "sendto") => {
             let ni = format_socket_sendto(arguments);
             return non_empty_network_info(ni);
         }
-        ("socket" | "_socket", "recvfrom") => format_socket_recvfrom(arguments),
-        ("socket" | "_socket", "setsockopt") => format_socket_setsockopt(arguments),
-        ("socket" | "_socket", "getsockopt") => format_socket_getsockopt(arguments),
-        ("socket" | "_socket", "shutdown") => format_socket_shutdown(arguments),
+        ("socket" | "_socket" | "socket.socket", "recvfrom") => format_socket_recvfrom(arguments),
+        ("socket" | "_socket" | "socket.socket", "setsockopt") => {
+            format_socket_setsockopt(arguments)
+        }
+        ("socket" | "_socket" | "socket.socket", "getsockopt") => {
+            format_socket_getsockopt(arguments)
+        }
+        ("socket" | "_socket" | "socket.socket", "shutdown") => format_socket_shutdown(arguments),
         ("socket" | "_socket", "getaddrinfo") => {
             let ni = format_socket_getaddrinfo(arguments);
             return non_empty_network_info(ni);
@@ -85,6 +89,10 @@ pub fn format_python_arguments(
         ("ssl", "create_default_context") => format_ssl_create_default_context(arguments),
         ("ssl.SSLContext", "wrap_socket") => {
             let ni = format_ssl_context_wrap_socket(arguments);
+            return non_empty_network_info(ni);
+        }
+        ("ssl.SSLSocket", "connect") => {
+            let ni = format_socket_connect(arguments);
             return non_empty_network_info(ni);
         }
         ("ssl.SSLContext", "load_cert_chain") => format_ssl_load_cert_chain(arguments),
