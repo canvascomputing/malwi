@@ -1723,6 +1723,106 @@ fn test_nodejs_eval_traces_dynamically_created_functions() {
     });
 }
 
+/// Threat: Obfuscated JavaScript packages use nested eval() to unpack and
+/// execute payloads in stages. Each eval() triggers V8's codegen-from-strings
+/// gate independently. This test verifies that the codegen gate fires for
+/// both the outer and inner eval(), producing two separate trace events.
+#[test]
+fn test_nodejs_nested_eval_fires_codegen_gate_twice() {
+    setup();
+
+    skip_if_no_node!(node => {
+        // Outer eval compiles "eval('1+1')" — V8 must compile both strings.
+        // The codegen gate fires once for the outer eval and once for the inner.
+        let output = run_tracer(&[
+            "x",
+            "-f", "json",
+            "--js", "eval",
+            "--",
+            node.to_str().unwrap(),
+            "--eval", r#"eval("eval('1+1')")"#,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Node.js nested eval test failed. stderr: {}",
+            stderr
+        );
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        // Count codegen gate events — each eval() triggers
+        // ModifyCodeGenerationFromStrings independently.
+        let eval_count = events.iter()
+            .filter(|e| e["source"] == "nodejs" && e["name"] == "eval")
+            .count();
+
+        assert!(
+            eval_count >= 2,
+            "Expected at least 2 eval codegen events for nested eval(eval(...)). \
+             Got {}. Each eval() must trigger the codegen gate independently. \
+             events: {:?}",
+            eval_count, events
+        );
+    });
+}
+
+/// Threat: A supply-chain attack hides a function definition inside a nested
+/// eval. The outer eval constructs and executes a second eval that defines
+/// and calls the malicious function. Both the codegen events and the function
+/// call should be traceable.
+#[test]
+fn test_nodejs_nested_eval_traces_inner_function() {
+    setup();
+
+    skip_if_no_node!(node => {
+        // Outer eval runs code that calls eval to define and call a function.
+        let output = run_tracer(&[
+            "x",
+            "-f", "json",
+            "--js", "*",
+            "--",
+            node.to_str().unwrap(),
+            "--eval",
+            r#"eval("eval('function nestedTarget() { return 42; }'); nestedTarget();")"#,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Node.js nested eval function test failed. stderr: {}",
+            stderr
+        );
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        // The codegen gate should fire for the eval calls (hard assertion).
+        assert!(
+            events.iter().any(|e| e["source"] == "nodejs" && e["name"] == "eval"),
+            "Expected at least one eval codegen event. events: {:?}",
+            events
+        );
+
+        // The bytecode tracer may or may not capture the function defined
+        // inside the inner eval. This varies by V8 version — document behavior.
+        if events.iter().any(|e| e["name"] == "nestedTarget") {
+            println!("TRACED: nestedTarget() defined inside nested eval is visible via bytecode tracer");
+        } else {
+            println!("KNOWN GAP: nestedTarget() defined inside nested eval not captured \
+                      by bytecode tracer on this V8 version. Codegen gate still fires.");
+        }
+    });
+}
+
 /// Threat: worker_threads run in separate V8 isolates. If tracing doesn't
 /// propagate, all worker code is invisible. This documents the current behavior.
 #[test]

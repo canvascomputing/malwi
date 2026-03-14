@@ -607,6 +607,99 @@ exec('def secret_func():\n    return 42\nsecret_func()')
     });
 }
 
+/// Threat: Advanced supply-chain attacks use layered exec() to obscure malicious
+/// payloads. The outer exec() defines a function that itself calls exec() to
+/// define and run a second function. Both functions must be traced by
+/// sys.setprofile to ensure complete visibility into staged code execution.
+#[test]
+fn test_python_nested_exec_traces_both_levels() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let script = r#"
+def run():
+    exec("def outer_payload():\n    exec(\"def inner_payload():\\n    return 99\\ninner_payload()\")\nouter_payload()")
+run()
+"#;
+        let output = run_tracer(&[
+            "x",
+            "-f", "json",
+            "--py", "outer_payload",
+            "--py", "inner_payload",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python nested exec() test failed. stderr: {}",
+            stderr
+        );
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        assert!(
+            events.iter().any(|e| e["source"] == "python" && e["name"] == "outer_payload"),
+            "Expected outer_payload event from first exec() level. events: {:?}",
+            events
+        );
+
+        assert!(
+            events.iter().any(|e| e["source"] == "python" && e["name"] == "inner_payload"),
+            "Expected inner_payload event from second exec() level. events: {:?}",
+            events
+        );
+    });
+}
+
+/// Threat: Attackers combine eval() and exec() to compute and execute code
+/// dynamically. eval() returns a value (the inner code string), which exec()
+/// then executes. This two-stage pattern is common in obfuscated malware.
+#[test]
+fn test_python_nested_eval_exec_traces_computed_function() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let script = r#"
+exec(eval("'def computed_func(): return 42'"))
+computed_func()
+"#;
+        let output = run_tracer(&[
+            "x",
+            "-f", "json",
+            "--py", "computed_func",
+            "--",
+            python.to_str().unwrap(),
+            "-c", script,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "Python eval+exec test failed. stderr: {}",
+            stderr
+        );
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        assert!(
+            events.iter().any(|e| e["source"] == "python" && e["name"] == "computed_func"),
+            "Expected computed_func event from eval()+exec() chain. events: {:?}",
+            events
+        );
+    });
+}
+
 /// Threat: Malicious code disables tracing with sys.setprofile(None).
 /// This test documents the current behavior: whether the profiler survives
 /// or whether there's a gap after the attacker clears it.

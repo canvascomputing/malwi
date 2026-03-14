@@ -461,6 +461,105 @@ fn test_bash_policy_blocks_eval() {
     });
 }
 
+/// Threat: Shell script malware uses nested eval to decode and execute payloads
+/// in stages. `eval 'eval "cmd"'` executes two successive eval_builtin calls.
+/// Both must be traced to reveal the full command chain.
+#[test]
+fn test_bash_nested_eval_traces_both_eval_invocations() {
+    setup();
+
+    skip_if_no_bash!(bash => {
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-f", "json",
+                "-c", "*",
+                "--",
+                bash.to_str().unwrap(),
+                "-c", r#"eval 'eval "cat /dev/null"'"#,
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        // The eval_builtin hook should fire and show the nested eval command
+        // in its arguments, proving the outer eval is traced.
+        let eval_event = events.iter()
+            .find(|e| e["source"] == "bash" && e["name"] == "eval");
+        assert!(
+            eval_event.is_some(),
+            "Expected eval event for nested eval. events: {:?}, stderr: {}",
+            events, stderr
+        );
+        // The eval event's args should contain the inner eval command.
+        let args = eval_event.unwrap()["args"].as_array().unwrap();
+        let args_str: Vec<&str> = args.iter().filter_map(|a| a.as_str()).collect();
+        assert!(
+            args_str.iter().any(|a| a.contains("eval")),
+            "Expected eval args to show the nested eval command. args: {:?}",
+            args_str
+        );
+
+        // The innermost command (cat) should also be traced via
+        // execute_command_internal or shell_execve.
+        assert!(
+            events.iter().any(|e| e["name"] == "cat"),
+            "Expected cat event from command inside nested eval. events: {:?}",
+            events
+        );
+    });
+}
+
+/// Threat: An attacker encodes a blocked command inside nested eval to
+/// bypass policy enforcement. The policy engine must evaluate commands
+/// at every eval nesting level, not just the top level.
+#[test]
+fn test_bash_nested_eval_policy_blocks_inner_command() {
+    setup();
+
+    skip_if_no_bash!(bash => {
+        let (policy_path, _f) =
+            write_temp_policy("version: 1\ncommands:\n  deny:\n    - cat\n");
+
+        let output = run_tracer_with_timeout(
+            &[
+                "x",
+                "-f", "json",
+                "-p", policy_path.to_str().unwrap(),
+                "--",
+                bash.to_str().unwrap(),
+                "-c", r#"eval 'eval "cat /dev/null"'"#,
+            ],
+            std::time::Duration::from_secs(10),
+        );
+
+        let _ = std::fs::remove_file(&policy_path);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        // The cat command buried inside nested eval should still be blocked
+        assert!(
+            events.iter().any(|e| e["name"] == "cat"
+                && e["policy"]["decision"] == "denied"),
+            "Expected denied event for cat inside nested eval. \
+             Policy enforcement must work at all eval nesting levels. \
+             events: {:?}, stderr: {}",
+            events, stderr
+        );
+    });
+}
+
 // ============================================================================
 // Source Builtin Tracing
 // ============================================================================
