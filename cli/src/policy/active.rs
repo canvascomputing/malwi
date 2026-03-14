@@ -14,10 +14,7 @@
 //!
 //! Phase-specific evaluation methods (network, files, commands) are in sibling modules.
 
-use crate::policy::{
-    Category, EnforcementMode, HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec, Runtime,
-    SectionKey,
-};
+use crate::policy::{Category, EnforcementMode, PolicyDecision, PolicyEngine, Runtime, SectionKey};
 use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
 // ── Types ──────────────────────────────────────────────────────
@@ -168,185 +165,47 @@ impl ActivePolicy {
 
 // ── Hook Derivation ────────────────────────────────────────────
 
-impl ActivePolicy {
-    /// Derive hook configurations from policy rules.
-    /// Each policy rule (allow or deny) needs an agent-side hook so we can intercept the call.
-    /// When the policy has `network: allow:` rules, also auto-adds known HTTP functions
-    /// from the taxonomy so the network phase can evaluate their URLs.
-    pub fn derive_hook_configs(&self, capture_stack: bool) -> Vec<HookConfig> {
-        let specs = self.engine.extract_hook_specs();
-        let mut configs = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+/// Type alias for the dedup set used during hook config derivation.
+type SeenSet = std::collections::HashSet<(String, String)>;
 
-        for spec in &specs {
-            if let Some(config) = hook_spec_to_config(spec, capture_stack) {
-                // Deduplicate by (hook_type, symbol) — same function may appear in allow + deny
-                let key = (format!("{:?}", config.hook_type), config.symbol.clone());
-                if seen.insert(key) {
-                    configs.push(config);
-                }
-            }
-        }
-
-        // Generate native hooks for hide targets so review mode can evaluate them.
-        // EnvVarHide → getenv (+ secure_getenv on Linux)
-        // FileHide → stat, lstat, access (+ macOS $INODE64 variants)
-        let has_envvar_hide = specs.iter().any(|s| s.kind == HookSpecKind::EnvVarHide);
-        let has_file_hide = specs.iter().any(|s| s.kind == HookSpecKind::FileHide);
-        if has_envvar_hide {
-            for sym in &["getenv"] {
-                let key = ("Native".to_string(), sym.to_string());
-                if seen.insert(key) {
-                    configs.push(HookConfig {
-                        hook_type: HookType::Native,
-                        symbol: sym.to_string(),
-                        arg_count: Some(6),
-                        capture_return: true,
-                        capture_stack,
-                    });
-                }
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let key = ("Native".to_string(), "secure_getenv".to_string());
-                if seen.insert(key) {
-                    configs.push(HookConfig {
-                        hook_type: HookType::Native,
-                        symbol: "secure_getenv".to_string(),
-                        arg_count: Some(6),
-                        capture_return: true,
-                        capture_stack,
-                    });
-                }
-            }
-        }
-        if has_file_hide {
-            let mut hide_syms = vec!["stat", "lstat", "access"];
-            #[cfg(target_os = "macos")]
-            hide_syms.extend_from_slice(&["stat$INODE64", "lstat$INODE64"]);
-            for sym in &hide_syms {
-                let key = ("Native".to_string(), sym.to_string());
-                if seen.insert(key) {
-                    configs.push(HookConfig {
-                        hook_type: HookType::Native,
-                        symbol: sym.to_string(),
-                        arg_count: Some(6),
-                        capture_return: true,
-                        capture_stack,
-                    });
-                }
-            }
-        }
-
-        // Auto-add wildcard exec filter when commands: allow exists.
-        // Unlisted commands need to be intercepted so the CLI can evaluate
-        // them against the allowlist and block them (implicit deny).
-        if self.has_commands_allow {
-            let key = ("Exec".to_string(), "*".to_string());
-            if seen.insert(key) {
-                configs.push(HookConfig {
-                    hook_type: HookType::Exec,
-                    symbol: "*".to_string(),
-                    arg_count: None,
-                    capture_return: false,
-                    capture_stack,
-                });
-            }
-        }
-
-        // Auto-add network function hooks when network: allow exists.
-        // These functions aren't in any deny/warn list, but the network phase
-        // needs to see them fire to evaluate URLs/hosts against the allowlist.
-        if self.has_network_allow {
-            for func in super::templates::network_functions_python() {
-                let key = ("Python".to_string(), func.clone());
-                if seen.insert(key) {
-                    configs.push(HookConfig {
-                        hook_type: HookType::Python,
-                        symbol: func.clone(),
-                        arg_count: None,
-                        capture_return: true,
-                        capture_stack,
-                    });
-                }
-            }
-            for func in super::templates::network_functions_nodejs() {
-                let key = ("Nodejs".to_string(), func.clone());
-                if seen.insert(key) {
-                    configs.push(HookConfig {
-                        hook_type: HookType::Nodejs,
-                        symbol: func.clone(),
-                        arg_count: None,
-                        capture_return: true,
-                        capture_stack,
-                    });
-                }
-            }
-        }
-
-        configs
+/// Map a policy runtime to the corresponding agent HookType.
+fn runtime_to_hook_type(runtime: Option<Runtime>) -> HookType {
+    match runtime {
+        None => HookType::Native,
+        Some(Runtime::Python) => HookType::Python,
+        Some(Runtime::Node) => HookType::Nodejs,
     }
 }
 
-/// Convert a PolicyHookSpec to a HookConfig for the agent.
-/// Returns None for specs handled elsewhere (hide/allow encoded in derive_hook_configs).
-fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> Option<HookConfig> {
-    match spec.kind {
-        HookSpecKind::EnvVar => {
-            return Some(HookConfig {
-                hook_type: HookType::EnvVar,
-                symbol: spec.pattern.clone(),
-                arg_count: None,
-                capture_return: false,
-                capture_stack: false,
-            });
-        }
-        HookSpecKind::EnvVarAllow => {
-            return Some(HookConfig {
-                hook_type: HookType::EnvVar,
-                symbol: format!("!{}", spec.pattern),
-                arg_count: None,
-                capture_return: false,
-                capture_stack: false,
-            });
-        }
-        // Hide specs are handled via derive_hook_configs (native hooks + review mode)
-        HookSpecKind::EnvVarHide | HookSpecKind::FileHide => return None,
-        _ => {}
+/// Insert a HookConfig if not already seen (dedup by hook_type + symbol).
+fn emit_config(config: HookConfig, configs: &mut Vec<HookConfig>, seen: &mut SeenSet) {
+    let key = (format!("{:?}", config.hook_type), config.symbol.clone());
+    if seen.insert(key) {
+        configs.push(config);
     }
-    Some(if spec.kind == HookSpecKind::Command {
+}
+
+/// Emit a function hook for a given runtime and symbol pattern.
+fn emit_function_hook(
+    runtime: Option<Runtime>,
+    symbol: &str,
+    capture_stack: bool,
+    configs: &mut Vec<HookConfig>,
+    seen: &mut SeenSet,
+) {
+    let hook_type = runtime_to_hook_type(runtime);
+    let is_native = matches!(hook_type, HookType::Native);
+    emit_config(
         HookConfig {
-            hook_type: HookType::Exec,
-            symbol: exec_filter_name(&spec.pattern),
-            arg_count: None,
-            capture_return: false,
+            hook_type,
+            symbol: symbol.to_string(),
+            arg_count: if is_native { Some(6) } else { None },
+            capture_return: true,
             capture_stack,
-        }
-    } else {
-        match spec.runtime {
-            Some(Runtime::Python) => HookConfig {
-                hook_type: HookType::Python,
-                symbol: spec.pattern.clone(),
-                arg_count: None,
-                capture_return: true,
-                capture_stack,
-            },
-            Some(Runtime::Node) => HookConfig {
-                hook_type: HookType::Nodejs,
-                symbol: spec.pattern.clone(),
-                arg_count: None,
-                capture_return: true,
-                capture_stack,
-            },
-            None => HookConfig {
-                hook_type: HookType::Native,
-                symbol: spec.pattern.clone(),
-                arg_count: Some(6), // default capture for native hooks (covers most libc signatures)
-                capture_return: true,
-                capture_stack,
-            },
-        }
-    })
+        },
+        configs,
+        seen,
+    );
 }
 
 /// Extract the command name from an exec pattern for agent-side filtering.
@@ -361,6 +220,190 @@ fn exec_filter_name(pattern: &str) -> String {
         .next()
         .unwrap_or(pattern)
         .to_string()
+}
+
+/// Emit an exec filter hook for a command pattern.
+fn emit_exec_hook(
+    pattern: &str,
+    capture_stack: bool,
+    configs: &mut Vec<HookConfig>,
+    seen: &mut SeenSet,
+) {
+    let symbol = exec_filter_name(pattern);
+    emit_config(
+        HookConfig {
+            hook_type: HookType::Exec,
+            symbol,
+            arg_count: None,
+            capture_return: false,
+            capture_stack,
+        },
+        configs,
+        seen,
+    );
+}
+
+/// Emit an EnvVar hook config.
+fn emit_envvar_hook(symbol: &str, configs: &mut Vec<HookConfig>, seen: &mut SeenSet) {
+    emit_config(
+        HookConfig {
+            hook_type: HookType::EnvVar,
+            symbol: symbol.to_string(),
+            arg_count: None,
+            capture_return: false,
+            capture_stack: false,
+        },
+        configs,
+        seen,
+    );
+}
+
+impl ActivePolicy {
+    /// Derive hook configurations from policy rules.
+    ///
+    /// Iterates compiled policy sections directly — each category emits the
+    /// appropriate HookConfig entries for the agent. No intermediate types.
+    ///
+    /// When the policy has `network: allow:` rules, also auto-adds known HTTP
+    /// functions from the taxonomy so the network phase can evaluate their URLs.
+    pub fn derive_hook_configs(&self, capture_stack: bool) -> Vec<HookConfig> {
+        let mut configs = Vec::new();
+        let mut seen = SeenSet::new();
+
+        for (key, section) in self.engine.policy().iter_sections() {
+            if section.mode == EnforcementMode::Noop {
+                continue;
+            }
+
+            match key.category {
+                Category::Functions => {
+                    // Emit hook for each allow + deny rule pattern
+                    for rule in section.allow_rules.iter().chain(&section.deny_rules) {
+                        emit_function_hook(
+                            key.runtime,
+                            rule.pattern.original(),
+                            capture_stack,
+                            &mut configs,
+                            &mut seen,
+                        );
+                    }
+                }
+                Category::Execution => {
+                    for rule in section.allow_rules.iter().chain(&section.deny_rules) {
+                        emit_exec_hook(
+                            rule.pattern.original(),
+                            capture_stack,
+                            &mut configs,
+                            &mut seen,
+                        );
+                    }
+                }
+                Category::Files => {
+                    // Native file syscalls
+                    for sym in super::templates::file_functions_native() {
+                        emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
+                    }
+                    // Python file functions — only bare names (no dots).
+                    // Module-qualified names like "builtins.open" trigger eager C hook
+                    // resolution in the agent, which can interfere with Python startup.
+                    for func in super::templates::file_functions_python() {
+                        if !func.contains('.') {
+                            emit_function_hook(
+                                Some(Runtime::Python),
+                                func,
+                                capture_stack,
+                                &mut configs,
+                                &mut seen,
+                            );
+                        }
+                    }
+                    // Node.js fs module (prefix → wildcard)
+                    let node_pattern =
+                        format!("{}*", super::templates::taxonomy::NODEJS_FILE_PREFIX);
+                    emit_function_hook(
+                        Some(Runtime::Node),
+                        &node_pattern,
+                        capture_stack,
+                        &mut configs,
+                        &mut seen,
+                    );
+                    // Hide rules → native stat/lstat/access hooks for review mode
+                    if section.has_hide_rules() {
+                        let mut hide_syms = vec!["stat", "lstat", "access"];
+                        #[cfg(target_os = "macos")]
+                        hide_syms.extend_from_slice(&["stat$INODE64", "lstat$INODE64"]);
+                        for sym in &hide_syms {
+                            emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
+                        }
+                    }
+                }
+                Category::EnvVars => {
+                    // Wildcard to enable envvar monitoring
+                    emit_envvar_hook("*", &mut configs, &mut seen);
+                    // Block-mode deny patterns for agent-side blocking.
+                    // Warn/Log modes only observe (CLI displays warning but value is accessible).
+                    for rule in &section.deny_rules {
+                        if rule.mode == EnforcementMode::Block {
+                            emit_envvar_hook(rule.pattern.original(), &mut configs, &mut seen);
+                        }
+                    }
+                    // Allow patterns — agent-side bypass for deny checks.
+                    // Encoded with "!" prefix convention.
+                    for rule in &section.allow_rules {
+                        let symbol = format!("!{}", rule.pattern.original());
+                        emit_envvar_hook(&symbol, &mut configs, &mut seen);
+                    }
+                    // Hide rules → native getenv hooks for review mode
+                    if section.has_hide_rules() {
+                        emit_function_hook(None, "getenv", capture_stack, &mut configs, &mut seen);
+                        #[cfg(target_os = "linux")]
+                        emit_function_hook(
+                            None,
+                            "secure_getenv",
+                            capture_stack,
+                            &mut configs,
+                            &mut seen,
+                        );
+                    }
+                }
+                // Network categories don't need hooks — evaluated against NetworkInfo
+                _ => continue,
+            }
+        }
+
+        // Auto-add wildcard exec filter when commands: allow exists.
+        // Unlisted commands need to be intercepted so the CLI can evaluate
+        // them against the allowlist and block them (implicit deny).
+        if self.has_commands_allow {
+            emit_exec_hook("*", capture_stack, &mut configs, &mut seen);
+        }
+
+        // Auto-add network function hooks when network: allow exists.
+        // These functions aren't in any deny/warn list, but the network phase
+        // needs to see them fire to evaluate URLs/hosts against the allowlist.
+        if self.has_network_allow {
+            for func in super::templates::network_functions_python() {
+                emit_function_hook(
+                    Some(Runtime::Python),
+                    func,
+                    capture_stack,
+                    &mut configs,
+                    &mut seen,
+                );
+            }
+            for func in super::templates::network_functions_nodejs() {
+                emit_function_hook(
+                    Some(Runtime::Node),
+                    func,
+                    capture_stack,
+                    &mut configs,
+                    &mut seen,
+                );
+            }
+        }
+
+        configs
+    }
 }
 
 // ── Evaluation Pipeline ────────────────────────────────────────
@@ -1158,5 +1201,269 @@ network:
             disp.is_blocked(),
             "native socket should be blocked when no network allow rules exist"
         );
+    }
+
+    // =====================================================================
+    // Tests for derive_hook_configs() — covers hook derivation from sections
+    // =====================================================================
+
+    #[test]
+    fn test_derive_configs_basic() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+python:
+  deny:
+    - eval
+    - exec
+nodejs:
+  deny:
+    - "child_process.exec"
+symbols:
+  deny:
+    - socket
+commands:
+  deny:
+    - curl
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+
+        let py = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Python))
+            .count();
+        assert_eq!(py, 2);
+
+        let node = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Nodejs))
+            .count();
+        assert_eq!(node, 1);
+
+        assert!(configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "socket"));
+
+        assert!(configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Exec) && c.symbol == "curl"));
+    }
+
+    #[test]
+    fn test_derive_configs_skips_non_hookable() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+network:
+  deny:
+    - "*.onion"
+  protocols: [tcp, https]
+python:
+  deny:
+    - eval
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+
+        // Only python should produce configs (network categories have no hooks)
+        assert!(configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Python) && c.symbol == "eval"));
+        // No native, exec, or envvar hooks
+        assert!(!configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native)));
+        assert!(!configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Exec)));
+    }
+
+    #[test]
+    fn test_derive_configs_files_emits_native_and_runtime_hooks() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+files:
+  deny:
+    - "/etc/*"
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let file_native = crate::policy::templates::file_functions_native();
+        let file_py = crate::policy::templates::file_functions_python();
+
+        // All native file syscalls should be present
+        for sym in file_native {
+            assert!(
+                configs
+                    .iter()
+                    .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == *sym),
+                "missing native file hook: {}",
+                sym
+            );
+        }
+        // Bare Python file funcs (no dots) should be present
+        for func in file_py.iter().filter(|f| !f.contains('.')) {
+            assert!(
+                configs
+                    .iter()
+                    .any(|c| matches!(c.hook_type, HookType::Python) && c.symbol == *func),
+                "missing python file hook: {}",
+                func
+            );
+        }
+        // Node.js fs wildcard
+        let node_prefix = crate::policy::templates::taxonomy::NODEJS_FILE_PREFIX;
+        assert!(configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Nodejs) && c.symbol.starts_with(node_prefix)));
+    }
+
+    #[test]
+    fn test_derive_configs_includes_allow_and_deny() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+python:
+  allow:
+    - "json.*"
+  deny:
+    - eval
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let py_symbols: Vec<&str> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Python))
+            .map(|c| c.symbol.as_str())
+            .collect();
+        assert!(py_symbols.contains(&"json.*"));
+        assert!(py_symbols.contains(&"eval"));
+    }
+
+    #[test]
+    fn test_derive_configs_skips_noop() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+python:
+  noop:
+    - eval
+nodejs:
+  deny:
+    - eval
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        // Only Node.js should produce configs (Python is noop)
+        assert!(!configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Python)));
+        assert!(configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Nodejs) && c.symbol == "eval"));
+    }
+
+    #[test]
+    fn test_derive_configs_envvars() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+envvars:
+  warn:
+    - "*SECRET*"
+    - "AWS_*"
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let envvar_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::EnvVar))
+            .collect();
+        // Warn mode: only wildcard (no individual deny patterns)
+        assert_eq!(envvar_configs.len(), 1);
+        assert_eq!(envvar_configs[0].symbol, "*");
+    }
+
+    #[test]
+    fn test_derive_configs_skips_noop_envvars() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+envvars:
+  noop:
+    - "*"
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let envvar_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::EnvVar))
+            .collect();
+        assert!(envvar_configs.is_empty());
+    }
+
+    #[test]
+    fn test_derive_configs_envvars_block_mode_emits_deny_patterns() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+envvars:
+  deny:
+    - "*SECRET*"
+    - "AWS_*"
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let envvar_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::EnvVar))
+            .collect();
+        // Block mode (default for deny:) — wildcard + 2 deny patterns
+        assert_eq!(envvar_configs.len(), 3);
+        let symbols: Vec<&str> = envvar_configs.iter().map(|c| c.symbol.as_str()).collect();
+        assert!(symbols.contains(&"*"));
+        assert!(symbols.contains(&"*SECRET*"));
+        assert!(symbols.contains(&"AWS_*"));
+    }
+
+    #[test]
+    fn test_derive_configs_envvars_warn_mode_no_deny_patterns() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+envvars:
+  warn:
+    - "*SECRET*"
+    - "AWS_*"
+"#,
+        )
+        .unwrap();
+
+        let configs = policy.derive_hook_configs(false);
+        let envvar_configs: Vec<_> = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::EnvVar))
+            .collect();
+        // Only wildcard — no individual deny patterns (warn mode doesn't block)
+        assert_eq!(envvar_configs.len(), 1);
+        assert_eq!(envvar_configs[0].symbol, "*");
     }
 }

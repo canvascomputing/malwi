@@ -33,7 +33,7 @@ pub(crate) mod templates;
 
 // Module-internal re-exports for sibling access via crate::policy::X
 pub(self) use compiled::{Category, EnforcementMode, Runtime, SectionKey};
-pub(self) use engine::{HookSpecKind, PolicyDecision, PolicyEngine, PolicyHookSpec};
+pub(self) use engine::{PolicyDecision, PolicyEngine};
 
 // Re-export CLI policy types
 pub use active::{ActivePolicy, EventDisposition};
