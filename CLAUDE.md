@@ -2,11 +2,13 @@
 
 ## Overview
 
-malwi is a function tracing tool for dynamic analysis of executables. It supports:
+malwi is a function tracing tool for dynamic analysis of executables. It traces four runtimes: **Bash**, **Python**, **Node.js**, and **native symbols**. When writing tests, adding features, or auditing coverage, always consider all four runtimes.
+
 - **Native functions** via malwi-intercept Interceptor
 - **Python functions** via sys.setprofile hooks
 - **Node.js functions** via hybrid tracing (V8 bytecode + codegen gate + N-API addon wrapping)
-- **Executed commands** via fork/exec/spawn monitoring
+- **Bash commands** via eval_builtin/source_builtin/execute_command_internal hooks
+- **Executed commands** via fork/exec/spawn monitoring (cross-runtime)
 
 The tool injects an agent library into target processes to intercept function calls and report them back to a CLI over a binary wire protocol (length-prefixed TCP).
 
