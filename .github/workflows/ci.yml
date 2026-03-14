@@ -136,5 +136,8 @@ jobs:
       - name: Run unit tests
         run: cargo test --release --lib
 
+      - name: Clean stale policies
+        run: rm -rf ~/.config/malwi/policies
+
       - name: Run integration tests
         run: cargo test --release --test test_native --test test_nodejs --test test_python --test test_policy --test test_bash
