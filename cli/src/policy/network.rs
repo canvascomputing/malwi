@@ -827,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn test_network_allow_auto_generates_http_hooks() {
+    fn test_network_allow_auto_generates_network_hooks() {
         let engine = PolicyEngine::from_yaml(
             "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
         )
@@ -841,6 +841,115 @@ mod tests {
         assert!(
             has_requests_get,
             "network: allow should auto-add requests.get hook"
+        );
+        let has_socket_connect = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Python && c.symbol == "socket.connect");
+        assert!(
+            has_socket_connect,
+            "network: allow should auto-add socket.connect hook"
+        );
+    }
+
+    #[test]
+    fn test_network_allow_auto_generates_socket_hooks() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let configs = policy.derive_hook_configs(false);
+        let has_socket_connect = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Python && c.symbol == "socket.connect");
+        assert!(
+            has_socket_connect,
+            "network: allow should auto-add socket.connect for Python"
+        );
+        let has_socket_sendto = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Python && c.symbol == "socket.sendto");
+        assert!(
+            has_socket_sendto,
+            "network: allow should auto-add socket.sendto for Python"
+        );
+    }
+
+    #[test]
+    fn test_network_allow_auto_generates_nodejs_net_hooks() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"registry.npmjs.org/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let configs = policy.derive_hook_configs(false);
+        let has_net_connect = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Nodejs && c.symbol == "net.connect");
+        assert!(
+            has_net_connect,
+            "network: allow should auto-add net.connect for Node.js"
+        );
+        let has_net_create = configs
+            .iter()
+            .any(|c| c.hook_type == HookType::Nodejs && c.symbol == "net.createConnection");
+        assert!(
+            has_net_create,
+            "network: allow should auto-add net.createConnection for Node.js"
+        );
+    }
+
+    #[test]
+    fn test_network_allow_blocks_python_socket_to_unknown_host() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            host: Some("evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "socket.connect",
+            &["address=('evil.com', 443)"],
+            net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "socket.connect to evil.com should be blocked when only huggingface.co is allowed"
+        );
+    }
+
+    #[test]
+    fn test_network_allow_permits_python_socket_to_allowed_host() {
+        let engine = PolicyEngine::from_yaml(
+            "version: 1\nnetwork:\n  allow:\n    - \"huggingface.co/**\"\n",
+        )
+        .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            host: Some("huggingface.co".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(
+            HookType::Python,
+            "socket.connect",
+            &["address=('huggingface.co', 443)"],
+            net,
+        );
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "socket.connect to huggingface.co should be allowed"
         );
     }
 

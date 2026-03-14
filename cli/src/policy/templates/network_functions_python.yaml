@@ -1,0 +1,57 @@
+# Python network functions.
+# Auto-hooked when a policy has network: allow rules.
+# Every function here produces NetworkInfo for policy evaluation.
+
+# --- Socket (stdlib) ---
+- socket.connect
+- socket.sendto
+- socket.create_connection
+- socket.getaddrinfo
+- socket.gethostbyname
+
+# --- SSL (stdlib) ---
+- ssl.wrap_socket
+- ssl.SSLContext.wrap_socket
+
+# --- http.client (stdlib) ---
+- http.client.HTTPConnection.request
+- http.client.HTTPSConnection.request
+
+# --- urllib.request (stdlib) ---
+- urllib.request.urlopen
+
+# --- requests ---
+- requests.get
+- requests.post
+- requests.put
+- requests.delete
+- requests.patch
+- requests.head
+- requests.request
+- requests.Session.request
+
+# --- httpx ---
+- httpx.get
+- httpx.post
+- httpx.put
+- httpx.delete
+- httpx.patch
+- httpx.head
+- httpx.request
+- httpx.Client.request
+- httpx.AsyncClient.request
+
+# --- aiohttp ---
+- aiohttp.ClientSession._request
+- aiohttp.ClientSession.request
+- aiohttp.ClientSession.ws_connect
+
+# --- urllib3 ---
+- urllib3.PoolManager.request
+
+# --- dns.resolver (dnspython) ---
+- dns.resolver.resolve
+
+# --- websockets ---
+- websockets.connect
+- websocket.WebSocket.connect

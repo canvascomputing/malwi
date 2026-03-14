@@ -216,11 +216,11 @@ impl ActivePolicy {
             }
         }
 
-        // Auto-add HTTP function hooks when network: allow exists.
+        // Auto-add network function hooks when network: allow exists.
         // These functions aren't in any deny/warn list, but the network phase
-        // needs to see them fire to evaluate URLs against the allowlist.
+        // needs to see them fire to evaluate URLs/hosts against the allowlist.
         if self.has_network_allow {
-            for func in super::templates::http_functions_python() {
+            for func in super::templates::network_functions_python() {
                 let key = ("Python".to_string(), func.clone());
                 if seen.insert(key) {
                     configs.push(HookConfig {
@@ -232,7 +232,7 @@ impl ActivePolicy {
                     });
                 }
             }
-            for func in super::templates::http_functions_nodejs() {
+            for func in super::templates::network_functions_nodejs() {
                 let key = ("Nodejs".to_string(), func.clone());
                 if seen.insert(key) {
                     configs.push(HookConfig {

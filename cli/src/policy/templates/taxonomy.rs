@@ -254,13 +254,15 @@ mod tests {
     }
 
     #[test]
-    fn http_functions_present() {
-        let py = super::super::http_functions_python();
+    fn network_functions_present() {
+        let py = super::super::network_functions_python();
         assert!(py.contains(&"requests.get".to_string()));
         assert!(py.contains(&"urllib.request.urlopen".to_string()));
-        let js = super::super::http_functions_nodejs();
+        assert!(py.contains(&"socket.connect".to_string()));
+        let js = super::super::network_functions_nodejs();
         assert!(js.contains(&"http.request".to_string()));
         assert!(js.contains(&"fetch".to_string()));
+        assert!(js.contains(&"net.connect".to_string()));
     }
 
     #[test]

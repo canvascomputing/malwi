@@ -607,11 +607,13 @@ python:
         // socket.connect to port 6379 — should be denied via endpoint policy
         let script = r#"
 import socket
+import time
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(('127.0.0.1', 6379))
 except Exception:
     pass
+time.sleep(0.5)
 "#;
         let output = run_tracer_with_timeout(
             &[

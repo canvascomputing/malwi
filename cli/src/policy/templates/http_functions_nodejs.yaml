@@ -1,7 +1,0 @@
-# Node.js HTTP functions.
-# Function names hooked when a policy has network allow rules.
-- http.request
-- http.get
-- https.request
-- https.get
-- fetch

@@ -115,20 +115,20 @@ macro_rules! networking_symbols {
     };
 }
 
-static HTTP_FUNCTIONS_PYTHON_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! http_functions_python {
+static NETWORK_FUNCTIONS_PYTHON_DATA: OnceLock<Vec<String>> = OnceLock::new();
+macro_rules! network_functions_python {
     () => {
-        HTTP_FUNCTIONS_PYTHON_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("http_functions_python.yaml")))
+        NETWORK_FUNCTIONS_PYTHON_DATA
+            .get_or_init(|| parse_yaml_list(include_str!("network_functions_python.yaml")))
             .as_slice()
     };
 }
 
-static HTTP_FUNCTIONS_NODEJS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! http_functions_nodejs {
+static NETWORK_FUNCTIONS_NODEJS_DATA: OnceLock<Vec<String>> = OnceLock::new();
+macro_rules! network_functions_nodejs {
     () => {
-        HTTP_FUNCTIONS_NODEJS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("http_functions_nodejs.yaml")))
+        NETWORK_FUNCTIONS_NODEJS_DATA
+            .get_or_init(|| parse_yaml_list(include_str!("network_functions_nodejs.yaml")))
             .as_slice()
     };
 }
@@ -156,14 +156,14 @@ pub(crate) fn networking_symbols() -> &'static [String] {
     networking_symbols!()
 }
 
-/// HTTP functions (Python) accessor for sibling modules.
-pub(crate) fn http_functions_python() -> &'static [String] {
-    http_functions_python!()
+/// Network functions (Python) accessor for sibling modules.
+pub(crate) fn network_functions_python() -> &'static [String] {
+    network_functions_python!()
 }
 
-/// HTTP functions (Node.js) accessor for sibling modules.
-pub(crate) fn http_functions_nodejs() -> &'static [String] {
-    http_functions_nodejs!()
+/// Network functions (Node.js) accessor for sibling modules.
+pub(crate) fn network_functions_nodejs() -> &'static [String] {
+    network_functions_nodejs!()
 }
 
 /// File functions (Python) accessor for sibling modules.

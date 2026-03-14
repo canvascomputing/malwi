@@ -208,8 +208,8 @@ cli/src/
         ├── anti_tracing_envvars.yaml
         ├── dangerous_symbols.yaml      # Shared native symbol groups
         ├── networking_symbols.yaml
-        ├── http_functions_python.yaml  # HTTP functions for network policy auto-hooking
-        ├── http_functions_nodejs.yaml
+        ├── network_functions_python.yaml  # Network functions for network policy auto-hooking
+        ├── network_functions_nodejs.yaml
         ├── file_functions_python.yaml  # File functions for file policy evaluation
         ├── file_functions_native.yaml
         ├── scripting.yaml              # Command groups for warn-baseline and presets

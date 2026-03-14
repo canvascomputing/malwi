@@ -1,0 +1,22 @@
+# Node.js network functions.
+# Auto-hooked when a policy has network: allow rules.
+# Every function here produces NetworkInfo for policy evaluation.
+
+# --- HTTP/HTTPS ---
+- http.request
+- http.get
+- https.request
+- https.get
+
+# --- fetch (global) ---
+- fetch
+
+# --- net (raw TCP) ---
+- net.connect
+- net.createConnection
+
+# --- DNS ---
+- dns.lookup
+- dns.resolve
+- dns.resolve4
+- dns.resolve6
