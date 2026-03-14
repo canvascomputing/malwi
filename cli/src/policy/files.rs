@@ -92,36 +92,41 @@ impl ActivePolicy {
         strictest
     }
 
-    /// Extract path from open()/openat() args and evaluate against files: policy.
+    /// Extract path from native file syscalls and evaluate against files: policy.
+    /// Covers open/openat (read/write) and stat/lstat/access (hide targets).
     fn evaluate_file_from_native(
         &self,
         event: &TraceEvent,
         disp: EventDisposition,
     ) -> EventDisposition {
-        // Normalize _open → open (macOS underscore-prefixed aliases)
-        let func = event.function.trim_start_matches('_');
-        if !super::templates::file_functions_native()
-            .iter()
-            .any(|f| f == func)
-        {
-            return disp;
-        }
+        // Normalize _open → open, stat$INODE64 → stat (macOS variants)
+        let func = event
+            .function
+            .trim_start_matches('_')
+            .split('$')
+            .next()
+            .unwrap_or(&event.function);
+
         let args: Vec<&str> = event
             .arguments
             .iter()
             .filter_map(|a| a.display.as_deref())
             .collect();
 
-        // Arg extraction stays in code — position depends on the specific syscall
-        debug_assert!(
-            matches!(func, "open" | "openat"),
-            "native file function '{}' in taxonomy but missing from extraction match",
-            func
-        );
+        // Extract path based on syscall — arg0 for most, arg1 for openat
         let path_str = match func {
-            "open" => args.first().map(|a| strip_any_quotes(a)),
+            "open" | "stat" | "lstat" | "access" => args.first().map(|a| strip_any_quotes(a)),
             "openat" => args.get(1).map(|a| strip_any_quotes(a)),
-            _ => return disp,
+            _ => {
+                // Check taxonomy for other native file functions
+                if !super::templates::file_functions_native()
+                    .iter()
+                    .any(|f| f == func)
+                {
+                    return disp;
+                }
+                args.first().map(|a| strip_any_quotes(a))
+            }
         };
 
         if let Some(path) = path_str {

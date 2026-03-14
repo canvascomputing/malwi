@@ -29,6 +29,7 @@ pub fn compile_policy(policy: &PolicyFile) -> Result<CompiledPolicy> {
                     let existing = e.get_mut();
                     existing.allow_rules.extend(section.allow_rules);
                     existing.deny_rules.extend(section.deny_rules);
+                    existing.hide_rules.extend(section.hide_rules);
                     existing.allowed_values.extend(section.allowed_values);
                     // Keep the strictest section-level mode as the default.
                     if mode_severity(section.mode) > mode_severity(existing.mode) {
@@ -53,6 +54,7 @@ fn mode_severity(mode: EnforcementMode) -> u8 {
         EnforcementMode::Warn => 2,
         EnforcementMode::Review => 3,
         EnforcementMode::Block => 4,
+        EnforcementMode::Hide => 5,
     }
 }
 
@@ -211,6 +213,7 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
         (&section.warn, EnforcementMode::Warn),
         (&section.log, EnforcementMode::Log),
         (&section.noop, EnforcementMode::Noop),
+        (&section.hide, EnforcementMode::Hide),
     ];
     for (rules, mode) in deny_keys {
         for rule in *rules {
@@ -339,6 +342,16 @@ fn compile_allow_deny_section(
                 .deny_rules
                 .push(compile_rule(rule, case_insensitive, category, *deny_mode)?);
         }
+    }
+
+    // Hide rules — compiled separately, checked before allow/deny
+    for rule in &section.hide {
+        compiled.hide_rules.push(compile_rule(
+            rule,
+            case_insensitive,
+            category,
+            EnforcementMode::Hide,
+        )?);
     }
 
     Ok(compiled)
@@ -511,6 +524,9 @@ fn merge_section_values(child: &mut SectionValue, included: SectionValue) {
             child_ad
                 .noop
                 .extend(included_ad.noop.into_iter().filter(|r| not_in_child(r)));
+            child_ad
+                .hide
+                .extend(included_ad.hide.into_iter().filter(|r| not_in_child(r)));
             if child_ad.protocols.is_empty() && !included_ad.protocols.is_empty() {
                 child_ad.protocols = included_ad.protocols;
             }

@@ -4,7 +4,7 @@
 
 pub mod lifecycle;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
@@ -67,9 +67,11 @@ pub struct Agent {
     review_mode: AtomicBool,
     /// True in forked child processes — bypass the dead batching channel.
     forked: AtomicBool,
-    /// Cache of functions already blocked in review mode — skip wire round-trip on retry.
-    /// Keyed by (HookType, function_name) to avoid collisions between runtimes.
-    review_blocked_cache: Mutex<HashSet<(HookType, String)>>,
+    /// Cache of review decisions — skip wire round-trip on retry.
+    /// Key: (HookType, cache_key). For hide-relevant functions (getenv, stat, etc.),
+    /// the cache key includes arg0 (e.g. "getenv:MALWI_URL"). For other functions,
+    /// the key is just the function name (e.g. "connect").
+    review_cache: Mutex<HashMap<(HookType, String), malwi_protocol::ReviewDecision>>,
     #[cfg(unix)]
     fork_monitor: Mutex<Option<ForkMonitor>>,
     spawn_monitor: Mutex<Option<SpawnMonitor>>,
@@ -97,7 +99,7 @@ impl Agent {
             event_tx,
             review_mode: AtomicBool::new(false),
             forked: AtomicBool::new(false),
-            review_blocked_cache: Mutex::new(HashSet::new()),
+            review_cache: Mutex::new(HashMap::new()),
             #[cfg(unix)]
             fork_monitor: Mutex::new(None),
             spawn_monitor: Mutex::new(None),
@@ -203,6 +205,12 @@ impl Agent {
                 // EnvVar monitoring: hook bash's find_variable if this is a bash process.
                 // Set the flag so setup_bash_hooks() will install the hook if the spawn
                 // monitor hasn't been created yet.
+                if config.symbol.starts_with('!') {
+                    // Allow pattern — bypass deny checks for matching vars
+                    crate::exec::envvar::add_allow_pattern(&config.symbol[1..]);
+                    debug!("Added envvar allow pattern: {}", &config.symbol[1..]);
+                    return Ok(());
+                }
                 crate::exec::spawn::enable_envvar_monitoring();
                 // Individual deny patterns (non-wildcard) are for agent-side blocking.
                 if config.symbol != "*" {
@@ -263,25 +271,27 @@ impl Agent {
         &self,
         event: malwi_protocol::TraceEvent,
     ) -> malwi_protocol::ReviewDecision {
-        // Fast path: already blocked → skip wire round-trip
-        let key = (event.hook_type.clone(), event.function.clone());
+        // Build cache key. For hide-relevant functions (getenv, stat, etc.),
+        // include arg0 so different targets get separate decisions.
+        let cache_key = make_review_cache_key(&event);
         {
-            let cache = self
-                .review_blocked_cache
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if cache.contains(&key) {
-                return malwi_protocol::ReviewDecision::Block;
+            let cache = self.review_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.get(&cache_key) {
+                return cached.clone();
             }
         }
 
         match self.client.review(&event) {
             Ok(decision) => {
-                if matches!(decision, malwi_protocol::ReviewDecision::Block) {
-                    self.review_blocked_cache
+                // Cache Block and Hide decisions to avoid repeated wire round-trips
+                if matches!(
+                    decision,
+                    malwi_protocol::ReviewDecision::Block | malwi_protocol::ReviewDecision::Hide
+                ) {
+                    self.review_cache
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(key);
+                        .insert(cache_key, decision.clone());
                 }
                 decision
             }
@@ -313,13 +323,6 @@ impl Agent {
 
         // Single wire call to get all configuration
         let config = self.client.configure(pid, nodejs_version)?;
-
-        // Install envvar allow patterns before hooks (so they're active
-        // when envvar monitoring hooks are installed below).
-        for pattern in &config.envvar_allow_patterns {
-            crate::exec::envvar::add_allow_pattern(pattern);
-            debug!("Added envvar allow pattern: {}", pattern);
-        }
 
         // Install hooks locally
         for hook_config in &config.hooks {
@@ -514,6 +517,24 @@ impl Agent {
             }
         }
     }
+}
+
+/// Build a cache key for review decisions.
+/// For hide-relevant functions (getenv, stat, lstat, access), includes arg0
+/// so that different targets (e.g. getenv("PATH") vs getenv("MALWI_URL")) get
+/// separate cached decisions. Other functions use just the function name.
+fn make_review_cache_key(event: &malwi_protocol::TraceEvent) -> (HookType, String) {
+    let func = event.function.as_str();
+    let needs_arg = matches!(
+        func,
+        "getenv" | "secure_getenv" | "stat" | "lstat" | "access" | "stat$INODE64" | "lstat$INODE64"
+    );
+    if needs_arg {
+        if let Some(arg0) = event.arguments.first().and_then(|a| a.display.as_deref()) {
+            return (event.hook_type.clone(), format!("{}:{}", func, arg0));
+        }
+    }
+    (event.hook_type.clone(), event.function.clone())
 }
 
 /// Flush loop for batched event delivery.

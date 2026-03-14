@@ -252,9 +252,6 @@ impl Codec for BinaryCodec {
                     w.put_bool(h.capture_stack);
                 });
                 w.put_bool(resp.review_mode);
-                w.put_vec(&resp.envvar_allow_patterns, |w, p| {
-                    w.put_str(p);
-                });
             }
             CliMessage::ReviewResponse {
                 request_id,
@@ -287,11 +284,9 @@ impl Codec for BinaryCodec {
                     })
                 })?;
                 let review_mode = r.get_bool()?;
-                let envvar_allow_patterns = r.get_vec(|r| r.get_string())?;
                 Ok(CliMessage::ConfigureResponse(ConfigureResponse {
                     hooks,
                     review_mode,
-                    envvar_allow_patterns,
                 }))
             }
             TAG_REVIEW_RESPONSE => {
@@ -541,6 +536,7 @@ fn encode_review_decision(w: &mut WireWriter, d: &ReviewDecision) {
         ReviewDecision::Block => 1,
         ReviewDecision::Warn => 2,
         ReviewDecision::Suppress => 3,
+        ReviewDecision::Hide => 4,
     });
 }
 
@@ -550,6 +546,7 @@ fn decode_review_decision(r: &mut WireReader) -> io::Result<ReviewDecision> {
         1 => Ok(ReviewDecision::Block),
         2 => Ok(ReviewDecision::Warn),
         3 => Ok(ReviewDecision::Suppress),
+        4 => Ok(ReviewDecision::Hide),
         t => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid ReviewDecision tag: {}", t),
@@ -917,6 +914,18 @@ impl<'a> WireReader<'a> {
         }
         Ok(items)
     }
+
+    /// Like get_vec but returns empty Vec if no data remains (backward compat).
+    #[allow(dead_code)]
+    fn get_vec_or_empty<T>(
+        &mut self,
+        decode_item: impl FnMut(&mut WireReader) -> io::Result<T>,
+    ) -> Vec<T> {
+        if self.pos >= self.data.len() {
+            return Vec::new();
+        }
+        self.get_vec(decode_item).unwrap_or_default()
+    }
 }
 
 // =============================================================================
@@ -1250,7 +1259,6 @@ mod tests {
                 },
             ],
             review_mode: true,
-            envvar_allow_patterns: vec!["HF_HUB_*".to_string(), "HF_TOKEN_PATH".to_string()],
         });
         let decoded = roundtrip_cli(&msg);
         match decoded {
@@ -1264,9 +1272,6 @@ mod tests {
                 assert!(matches!(resp.hooks[1].hook_type, HookType::Python));
                 assert_eq!(resp.hooks[1].arg_count, None);
                 assert!(resp.review_mode);
-                assert_eq!(resp.envvar_allow_patterns.len(), 2);
-                assert_eq!(resp.envvar_allow_patterns[0], "HF_HUB_*");
-                assert_eq!(resp.envvar_allow_patterns[1], "HF_TOKEN_PATH");
             }
             _ => panic!("wrong variant"),
         }
@@ -1279,6 +1284,7 @@ mod tests {
             ReviewDecision::Block,
             ReviewDecision::Warn,
             ReviewDecision::Suppress,
+            ReviewDecision::Hide,
         ] {
             let msg = CliMessage::ReviewResponse {
                 request_id: 7,

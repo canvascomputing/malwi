@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 use log::{debug, warn};
 use malwi_intercept::glob::{matches_glob, matches_glob_ci};
 use malwi_intercept::{
-    HookConfig, HookType, NetworkInfo, ReviewDecision, RuntimeStack, TraceEvent,
+    ConfigureResponse, HookConfig, HookType, NetworkInfo, ReviewDecision, RuntimeStack, TraceEvent,
 };
 use serde::Serialize;
 
@@ -913,19 +913,17 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     let active_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let reconnected_pids = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<u32>::new()));
 
-    let envvar_allow_patterns = active_policy
-        .as_ref()
-        .map(|p| p.envvar_allow_patterns())
-        .unwrap_or_default();
+    let agent_config = ConfigureResponse {
+        hooks: hook_configs,
+        review_mode: effective_review,
+    };
 
-    let server = AgentServer::new(
-        hook_configs,
-        effective_review,
-        envvar_allow_patterns,
-        event_tx,
-        active_count.clone(),
-        reconnected_pids.clone(),
-    )?;
+    let tracking = agent_server::AgentTracking {
+        active_count: active_count.clone(),
+        reconnected_pids: reconnected_pids.clone(),
+    };
+
+    let server = AgentServer::new(agent_config, event_tx, tracking)?;
 
     let server_url = server.url().to_string();
     debug!("Agent server listening on {}", server_url);
@@ -1260,7 +1258,9 @@ fn process_event(
                 // For policy-driven events: evaluate against policy
                 let disp = policy.evaluate_trace(&trace_event);
                 match disp {
-                    policy::EventDisposition::Suppress => return Ok(()),
+                    policy::EventDisposition::Suppress | policy::EventDisposition::Hide => {
+                        return Ok(())
+                    }
                     policy::EventDisposition::Block { rule, section } => {
                         emit_blocked(
                             &trace_event,
@@ -1347,6 +1347,7 @@ fn process_event(
                             ReviewDecision::Block
                         }
                         policy::EventDisposition::Suppress => ReviewDecision::Suppress,
+                        policy::EventDisposition::Hide => ReviewDecision::Hide,
                         policy::EventDisposition::Warn { .. } => {
                             emit_warning(
                                 &event,

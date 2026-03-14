@@ -64,7 +64,7 @@ cli/src/
 
 intercept/src/
 ├── agent/                  # Agent lifecycle (init → configure → ready → tracing)
-├── native/                 # Native symbol hooks (frida-gum)
+├── native/                 # Native symbol hooks (frida-gum), review-mode hide enforcement
 ├── python/                 # Python tracing (sys.setprofile, audit hooks, CPython FFI)
 ├── nodejs/                 # Node.js tracing (V8 bytecode, codegen gate, N-API addon)
 │   └── addon/              # Addon loading: --require preload, embed/extract per Node version
@@ -82,7 +82,13 @@ Each runtime module (`python/`, `nodejs/`, `bash/`) follows a standard pattern: 
 
 ## Policy System
 
-Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
+Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn`/`hide` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
+
+**Hide enforcement** uses the review-mode mechanism: hide specs in the policy generate native hooks (getenv for envvar hide, stat/lstat/access for file hide). The agent sends review requests to the CLI, which evaluates the target against the policy and returns `ReviewDecision::Hide`. The agent then returns fake values (NULL for getenv, -1/ENOENT for stat/access).
+
+**Envvar allow patterns** are encoded in `HookConfig` with a `!` prefix (e.g., `HookConfig { EnvVar, "!HF_HUB_*" }`). The agent strips the prefix and registers allow patterns for agent-side filtering.
+
+**ConfigureResponse** contains only `hooks: Vec<HookConfig>` and `review_mode: bool` — all patterns are encoded in the hooks themselves or handled via review mode.
 
 **Policy presets** are defined in `cli/src/policy/templates/mod.rs` using a `rules!` macro. Pattern groups are flat YAML lists (`credential_files.yaml`, `networking_symbols.yaml`, etc.) parsed via `parse_yaml_list()` into `OnceLock<Vec<String>>` statics, accessed via `macro_rules!` macros (e.g., `credential_files!()`).
 
@@ -181,6 +187,26 @@ TraceEvent {
     source_line: Option<u32>,       // Caller source line
 }
 ```
+
+## Review Mode Decisions
+
+```rust
+// protocol/src/protocol.rs
+enum ReviewDecision {
+    Allow,    // Proceed normally
+    Block,    // Denied — return -1/EACCES
+    Warn,     // Allowed but flagged
+    Suppress, // Auto-allowed, nothing to show
+    Hide,     // Make target non-existent (NULL/ENOENT)
+}
+```
+
+## AgentServer
+
+`AgentServer::new()` takes three parameters:
+- `agent_config: ConfigureResponse` — hooks + review_mode, cloned to each agent on configure
+- `event_tx` — channel for agent events to main loop
+- `tracking: AgentTracking` — shared `active_count` + `reconnected_pids`
 
 ## Environment Variables
 

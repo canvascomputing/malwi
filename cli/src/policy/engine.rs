@@ -39,6 +39,11 @@ impl PolicyDecision {
     pub fn is_denied(&self) -> bool {
         matches!(self.action, PolicyAction::Deny)
     }
+
+    /// Check if this decision hides the target (silent non-existence).
+    pub fn is_hidden(&self) -> bool {
+        matches!(self.action, PolicyAction::Hide)
+    }
 }
 
 /// The action resulting from policy evaluation.
@@ -48,6 +53,8 @@ pub enum PolicyAction {
     Allow,
     /// Deny the operation (actual enforcement depends on section mode).
     Deny,
+    /// Hide — silently pretend the target is non-existent.
+    Hide,
 }
 
 /// Context for evaluating a function call.
@@ -346,6 +353,16 @@ impl PolicyEngine {
             };
         }
 
+        // Hide rules — checked first, before allow/deny
+        if let Some(hide) = find_best_match(&section.hide_rules, name, arguments) {
+            return PolicyDecision {
+                action: PolicyAction::Hide,
+                matched_rule: Some(hide.pattern.original().to_string()),
+                section: section_name,
+                mode: EnforcementMode::Hide,
+            };
+        }
+
         // Find the most specific matching rule from each side
         let best_deny = find_best_match(&section.deny_rules, name, arguments);
         let best_allow = find_best_match(&section.allow_rules, name, arguments);
@@ -415,6 +432,12 @@ pub enum HookSpecKind {
     Command,
     /// An environment variable access hook.
     EnvVar,
+    /// An envvar allow pattern — variables matching bypass deny checks.
+    EnvVarAllow,
+    /// An envvar hide pattern — make matching vars silently non-existent.
+    EnvVarHide,
+    /// A file hide pattern — make matching paths silently non-existent.
+    FileHide,
 }
 
 /// A hook specification derived from a policy rule.
@@ -491,6 +514,14 @@ impl PolicyEngine {
                         pattern: format!("{}*", super::templates::taxonomy::NODEJS_FILE_PREFIX),
                         kind: HookSpecKind::Function,
                     });
+                    // Hide patterns for files — agent returns ENOENT
+                    for rule in &section.hide_rules {
+                        specs.push(PolicyHookSpec {
+                            runtime: None,
+                            pattern: rule.pattern.original().to_string(),
+                            kind: HookSpecKind::FileHide,
+                        });
+                    }
                 }
                 Category::EnvVars => {
                     // Emit a wildcard spec to signal envvar monitoring enablement,
@@ -510,6 +541,23 @@ impl PolicyEngine {
                                 kind: HookSpecKind::EnvVar,
                             });
                         }
+                    }
+                    // Allow patterns — agent-side bypass for deny checks.
+                    // Encoded as HookConfig { EnvVar, "!pattern" } via hook_spec_to_config.
+                    for rule in &section.allow_rules {
+                        specs.push(PolicyHookSpec {
+                            runtime: None,
+                            pattern: rule.pattern.original().to_string(),
+                            kind: HookSpecKind::EnvVarAllow,
+                        });
+                    }
+                    // Hide patterns for envvars — agent returns NULL for getenv()
+                    for rule in &section.hide_rules {
+                        specs.push(PolicyHookSpec {
+                            runtime: None,
+                            pattern: rule.pattern.original().to_string(),
+                            kind: HookSpecKind::EnvVarHide,
+                        });
                     }
                 }
                 _ => continue,

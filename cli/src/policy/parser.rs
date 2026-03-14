@@ -39,12 +39,14 @@ pub struct AllowDenySection {
     pub log: Vec<Rule>,
     pub review: Vec<Rule>,
     pub noop: Vec<Rule>,
+    /// Hide rules — make matching items silently non-existent.
+    pub hide: Vec<Rule>,
     /// Protocol allowlist — only meaningful in `network` sections.
     pub protocols: Vec<String>,
 }
 
 impl AllowDenySection {
-    /// Iterate over all rules across every disposition (allow, deny, warn, log, review, noop).
+    /// Iterate over all rules across every disposition (allow, deny, warn, log, review, noop, hide).
     pub fn all_rules(&self) -> impl Iterator<Item = &Rule> {
         self.allow
             .iter()
@@ -53,6 +55,7 @@ impl AllowDenySection {
             .chain(self.log.iter())
             .chain(self.review.iter())
             .chain(self.noop.iter())
+            .chain(self.hide.iter())
     }
 }
 
@@ -195,12 +198,13 @@ fn value_to_allow_deny_section(value: &YamlValue, section_name: &str) -> Result<
             "log" => section.log = value_to_rules(val, section_name)?,
             "review" => section.review = value_to_rules(val, section_name)?,
             "noop" => section.noop = value_to_rules(val, section_name)?,
+            "hide" => section.hide = value_to_rules(val, section_name)?,
             "protocols" => section.protocols = value_to_string_list(val, section_name)?,
             _ => {
                 return Err(PolicyError::YamlParse(yaml::YamlError {
                     line: 0,
                     message: format!(
-                        "unknown key '{}' in policy section; valid keys are: allow, deny, warn, log, review, noop, protocols",
+                        "unknown key '{}' in policy section; valid keys are: allow, deny, warn, log, review, noop, hide, protocols",
                         key
                     ),
                 }))

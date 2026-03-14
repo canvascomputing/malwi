@@ -16,16 +16,12 @@ pub struct ConfigureRequest {
 }
 
 /// CLI → Agent: Configuration response with hooks and settings.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigureResponse {
     #[serde(default)]
     pub hooks: Vec<HookConfig>,
     #[serde(default)]
     pub review_mode: bool,
-    /// Envvar allow patterns for agent-side filtering.
-    /// Variables matching any allow pattern bypass deny checks.
-    #[serde(default)]
-    pub envvar_allow_patterns: Vec<String>,
 }
 
 /// Information about a loaded module in the target process.
@@ -68,6 +64,9 @@ pub enum ReviewDecision {
     Warn,
     /// Auto-allowed, nothing to show.
     Suppress,
+    /// Hidden — make target silently non-existent.
+    /// getenv → NULL, stat/lstat/access → -1/ENOENT.
+    Hide,
 }
 
 impl ReviewDecision {

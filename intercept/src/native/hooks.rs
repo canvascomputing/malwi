@@ -453,21 +453,37 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
             // Review mode: send event and wait for user decision
             // Event is already shown to user via AwaitingDecision, no need to send again
             let decision = agent.await_review_decision(event.clone());
-            if !decision.is_allowed() {
-                // User denied - skip function by returning -1 and setting errno.
-                // Returning 0/NULL would be misinterpreted by syscall wrappers
-                // (e.g. socket() treats 0 as valid fd), causing infinite retry loops.
-                crate::invocation::replace_return_value(context, (-1isize) as usize as *mut c_void);
-                // Set errno = EACCES (Permission denied) so callers see a proper error
-                #[cfg(target_os = "macos")]
-                {
-                    *libc::__error() = libc::EACCES;
+            match decision {
+                malwi_protocol::ReviewDecision::Block => {
+                    // User denied - skip function by returning -1 and setting errno.
+                    crate::invocation::replace_return_value(
+                        context,
+                        (-1isize) as usize as *mut c_void,
+                    );
+                    set_errno(libc::EACCES);
+                    info!("BLOCKED: {}", event.function);
                 }
-                #[cfg(target_os = "linux")]
-                {
-                    *libc::__errno_location() = libc::EACCES;
+                malwi_protocol::ReviewDecision::Hide => {
+                    // Hide: make target silently non-existent.
+                    match function.as_str() {
+                        "getenv" | "secure_getenv" => {
+                            // Return NULL — variable appears unset
+                            crate::invocation::replace_return_value(context, std::ptr::null_mut());
+                        }
+                        _ => {
+                            // stat/lstat/access/open — return -1 with ENOENT
+                            crate::invocation::replace_return_value(
+                                context,
+                                (-1isize) as usize as *mut c_void,
+                            );
+                            set_errno(libc::ENOENT);
+                        }
+                    }
+                    info!("HIDDEN: {}", event.function);
                 }
-                info!("BLOCKED: {}", event.function);
+                _ => {
+                    // Allow, Warn, Suppress — proceed normally
+                }
             }
         } else {
             // Normal mode: send event
@@ -641,6 +657,18 @@ unsafe fn extract_ip_from_sockaddr(addr_ptr: usize) -> Option<String> {
             Some(crate::native::format::format_ipv6(ip6_bytes))
         }
         _ => None,
+    }
+}
+
+/// Set errno portably.
+unsafe fn set_errno(value: i32) {
+    #[cfg(target_os = "macos")]
+    {
+        *libc::__error() = value;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        *libc::__errno_location() = value;
     }
 }
 

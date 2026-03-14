@@ -7,9 +7,11 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use malwi::agent_server::AgentServer;
+use malwi::agent_server::{AgentServer, AgentTracking};
 use malwi_intercept::wire::{write_frame, BinaryCodec, Codec};
-use malwi_intercept::{AgentMessage, Argument, EventType, HookConfig, TraceEvent};
+use malwi_intercept::{
+    AgentMessage, Argument, ConfigureResponse, EventType, HookConfig, TraceEvent,
+};
 
 fn make_event(_i: u64) -> TraceEvent {
     TraceEvent {
@@ -41,10 +43,16 @@ fn setup_server() -> (String, tokio::runtime::Runtime) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
     let active = Arc::new(AtomicU32::new(0));
     let reconnected = Arc::new(Mutex::new(HashSet::new()));
+    let agent_config = ConfigureResponse {
+        hooks: make_hook_configs(),
+        review_mode: false,
+    };
+    let tracking = AgentTracking {
+        active_count: active,
+        reconnected_pids: reconnected,
+    };
     let server = rt
-        .block_on(async {
-            AgentServer::new(make_hook_configs(), false, vec![], tx, active, reconnected)
-        })
+        .block_on(async { AgentServer::new(agent_config, tx, tracking) })
         .expect("create server");
     let url = server.url().to_string();
     rt.spawn(async move { server.run().await });

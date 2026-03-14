@@ -59,6 +59,8 @@ pub struct CompiledSection {
     pub mode: EnforcementMode,
     pub allow_rules: Vec<CompiledRule>,
     pub deny_rules: Vec<CompiledRule>,
+    /// Hide rules — make matching items silently non-existent.
+    pub hide_rules: Vec<CompiledRule>,
     /// For list-based sections (e.g., protocols).
     pub allowed_values: Vec<String>,
 }
@@ -69,6 +71,7 @@ impl Default for CompiledSection {
             mode: EnforcementMode::Block,
             allow_rules: Vec::new(),
             deny_rules: Vec::new(),
+            hide_rules: Vec::new(),
             allowed_values: Vec::new(),
         }
     }
@@ -83,8 +86,15 @@ impl CompiledSection {
         !self.deny_rules.is_empty()
     }
 
+    pub fn has_hide_rules(&self) -> bool {
+        !self.hide_rules.is_empty()
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.allow_rules.is_empty() && self.deny_rules.is_empty() && self.allowed_values.is_empty()
+        self.allow_rules.is_empty()
+            && self.deny_rules.is_empty()
+            && self.hide_rules.is_empty()
+            && self.allowed_values.is_empty()
     }
 }
 
@@ -149,6 +159,8 @@ pub enum EnforcementMode {
     Warn,
     /// No operation - disable this section entirely.
     Noop,
+    /// Hide — silently make the target appear non-existent.
+    Hide,
 }
 
 impl EnforcementMode {
@@ -160,13 +172,14 @@ impl EnforcementMode {
             "log" => Some(Self::Log),
             "warn" => Some(Self::Warn),
             "noop" => Some(Self::Noop),
+            "hide" => Some(Self::Hide),
             _ => None,
         }
     }
 
     /// Check if this mode blocks operations.
     pub fn is_blocking(&self) -> bool {
-        matches!(self, Self::Block | Self::Review)
+        matches!(self, Self::Block | Self::Review | Self::Hide)
     }
 }
 

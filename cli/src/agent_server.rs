@@ -14,8 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use malwi_intercept::wire::{BinaryCodec, Codec};
 use malwi_intercept::{
-    AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookConfig,
-    HookType, HostChildInfo, ReviewDecision, TraceEvent,
+    AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookType,
+    HostChildInfo, ReviewDecision, TraceEvent,
 };
 
 /// Events sent from the agent server to the main event loop.
@@ -42,20 +42,23 @@ pub enum AgentEvent {
     },
 }
 
+/// Tracking state shared between AgentServer and the main event loop.
+pub struct AgentTracking {
+    pub active_count: Arc<AtomicU32>,
+    /// PIDs that connected via reconnect. Shared with AgentTracker to avoid
+    /// double-counting active_agents when a reconnected child does exec
+    /// (which triggers a second configure for the same PID from the fresh agent).
+    pub reconnected_pids: Arc<Mutex<HashSet<u32>>>,
+}
+
 /// Shared state for the server tasks.
 struct SharedState {
-    hook_configs: Vec<HookConfig>,
-    review_mode: bool,
-    /// Envvar allow patterns for agent-side filtering.
-    envvar_allow_patterns: Vec<String>,
+    agent_config: ConfigureResponse,
     event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
     active_agents: Arc<AtomicU32>,
     /// Suppresses duplicate exec events caused by libc PATH iteration.
     /// Key: (child_pid, command_basename).
     seen_events: Mutex<HashSet<(u32, String)>>,
-    /// PIDs that connected via reconnect. Shared with AgentTracker to avoid
-    /// double-counting active_agents when a reconnected child does exec
-    /// (which triggers a second configure for the same PID from the fresh agent).
     reconnected_pids: Arc<Mutex<HashSet<u32>>>,
 }
 
@@ -123,25 +126,20 @@ fn create_reuse_addr_listener() -> Result<tokio::net::TcpListener> {
 impl AgentServer {
     /// Create a new agent server bound to a random port.
     pub fn new(
-        hook_configs: Vec<HookConfig>,
-        review_mode: bool,
-        envvar_allow_patterns: Vec<String>,
+        agent_config: ConfigureResponse,
         event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
-        active_agents: Arc<AtomicU32>,
-        reconnected_pids: Arc<Mutex<HashSet<u32>>>,
+        tracking: AgentTracking,
     ) -> Result<Self> {
         let listener = create_reuse_addr_listener()?;
         let port = listener.local_addr()?.port();
         let url = format!("http://127.0.0.1:{}", port);
 
         let shared = Arc::new(SharedState {
-            hook_configs,
-            review_mode,
-            envvar_allow_patterns,
+            agent_config,
             event_tx,
-            active_agents,
+            active_agents: tracking.active_count,
             seen_events: Mutex::new(HashSet::new()),
-            reconnected_pids,
+            reconnected_pids: tracking.reconnected_pids,
         });
 
         Ok(Self {
@@ -309,11 +307,7 @@ async fn handle_message(
                 *counted = true;
             }
 
-            let resp = CliMessage::ConfigureResponse(ConfigureResponse {
-                hooks: shared.hook_configs.clone(),
-                review_mode: shared.review_mode,
-                envvar_allow_patterns: shared.envvar_allow_patterns.clone(),
-            });
+            let resp = CliMessage::ConfigureResponse(shared.agent_config.clone());
             send_response(codec, stream, &resp).await?;
         }
         AgentMessage::Ready(req) => {

@@ -36,13 +36,15 @@ pub enum EventDisposition {
     Review { rule: String, section: String },
     /// No deny match (allowed by policy) — nothing to show.
     Suppress,
+    /// Matched a hide rule — silently non-existent, no display, no event.
+    Hide,
 }
 
 #[allow(dead_code)]
 impl EventDisposition {
     /// Whether this event should be shown to the user.
     pub fn should_display(&self) -> bool {
-        !matches!(self, EventDisposition::Suppress)
+        !matches!(self, EventDisposition::Suppress | EventDisposition::Hide)
     }
 
     /// Whether this event requires review mode interaction.
@@ -154,21 +156,6 @@ fn compute_has_commands_allow(engine: &PolicyEngine) -> bool {
 // ── Public Queries ─────────────────────────────────────────────
 
 impl ActivePolicy {
-    /// Extract envvar allow patterns from the policy for agent-side filtering.
-    /// Returns the original pattern strings from `envvars: allow:` rules.
-    pub fn envvar_allow_patterns(&self) -> Vec<String> {
-        let policy = self.engine.policy();
-        let key = SectionKey::global(Category::EnvVars);
-        match policy.get_section(&key) {
-            Some(section) => section
-                .allow_rules
-                .iter()
-                .map(|r| r.pattern.original().to_string())
-                .collect(),
-            None => Vec::new(),
-        }
-    }
-
     /// Check if the policy has any sections with review or block mode.
     /// Used to determine if review mode should be enabled in the agent.
     pub fn has_blocking_sections(&self) -> bool {
@@ -192,11 +179,62 @@ impl ActivePolicy {
         let mut seen = std::collections::HashSet::new();
 
         for spec in &specs {
-            let config = hook_spec_to_config(spec, capture_stack);
-            // Deduplicate by (hook_type, symbol) — same function may appear in allow + deny
-            let key = (format!("{:?}", config.hook_type), config.symbol.clone());
-            if seen.insert(key) {
-                configs.push(config);
+            if let Some(config) = hook_spec_to_config(spec, capture_stack) {
+                // Deduplicate by (hook_type, symbol) — same function may appear in allow + deny
+                let key = (format!("{:?}", config.hook_type), config.symbol.clone());
+                if seen.insert(key) {
+                    configs.push(config);
+                }
+            }
+        }
+
+        // Generate native hooks for hide targets so review mode can evaluate them.
+        // EnvVarHide → getenv (+ secure_getenv on Linux)
+        // FileHide → stat, lstat, access (+ macOS $INODE64 variants)
+        let has_envvar_hide = specs.iter().any(|s| s.kind == HookSpecKind::EnvVarHide);
+        let has_file_hide = specs.iter().any(|s| s.kind == HookSpecKind::FileHide);
+        if has_envvar_hide {
+            for sym in &["getenv"] {
+                let key = ("Native".to_string(), sym.to_string());
+                if seen.insert(key) {
+                    configs.push(HookConfig {
+                        hook_type: HookType::Native,
+                        symbol: sym.to_string(),
+                        arg_count: Some(6),
+                        capture_return: true,
+                        capture_stack,
+                    });
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let key = ("Native".to_string(), "secure_getenv".to_string());
+                if seen.insert(key) {
+                    configs.push(HookConfig {
+                        hook_type: HookType::Native,
+                        symbol: "secure_getenv".to_string(),
+                        arg_count: Some(6),
+                        capture_return: true,
+                        capture_stack,
+                    });
+                }
+            }
+        }
+        if has_file_hide {
+            let mut hide_syms = vec!["stat", "lstat", "access"];
+            #[cfg(target_os = "macos")]
+            hide_syms.extend_from_slice(&["stat$INODE64", "lstat$INODE64"]);
+            for sym in &hide_syms {
+                let key = ("Native".to_string(), sym.to_string());
+                if seen.insert(key) {
+                    configs.push(HookConfig {
+                        hook_type: HookType::Native,
+                        symbol: sym.to_string(),
+                        arg_count: Some(6),
+                        capture_return: true,
+                        capture_stack,
+                    });
+                }
             }
         }
 
@@ -251,24 +289,35 @@ impl ActivePolicy {
 }
 
 /// Convert a PolicyHookSpec to a HookConfig for the agent.
-fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig {
+/// Returns None for specs handled elsewhere (hide/allow encoded in derive_hook_configs).
+fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> Option<HookConfig> {
     match spec.kind {
         HookSpecKind::EnvVar => {
-            return HookConfig {
+            return Some(HookConfig {
                 hook_type: HookType::EnvVar,
                 symbol: spec.pattern.clone(),
                 arg_count: None,
                 capture_return: false,
                 capture_stack: false,
-            };
+            });
         }
+        HookSpecKind::EnvVarAllow => {
+            return Some(HookConfig {
+                hook_type: HookType::EnvVar,
+                symbol: format!("!{}", spec.pattern),
+                arg_count: None,
+                capture_return: false,
+                capture_stack: false,
+            });
+        }
+        // Hide specs are handled via derive_hook_configs (native hooks + review mode)
+        HookSpecKind::EnvVarHide | HookSpecKind::FileHide => return None,
         _ => {}
     }
-    if spec.kind == HookSpecKind::Command {
+    Some(if spec.kind == HookSpecKind::Command {
         HookConfig {
             hook_type: HookType::Exec,
             symbol: exec_filter_name(&spec.pattern),
-
             arg_count: None,
             capture_return: false,
             capture_stack,
@@ -278,7 +327,6 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             Some(Runtime::Python) => HookConfig {
                 hook_type: HookType::Python,
                 symbol: spec.pattern.clone(),
-
                 arg_count: None,
                 capture_return: true,
                 capture_stack,
@@ -286,7 +334,6 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             Some(Runtime::Node) => HookConfig {
                 hook_type: HookType::Nodejs,
                 symbol: spec.pattern.clone(),
-
                 arg_count: None,
                 capture_return: true,
                 capture_stack,
@@ -294,13 +341,12 @@ fn hook_spec_to_config(spec: &PolicyHookSpec, capture_stack: bool) -> HookConfig
             None => HookConfig {
                 hook_type: HookType::Native,
                 symbol: spec.pattern.clone(),
-
                 arg_count: Some(6), // default capture for native hooks (covers most libc signatures)
                 capture_return: true,
                 capture_stack,
             },
         }
-    }
+    })
 }
 
 /// Extract the command name from an exec pattern for agent-side filtering.
@@ -359,6 +405,26 @@ impl ActivePolicy {
                 }
             }
         }
+
+        // Phase 2.5: Envvar cross-evaluation for native getenv/secure_getenv.
+        // When a native hook fires for getenv, extract the envvar name from arg0
+        // and evaluate it against the envvars: section (which may produce Hide).
+        let disp = if matches!(event.hook_type, HookType::Native) {
+            let func = event.function.as_str();
+            if func == "getenv" || func == "secure_getenv" {
+                if let Some(name) = event.arguments.first().and_then(|a| a.display.as_deref()) {
+                    let envvar_decision = self.engine.evaluate_envvar(name);
+                    let envvar_disp = decision_to_disposition(envvar_decision);
+                    pick_stricter(disp, envvar_disp)
+                } else {
+                    disp
+                }
+            } else {
+                disp
+            }
+        } else {
+            disp
+        };
 
         // Phase 3: File access evaluation
         let disp = self.evaluate_file_phase(event, disp);
@@ -446,6 +512,10 @@ pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposit
         return EventDisposition::Suppress;
     }
 
+    if decision.is_hidden() {
+        return EventDisposition::Hide;
+    }
+
     // Denied — disposition depends on enforcement mode
     let rule = decision
         .matched_rule
@@ -458,6 +528,7 @@ pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposit
         EnforcementMode::Warn => EventDisposition::Warn { rule, section },
         EnforcementMode::Log => EventDisposition::Display,
         EnforcementMode::Noop => EventDisposition::Suppress,
+        EnforcementMode::Hide => EventDisposition::Hide,
     }
 }
 
@@ -469,6 +540,7 @@ pub(super) fn disposition_severity(d: &EventDisposition) -> u8 {
         EventDisposition::Warn { .. } => 2,
         EventDisposition::Review { .. } => 3,
         EventDisposition::Block { .. } => 4,
+        EventDisposition::Hide => 5,
     }
 }
 
