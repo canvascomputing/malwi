@@ -1,499 +1,191 @@
 # CLAUDE.md - Project Guide for malwi
 
-## Overview
+## What This Is
 
-malwi is a function tracing tool for dynamic analysis of executables. It traces four runtimes: **Bash**, **Python**, **Node.js**, and **native symbols**. When writing tests, adding features, or auditing coverage, always consider all four runtimes.
+malwi is a **security tracing tool** for dynamic analysis. It injects an agent library (via `DYLD_INSERT_LIBRARIES` / `LD_PRELOAD`) into a target process, hooks function calls across four runtimes, and streams trace events back to a CLI over TCP.
 
-- **Native functions** via malwi-intercept Interceptor
-- **Python functions** via sys.setprofile hooks
-- **Node.js functions** via hybrid tracing (V8 bytecode + codegen gate + N-API addon wrapping)
-- **Bash commands** via eval_builtin/source_builtin/execute_command_internal hooks
-- **Executed commands** via fork/exec/spawn monitoring (cross-runtime)
+**Four runtimes — always consider all four when writing tests, features, or auditing coverage:**
 
-The tool injects an agent library into target processes to intercept function calls and report them back to a CLI over a binary wire protocol (length-prefixed TCP).
+| Runtime | Hook mechanism | CLI flag | HookType | Example `event.function` |
+|---------|---------------|----------|----------|--------------------------|
+| **Native** | frida-gum Interceptor | `-s` | `Native` | `connect`, `malloc`, `open` |
+| **Python** | sys.setprofile + PEP 578 audit hook | `--py` | `Python` | `urllib.request.urlopen`, `open` |
+| **Node.js** | V8 bytecode tracer + codegen gate + N-API addon | `--js` | `Nodejs` | `fs.readFileSync`, `eval` |
+| **Bash** | eval_builtin / source_builtin / execute_command_internal hooks | `-c` | `Bash` | `eval`, `curl`, `cat` |
 
-## Architecture
+Cross-runtime: **exec monitoring** (`--cm`) hooks fork/exec/spawn to trace child commands (`HookType::Exec`), and **envvar monitoring** tracks environment variable access (`HookType::EnvVar`).
+
+## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       CLI — malwi (cli/)                        │
-│  - Spawns processes with tracing                                │
-│  - Receives trace events via binary wire protocol (TCP)         │
-│  - Policy engine + evaluation                                   │
-│  - Depends on malwi-intercept (default-features = false)        │
-└─────────────────────────────────────────────────────────────────┘
-                              │ TCP (localhost, binary wire)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│             Agent cdylib — malwi-agent (agent/)                 │
-│  - Thin wrapper: constructor statics + pub use malwi_intercept  │
-│  - Injected via DYLD_INSERT_LIBRARIES / LD_PRELOAD              │
-└─────────────────────────────────────────────────────────────────┘
-                              │ links
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Library — malwi-intercept (intercept/)             │
-│  - Native interception engine (frida-gum)                       │
-│  - Agent runtime (python/nodejs/bash/exec hooks)                │
-│  - Re-exports malwi-protocol types                              │
-│  - Sends TraceEvents to CLI via binary wire client              │
-└─────────────────────────────────────────────────────────────────┘
-                              │ depends on
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Library — malwi-protocol (protocol/)               │
-│  - Wire protocol types (TraceEvent, messages, codec)            │
-│  - Glob pattern matching, platform utilities                    │
-└─────────────────────────────────────────────────────────────────┘
+CLI (cli/)                          Agent (injected into target process)
+──────────                          ────────────────────────────────────
+1. Starts TCP server                2. Agent loads via DYLD/LD_PRELOAD
+3. Sends HookConfig (filters)  ──►  4. Installs hooks per runtime
+                                    5. Hooks fire → build TraceEvent
+6. Receives TraceEvents        ◄──  5. Send over TCP (binary wire)
+7. Policy evaluation + display
 ```
+
+The agent library is embedded in the CLI binary at compile time (`include_bytes!`). At runtime, the CLI extracts it to a temp file and sets the preload env var before spawning the target.
+
+## Rules
+
+- **Build/test with `make`, never raw `cargo`**: `make build`, `make test`
+- **Never add crate dependencies without explicit user approval** (~48 production deps, keep minimal)
+- **Update this file** when adding, renaming, moving, or removing files/modules
+- **Update CLI help text** (`cli/src/main.rs` const strings) when changing runtime versions, policies, or subcommands
 
 ## Workspace Crates
 
-| Crate | Path | Purpose | Published |
-|-------|------|---------|-----------|
-| `malwi` | cli/ | CLI binary + policy engine | Yes |
-| `malwi-intercept` | intercept/ | Interception, agent runtime (re-exports malwi-protocol) | Yes |
-| `malwi-protocol` | protocol/ | Wire protocol types, codec, glob matching, platform utils | No |
-| `malwi-agent` | agent/ | Thin cdylib wrapper (constructor statics + re-exports) | No |
+| Crate | Path | What it does |
+|-------|------|-------------|
+| `malwi` | `cli/` | CLI binary: spawns processes, receives events, policy engine, display |
+| `malwi-intercept` | `intercept/` | Agent runtime: hooks for all 4 runtimes + exec monitoring. Re-exports malwi-protocol |
+| `malwi-protocol` | `protocol/` | Shared types: `TraceEvent`, `HookType`, binary codec, glob matching |
+| `malwi-agent` | `agent/` | Thin cdylib: constructor statics + `pub use malwi_intercept::*` |
 
-`malwi-protocol` contains shared wire types (TraceEvent, AgentMessage, CliMessage, binary codec) and utilities (glob matching, platform detection). `malwi-intercept` depends on it and re-exports all its types, so existing `malwi_intercept::TraceEvent` imports continue to work. The `malwi-agent` crate is just a cdylib entry point that re-exports `malwi_intercept::*` and defines `__mod_init_func`/`.init_array` constructors.
-
-Policy presets are defined as Rust functions in `cli/src/policy/templates/mod.rs` using a `rules!` macro and shared pattern groups loaded from YAML files (e.g., `credential_files.yaml`, `scripting.yaml`). Each group is a `static OnceLock<Vec<String>>` lazily parsed via `parse_yaml_list()` and accessed through a corresponding `macro_rules!` (e.g., `credential_files!()`, `scripting!()`). Public `pub(crate) fn` accessors expose groups to sibling modules (e.g., `networking_symbols()`, `http_functions_python()`). They are serialized to YAML on demand for user-facing config files. The `rules!` macro supports group macro invocations (`group!()`) and inline literals to compose `Vec<Rule>`. Command taxonomy data lives in per-category flat files (`commands_safe.yaml`, `commands_threat.yaml`, etc.) with OS-specific variants (`commands_threat_macos.yaml`, `commands_threat_linux.yaml`) conditionally included via `#[cfg(target_os)]` in `taxonomy.rs`.
-
-## Platform Support
-
-| Platform | CLI | Agent | Node.js Tracing | Python Tracing |
-|----------|-----|-------|-----------------|----------------|
-| macOS arm64 | ✅ | ✅ | ✅ | ✅ |
-| macOS x86_64 | ✅ | ✅ | ⚠️ (needs addon build) | ✅ |
-| Linux x86_64 | ✅ | ✅ | ⚠️ (needs addon build) | ✅ |
-| Linux arm64 | ✅ | ✅ | ⚠️ (needs addon build) | ✅ |
-| Windows | ✅ | ⚠️ (no injection) | ❌ | ❌ |
-
-## Building
-
-**Always use `make` for building and testing, never raw `cargo` commands.**
-
-```bash
-# Full build (recommended - includes Node.js addon)
-make addon-install && make build
-
-# Build just Rust components (no Node.js tracing on most platforms)
-make build
-
-# Build Node.js addon only
-make addon
-
-# Install addon to prebuilt directory
-make addon-install
-
-# Format all Rust code (also runs automatically as part of `make build`)
-make format
-
-# Clean everything
-make clean
-```
-
-## Releasing
-
-```bash
-# Bump patch version (0.0.24 → 0.0.25), sync all files, and tag
-make bump
-
-# Set explicit version
-VERSION=0.1.0 make bump
-```
-
-## Testing
-
-```bash
-# Run all tests (recommended)
-make test
-
-# Multi-version testing (tests against all Node.js/Python versions in the binaries path)
-MALWI_TEST_BINARIES=/path/to/binaries make test
-
-# Manual test: Native symbol tracing
-./malwi x -s malloc -- ./tests/simple_target
-
-# Manual test: Node.js fs tracing
-./malwi x --js 'fs.*' -- node -e "require('fs').readFileSync('/etc/passwd')"
-
-# Manual test: Python open tracing
-./malwi x --py open -- python3 -c "open('/etc/passwd').read()"
-
-# Manual test: Exec command tracing
-./malwi x --cm '*' -- python3 -c "import subprocess; subprocess.run(['curl', '--version'])"
-
-# Trace only specific commands
-./malwi x --cm curl -- node -e "require('child_process').spawnSync('curl', ['--version'])"
-```
-
-### Multi-Version Test Binaries
-
-When `binaries/` exists at the project root, tests automatically use it. `MALWI_TEST_BINARIES` env var still works as an override.
-
-Expected directory structure:
-```
-binaries/
-├── arm64/mac/node/node-v23.11.1          # Direct executables
-├── arm64/mac/python/python3.12/bin/python3
-├── arm64/mac/bash/bash-5.2               # Direct executables
-├── x64/linux/node/node-v.../bin/node     # Or direct executables
-└── x64/linux/python/python3.../bin/python3
-```
-
-## CLI Module Structure
+## Key Directories
 
 ```
 cli/src/
-├── main.rs             # CLI entry point, arg parsing, display formatting
-├── lib.rs              # Library root
-├── spawn.rs            # Process spawning orchestration
-├── native_spawn.rs     # posix_spawn/fork+exec implementation
-├── agent_server.rs     # TCP server receiving agent events (binary wire protocol)
-├── agent_tracker.rs    # Unified agent lifecycle tracking (EventLoopState, SharedState)
-├── embedded_agent.rs   # Embedded agent library extraction (compile-time include_bytes)
-├── monitor.rs          # Trace event processing and display
-├── symbol_resolver.rs  # CLI-side symbol resolution (object crate)
-├── shell_format.rs     # Shell output formatting (quoting, truncation)
-│
-└── policy/             # Policy subsystem (includes absorbed policy engine)
-    ├── mod.rs          # Module root + re-exports
-    │
-    │  # Policy engine (absorbed from former malwi-policy crate)
-    ├── engine.rs       # PolicyEngine, HookSpecKind, PolicyDecision
-    ├── compiler.rs     # Policy compilation (YAML → CompiledPolicy)
-    ├── compiled.rs     # CompiledPolicy, CompiledRule, SectionKey, EnforcementMode
-    ├── parser.rs       # YAML policy parsing
-    ├── pattern.rs      # Glob pattern compilation
-    ├── validate.rs     # Policy validation
-    ├── yaml.rs         # Lightweight YAML parser
-    ├── error.rs        # Policy error types
-    │
-    │  # Policy evaluation (CLI-specific)
-    ├── active.rs       # ActivePolicy struct, evaluate_trace dispatch, hook derivation
-    ├── network.rs      # Network policy evaluation (URL, domain, endpoint, protocol)
-    ├── files.rs        # File access policy evaluation
-    ├── commands.rs     # Command analysis integration
-    ├── analysis.rs     # 7-engine command triage
-    ├── detect.rs       # Auto-detection of command-specific policies
-    ├── config.rs       # Policy file management (~/.config/malwi/)
-    │
-    └── templates/      # Policy templates, taxonomy, and shared pattern groups
-        ├── mod.rs                      # rules! macro, group macros, accessor fns,
-        │                               # preset fns, embedded_policy(),
-        │                               # DEFAULT_SECURITY_YAML, YAML serializer
-        ├── taxonomy.rs                 # Category enum, Taxonomy struct, flat-file parser, singleton
-        ├── commands_safe.yaml          # Command taxonomy — per-category flat lists
-        ├── commands_safe_macos.yaml
-        ├── commands_safe_linux.yaml
-        ├── commands_build.yaml
-        ├── commands_build_macos.yaml
-        ├── commands_text.yaml
-        ├── commands_package.yaml
-        ├── commands_package_macos.yaml
-        ├── commands_package_linux.yaml
-        ├── commands_file_operation.yaml
-        ├── commands_file_operation_macos.yaml
-        ├── commands_threat.yaml
-        ├── commands_threat_macos.yaml
-        ├── commands_threat_linux.yaml
-        ├── credential_files.yaml       # Shared file pattern groups (YAML lists)
-        ├── keyrings.yaml
-        ├── browser_data.yaml
-        ├── persistence_files.yaml
-        ├── shell_profiles.yaml
-        ├── sensitive_envvars.yaml      # Shared envvar pattern groups
-        ├── anti_tracing_envvars.yaml
-        ├── dangerous_symbols.yaml      # Shared native symbol groups
-        ├── networking_symbols.yaml
-        ├── network_functions_python.yaml  # Network functions for network policy auto-hooking
-        ├── network_functions_nodejs.yaml
-        ├── file_functions_python.yaml  # File functions for file policy evaluation
-        ├── file_functions_native.yaml
-        ├── scripting.yaml              # Command groups for warn-baseline and presets
-        ├── exfiltration.yaml
-        ├── credential_readers.yaml
-        ├── anti_tracing.yaml
-        ├── interprocess_communication.yaml
-        ├── reconnaissance.yaml
-        ├── container_escape.yaml
-        ├── mandatory_access_control.yaml
-        ├── filesystem_hardening.yaml
-        ├── kernel.yaml
-        ├── debug_injection.yaml
-        └── privilege_escalation.yaml
-```
+├── main.rs                 # Entry point, arg parsing, output formatting (text + JSON NDJSON)
+├── spawn.rs                # Process spawning with agent injection
+├── policy/                 # Policy engine + evaluation
+│   ├── engine.rs           # PolicyEngine: compile YAML → match events → allow/deny/warn
+│   ├── active.rs           # ActivePolicy: evaluate TraceEvents against compiled rules
+│   ├── analysis.rs         # 7-engine command triage (safe/build/text/package/fileop/threat)
+│   ├── detect.rs           # Auto-detect policy from command (npm install → npm-install policy)
+│   └── templates/          # Policy presets + shared pattern groups
+│       ├── mod.rs          # rules! macro, group macros, preset functions, YAML serializer
+│       ├── taxonomy.rs     # Command taxonomy: Category enum, flat-file parser, singleton
+│       ├── commands_*.yaml # Per-category command lists (shared + OS-specific via #[cfg])
+│       └── *.yaml          # Pattern groups (credential_files, networking_symbols, etc.)
 
-## Protocol Module Structure
-
-Wire protocol types live in `protocol/src/` (the `malwi-protocol` crate). `malwi-intercept` re-exports all types from this crate, so existing `malwi_intercept::TraceEvent` imports continue to work.
-
-```
-protocol/src/
-├── lib.rs              # Crate root, module declarations, re-exports
-├── event.rs            # TraceEvent, EventType, Argument, NetworkInfo, Protocol
-├── exec.rs             # Command unwrapping utilities (unwrap_shell_command)
-├── glob.rs             # Glob pattern matching
-├── message.rs          # AgentMessage, CliMessage
-├── platform.rs         # Platform detection, agent_lib_name()
-├── protocol.rs         # HookType, FilterSpec, HookConfig
-└── wire.rs             # Length-prefixed binary wire encoding (BinaryCodec)
-```
-
-## Intercept Module Structure
-
-All agent runtime code lives in `intercept/src/` alongside the interception engine.
-
-```
 intercept/src/
-├── lib.rs              # Crate root, module declarations, re-exports from malwi-protocol
-│
-├── interceptor/        # Native function interception engine
-│   ├── mod.rs          # Interceptor struct
-│   ├── listener.rs     # CallListener trait
-│   └── invocation.rs   # InvocationContext
-├── module/             # Module enumeration
-│   └── mod.rs
-├── backtrace/          # Native backtrace capture
-│   └── mod.rs
-├── types.rs            # Shared types (InvocationContext)
-├── gum.rs              # Frida-gum FFI wrapper
-├── ffi.rs              # FFI bindings
-├── test_utils.rs       # Test utilities (lock_hook_tests, init_gum)
-│
-├── agent/              # Agent runtime (injected into target process)
-│   ├── mod.rs          # Agent struct, malwi_agent_init(), global state, event loop
-│   └── lifecycle.rs    # AgentPhase state machine (Uninitialized → Configuring → Ready → ...)
-├── client.rs           # Binary wire client (ForkSafeMutex<TcpStream>, BinaryCodec)
-│
-├── native/             # Native function hooks + formatting
-│   ├── mod.rs          # HookManager, find_export
-│   ├── hooks.rs        # Native function hook callbacks
-│   ├── format.rs       # Argument formatting (C constants, paths, FDs, NetworkInfo)
-│   └── symbol.rs       # Symbol resolution helpers
-│
-├── tracing/            # SHARED utilities (all runtimes)
-│   ├── mod.rs
-│   ├── thread.rs       # thread_id() — single implementation
-│   ├── time.rs         # elapsed_ns(), TRACE_START
-│   ├── filter.rs       # FilterManager struct, pattern matching
-│   ├── event.rs        # EventBuilder for TraceEvent creation
-│   ├── format.rs       # Shared formatting (truncate, truncate_url, truncate_display)
-│   ├── fork_mutex.rs   # ForkSafeMutex<T> — switches to try_lock after fork
-│   └── stack.rs        # Stack trace utilities
-│
-├── python/             # Python tracing (sys.setprofile, audit hooks)
-│   ├── mod.rs          # Public API facade + re-exports
-│   ├── detect.rs       # is_loaded(), detected_version()
-│   ├── filters.rs      # FilterManager wrapper
-│   ├── profile.rs      # Profile hook registration and callback
-│   ├── hooks.rs        # C function hooks (exact pattern resolution)
-│   ├── helpers.rs      # Python introspection (qualified names, arg extraction, c_module_alias)
-│   ├── audit.rs        # Audit hook (PEP 578)
-│   ├── ffi.rs          # CPython FFI types
-│   ├── format.rs       # Argument formatting + NetworkInfo (socket, urllib, requests, etc.)
-│   ├── stack.rs        # Python stack capture
-│   └── version.rs      # Version struct, parsing, Py_GetVersion()
-│
-├── nodejs/             # Node.js tracing (addon, bytecode hooks, filters)
-│   ├── mod.rs          # Public API facade + re-exports
-│   ├── detect.rs       # is_loaded(), detected_version()
-│   ├── bytecode.rs     # V8 bytecode tracing (Runtime_TraceEnter/Exit)
-│   ├── codegen.rs      # Synchronous eval/function-constructor gate
-│   ├── filters.rs      # Filter management, initialization
-│   ├── format.rs       # NetworkInfo extraction for HTTP/socket/DNS functions
-│   ├── state.rs        # State machines (BytecodePhase, AddonPhase)
-│   ├── ffi.rs          # FFI types (NodejsTraceEventData, etc.)
-│   ├── script.rs       # JS execution
-│   ├── stack.rs        # JavaScript stack trace parsing
-│   ├── symbols.rs      # V8 symbol names
-│   └── addon/          # N-API addon management
-│       ├── mod.rs      # Addon loading orchestration
-│       ├── callback.rs # Trace event callback from addon → Rust
-│       ├── embed.rs    # Binary extraction per Node.js version
-│       ├── ffi.rs      # FFI function resolution
-│       └── loader.rs   # Loading strategies (--require, NODE_OPTIONS)
-│
-├── bash/               # Bash tracing (shell hooks, builtins)
-│   ├── mod.rs          # Public API facade + re-exports
-│   ├── detect.rs       # is_loaded(), detected_version(), setup_bash_hooks()
-│   ├── hooks.rs        # Hook callbacks (shell_execve, execute_command_internal, etc.)
-│   └── structs.rs      # Bash internal struct layouts
-│
-└── exec/               # Child process monitoring (spawn/fork/exec)
-    ├── mod.rs
-    ├── spawn.rs        # posix_spawn/exec hooks, SpawnMonitor, DYLD re-injection
-    ├── fork.rs         # fork() hooks, ForkMonitor
-    ├── filter.rs       # Exec command filter (ex: prefix)
-    └── envvar.rs       # Environment variable deny patterns
+├── agent/                  # Agent lifecycle (init → configure → ready → tracing)
+├── native/                 # Native symbol hooks (frida-gum)
+├── python/                 # Python tracing (sys.setprofile, audit hooks, CPython FFI)
+├── nodejs/                 # Node.js tracing (V8 bytecode, codegen gate, N-API addon)
+│   └── addon/              # Addon loading: --require preload, embed/extract per Node version
+├── bash/                   # Bash tracing (eval_builtin, source_builtin, shell_execve hooks)
+├── exec/                   # Child process monitoring (posix_spawn/fork/exec hooks)
+└── tracing/                # Shared utilities: filters, event builder, timestamps, fork-safe mutex
+
+protocol/src/
+├── event.rs                # TraceEvent, EventType, Argument, NetworkInfo, RuntimeStack
+├── protocol.rs             # HookType, FilterSpec, HookConfig
+└── wire.rs                 # Length-prefixed binary codec
 ```
 
-The `agent/` crate is a thin cdylib wrapper:
+Each runtime module (`python/`, `nodejs/`, `bash/`) follows a standard pattern: `mod.rs` (facade), `detect.rs` (is_loaded, version), `hooks.rs` (callbacks), `format.rs` (arg formatting + NetworkInfo), `filters.rs` (filter management).
 
+## Policy System
+
+Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
+
+**Policy presets** are defined in `cli/src/policy/templates/mod.rs` using a `rules!` macro. Pattern groups are flat YAML lists (`credential_files.yaml`, `networking_symbols.yaml`, etc.) parsed via `parse_yaml_list()` into `OnceLock<Vec<String>>` statics, accessed via `macro_rules!` macros (e.g., `credential_files!()`).
+
+**Command taxonomy** (`taxonomy.rs`) classifies commands into categories (Safe, Build, Text, Package, FileOperation, Threat) from per-category YAML files. OS-specific files (`commands_threat_macos.yaml`, `commands_safe_linux.yaml`) are included via `#[cfg(target_os)]`.
+
+## Building and Testing
+
+```bash
+make build                  # Build (includes cargo fmt)
+make test                   # Run all tests (~1000+ across unit + integration)
+make addon-install && make build  # Full build with Node.js addon
 ```
-agent/src/
-└── lib.rs              # Constructor statics + `pub use malwi_intercept::*;`
-```
 
-### Runtime Module Convention
-
-Each language runtime module (`python/`, `nodejs/`, `bash/`, future runtimes) follows a standard convention for file naming and public API. The `native/` module is **infrastructure** consumed by all runtimes and does not follow this convention.
-
-**Standard files:**
-
-| File | Purpose | Required? |
-|------|---------|-----------|
-| `mod.rs` | Public API facade — re-exports, no logic | Required |
-| `detect.rs` | `is_loaded()`, `detected_version()` | Required |
-| `hooks.rs` | Hook callback functions | Required |
-| `format.rs` | Argument formatting + `NetworkInfo` extraction | If applicable |
-| `filters.rs` | FilterManager wrapper: `add_filter`, `check_filter`, `has_filters` | If applicable |
-| `ffi.rs` | FFI type definitions | If applicable |
-| `state.rs` | Initialization state machines | If applicable |
-
-**Standard public API (re-exported from `mod.rs`):**
+Integration tests live in `cli/tests/integration/` with per-runtime files (`python_tests.rs`, `nodejs_tests.rs`, `bash_tests.rs`, `native_tests.rs`). Tests use multi-version macros:
 
 ```rust
-// Required for all language runtimes
-pub fn is_loaded() -> bool;
-pub fn detected_version() -> Option<...>;  // Version type varies per runtime
-
-// Filter management (if the runtime has its own filter set)
-pub fn add_filter(pattern: &str, capture_stack: bool);
-pub fn check_filter(name: &str) -> (bool, bool);
-pub fn has_filters() -> bool;
-
-// EnvVar monitoring (if supported)
-pub fn enable_envvar_monitoring();
-pub fn is_envvar_monitoring_enabled() -> bool;
+skip_if_no_python!(python => { /* runs against ALL discovered Python versions */ });
+skip_if_no_node!(node => { /* runs against ALL discovered Node.js versions */ });
+skip_if_no_bash!(bash => { /* runs against ALL discovered Bash versions */ });
 ```
 
-## Key Types
+Test binaries auto-discovered from `binaries/` at project root (or `MALWI_TEST_BINARIES` env var).
+
+## Naming and Organization
+
+### Runtime Modules (`intercept/src/<runtime>/`)
+
+Each runtime module follows a standard file layout:
+
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Public facade — re-exports, no logic |
+| `detect.rs` | `is_loaded()`, `detected_version()` |
+| `hooks.rs` | Hook callback functions |
+| `format.rs` | Argument formatting + `NetworkInfo` extraction |
+| `filters.rs` | `add_filter`, `check_filter`, `has_filters` |
+| `ffi.rs` | FFI type definitions (if needed) |
+
+### YAML Data Files (`cli/src/policy/templates/`)
+
+Two kinds of YAML files, both flat `- item` lists with a two-line header:
+
+```yaml
+# Category name.
+# What the items in this list represent.
+- item1
+- item2
+```
+
+**Command taxonomy files** — named `commands_<category>.yaml`, with OS variants `commands_<category>_<os>.yaml`:
+`commands_safe.yaml`, `commands_safe_macos.yaml`, `commands_safe_linux.yaml`, `commands_threat.yaml`, etc.
+
+**Pattern group files** — descriptive snake_case: `credential_files.yaml`, `networking_symbols.yaml`, `network_functions_python.yaml`, `sensitive_envvars.yaml`, etc. Each gets a `macro_rules!` accessor (e.g., `credential_files!()`) backed by a `static OnceLock<Vec<String>>`.
+
+### Test Files and Naming
+
+Integration tests: `cli/tests/integration/<runtime>_tests.rs` — one file per runtime.
+
+Test function pattern: `test_<runtime>_<scenario>_<expected_outcome>`
+- Name after **behavior**, not internals
+- Policy tests include policy name: `test_air_gap_blocks_curl`
+- Use JSON output (`-f json`) + `serde_json::Value` for assertions in new tests
+
+### TraceEvent Function Names
+
+No runtime prefix — runtime is identified by `HookType`:
+
+| Runtime | Format | Example |
+|---------|--------|---------|
+| Python | `module.qualname` | `urllib.request.urlopen` |
+| Node.js | `module.function` | `fs.readFileSync` |
+| Native | bare C symbol | `connect`, `malloc` |
+| Bash/Exec | command basename | `curl`, `eval` |
+| EnvVar | variable name | `PATH`, `SECRET_KEY` |
+
+### Other Conventions
+
+- **FFI**: All C/Rust structs use `#[repr(C)]` with exact field order matching
+- **Node.js injection**: Parent prepares `--require` wrapper before spawn. `NODE_OPTIONS` is set for child-process propagation but is not the primary injection path
+- **CLI modules**: Descriptive snake_case (`agent_server.rs`, `embedded_agent.rs`, `shell_format.rs`)
+- **Policy modules**: Grouped by concern — engine (`engine.rs`, `compiler.rs`, `compiled.rs`), evaluation (`active.rs`, `network.rs`, `files.rs`, `commands.rs`), templates (`templates/mod.rs`, `taxonomy.rs`)
+
+## Key Type
 
 ```rust
-// protocol/src/event.rs
+// protocol/src/event.rs — the central data structure
 TraceEvent {
     hook_type: HookType,            // Native, Python, Nodejs, Exec, EnvVar, Bash
     event_type: EventType,          // Enter or Leave
-    function: String,               // e.g., "fs.readFileSync" or "urllib.request.urlopen"
-    arguments: Vec<Argument>,       // display + raw_value per argument
-    native_stack: Vec<usize>,       // Raw addresses, resolved CLI-side
-    runtime_stack: Option<RuntimeStack>,  // Python/JS stack frames
+    function: String,               // "fs.readFileSync", "urllib.request.urlopen", "curl"
+    arguments: Vec<Argument>,       // display string + raw_value per arg
     network_info: Option<NetworkInfo>,    // Structured host/port/url/protocol
-    source_file: Option<String>,    // Caller's source file
-    source_line: Option<u32>,       // Caller's source line
-    seq: u64,                       // Monotonic sequence (set by CLI)
-    source: Option<EventSource>,    // Agent PID (set by CLI)
-    category: Option<EventCategory>,// FunctionCall/NetworkAccess/etc. (set by CLI)
+    runtime_stack: Option<RuntimeStack>,  // Python/JS stack frames
+    native_stack: Vec<usize>,       // Raw addresses (resolved CLI-side)
+    source_file: Option<String>,    // Caller source file
+    source_line: Option<u32>,       // Caller source line
 }
 ```
-
-## Dependency Policy
-
-**Never add new crate dependencies without explicit user approval.** This project prioritizes a minimal dependency footprint to reduce supply-chain attack surface. Before proposing a new dependency:
-1. Explain why the functionality can't be achieved with `std` or existing deps
-2. State the crate name, its transitive dependency count, and maintenance status
-3. Wait for approval before modifying any `Cargo.toml`
-
-Current production deps (excluding internal crates): ~48 crates. Keep it minimal.
-
-## Maintaining This File
-
-**When you add, rename, move, or remove files, modules, or structural components, update the relevant sections of this CLAUDE.md to match.** This includes changes to directory layouts, module trees, key types, conventions, and any other documented structure. Outdated documentation causes confusion and wasted effort.
-
-## Conventions
-
-### Function Name Format
-
-Function names in `event.function` do **not** carry runtime prefixes. The runtime is identified by `event.hook_type`. Names are stored as:
-
-| Runtime | Format | Examples |
-|---------|--------|----------|
-| Python | `module.qualname` (or bare for `__main__`/builtins) | `urllib.request.urlopen`, `socket.connect`, `calculate`, `open` |
-| Node.js | `module.function` or bare | `fs.readFileSync`, `http.request`, `targetFunc` |
-| Native | Bare C symbol name | `socket`, `connect`, `malloc`, `open` |
-| Exec | Command basename | `curl`, `nc`, `sh` |
-| Bash | Command name | `echo`, `eval`, `source` |
-| EnvVar | Variable name | `PATH`, `HOME`, `SECRET_KEY` |
-
-CLI flags (`--py`, `--js`, `--cm`, `-s`) map to HookType for filtering.
-
-### Filter Patterns
-Glob patterns are used for function matching:
-- `fs.*` - All functions in fs module
-- `*.readFile` - readFile in any module
-- `http.request` - Exact match
-
-### CLI Help Text (cli/src/main.rs)
-The `--help` output for `malwi`, `malwi x`, `malwi m`, and `malwi p` is defined via `const` strings (`BANNER`, `HELP_OVERVIEW`, `X_AFTER_HELP`, `M_AFTER_HELP`, `P_AFTER_HELP`) and clap attributes in `cli/src/main.rs`. These texts include compatibility versions, policy names, usage examples, and policy section references. **When any of the following change, update the CLI help text to match:**
-- Supported runtime versions (Python, Node.js, Bash)
-- Supported platforms (macOS, Linux architectures)
-- Available policy presets (added/removed/renamed in `cli/src/policy/presets/`)
-- Policy section names or semantics
-- Auto-detection rules in `cli/src/policy/detect.rs`
-- Subcommand or argument additions/removals
-
-### FFI Alignment
-C/Rust FFI structs must use `#[repr(C)]` and match field order exactly.
-
-### Deferred Initialization
-Node.js addon may not be ready at agent load time. Use deferred init pattern:
-1. Build wrapper and set preload options in parent process before spawn
-2. Inject wrapper via Node argv (`--require=...`) for direct Node launches
-3. Also set `NODE_OPTIONS` for compatibility and child-process propagation
-4. Complete addon-specific FFI init when Node.js runtime is ready
-
-### Node Injection Timing (Important)
-- **Deterministic path:** parent prepares wrapper + injects `--require` before spawning Node
-- `NODE_OPTIONS` is still set, but should be treated as compatibility/propagation, not sole timing guarantee
-- In-process fallback that sets `NODE_OPTIONS` is too late for the current process (only affects descendants)
-- SIP/restricted binaries on macOS can strip preload env vars; resolve shebangs and avoid restricted launchers
-
-### Test Naming
-All test functions use snake_case and follow this structure:
-
-```
-test_<subject>_<scenario>_<expected_outcome>
-```
-
-- **Subject**: What's being tested — the module, function, or feature (e.g., `python_tracing`, `format_read`, `policy_block`)
-- **Scenario**: The specific input or condition (e.g., `glob_pattern`, `null_addr`, `with_t_flag`)
-- **Expected outcome**: What should happen (e.g., `is_benign`, `returns_network_info`, `blocked`, `allowed`)
-
-Guidelines:
-- Name tests after **behavior**, not implementation details (no internal engine numbers, stage names, etc.)
-- Include the expected outcome when the test verifies a specific result (e.g., `_is_suspicious`, `_returns_none`, `_blocked`)
-- For pure formatting tests, describe what's displayed: `test_format_read_displays_fd_buf_count`
-- For NetworkInfo extraction tests, use `_returns_network_info` suffix
-- Integration tests include the runtime prefix: `test_python_*`, `test_nodejs_*`, `test_bash_*`, `test_native_*`
-- Policy tests include the policy name: `test_pip_install_*`, `test_air_gap_*`, `test_default_security_*`
-
-## Node Addon (node-addon/)
-
-C++ N-API addon that wraps JavaScript functions:
-- `binding.cc` - Main addon code
-- `prebuilt/` - Pre-compiled .node files per Node version
-
-Build with: `cd node-addon && npm run build`
-
-## Common Issues
-
-### "Invalid UTF-8" from Node.js tracing
-Usually means FFI was called before addon was initialized. Check deferred init logic.
-
-### Vector reallocation in C++
-When building argument arrays, use `reserve()` before `push_back()` to prevent c_str() pointer invalidation.
-
-### Addon not loading
-Primary path is wrapper preload (`--require`) prepared before spawn.
-`Script::Run` direct loading exists only as a legacy fallback (`MALWI_DIRECT_LOAD=1`).
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `MALWI_URL` | TCP server URL for agent-CLI communication |
-| `MALWI_TEST_BINARIES` | Override path to test binaries (auto-detected from `binaries/` if present) |
+| `MALWI_URL` | TCP server URL for agent↔CLI communication |
+| `MALWI_TEST_BINARIES` | Path to multi-version test binaries |
 | `RUST_LOG=debug` | Enable debug logging |

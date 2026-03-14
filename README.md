@@ -8,7 +8,7 @@
 
 <div align="center">
 
-*Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. Campaigns like the Shai-Hulud npm attacks (2025) demonstrated how simple it is to misuse the trust in open-source software.* `malwi` blocks unauthorized network calls and file access in Python, Node.js and Bash at runtime, using curated supply-chain security policies or custom ones.
+*Advanced cyberattacks threaten critical infrastructure, digital sovereignty, and the freedom of societies. Campaigns like the Shai-Hulud npm attacks (2025) demonstrated how simple it is to misuse the trust in open-source software.* `malwi` hooks into any Node.js, Python, or Bash process to block unauthorized network calls, file access, and command execution at runtime. It injects a tracing agent into your existing runtime — no source changes or custom interpreters required.
 
 **Compatibility**: `Python 3.10-3.14` · `Node.js 21-25` · `Bash 4.4-5.3` · `macOS arm64, arm64e` ([⚠️ SIP](#macos-system-integrity-protection-sip)) and `Linux arm64, x86_64`
 
@@ -28,7 +28,7 @@ Or download a prebuilt binary from the [latest release](https://github.com/canva
 
 ## Quick Start
 
-A [policy](cli/src/policy/presets/) controls what `malwi` allows, denies, warns about, or logs:
+`malwi` wraps any command — it injects a tracing agent into the process and enforces a [policy](cli/src/policy/presets/) on network calls, file access, commands, and function calls:
 
 ```bash
 malwi x node -e "fetch('https://canvascomputing.org/api/data')"
