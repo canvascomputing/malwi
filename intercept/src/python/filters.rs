@@ -24,7 +24,11 @@ pub static PYTHON_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| {
             // This ensures fast scripts are traced before they complete
             if is_loaded() && !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) {
                 debug!("Eagerly registering profile hook after filter added");
-                register_profile_hook_with_gil();
+                if !register_profile_hook_with_gil() {
+                    // Eager registration failed (Python < 3.12 or not yet initialized).
+                    // Ensure audit hook + Py_RunMain hook are set up as fallback.
+                    super::start_audit_registration_task();
+                }
             }
         }),
     )

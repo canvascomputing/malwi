@@ -15,6 +15,30 @@ use log::debug;
 use crate::native;
 
 // =============================================================================
+// PYTHON C API STRUCT LAYOUTS
+// =============================================================================
+
+/// Minimal PyObject header — stable across CPython 3.10–3.14 (standard builds).
+/// In 3.13+ ob_refcnt is a union but same size (8 bytes), so ob_type stays at offset 8.
+#[repr(C)]
+pub(crate) struct PyObjectHead {
+    pub ob_refcnt: isize,
+    pub ob_type: *const c_void,
+}
+
+/// PyCFunctionObject layout — stable across CPython 3.10–3.14.
+/// Verified identical in Include/cpython/methodobject.h for all five versions.
+#[repr(C)]
+pub(crate) struct PyCFunctionObject {
+    pub ob_base: PyObjectHead,
+    pub m_ml: *const c_void,   // PyMethodDef*
+    pub m_self: *mut c_void,   // PyObject* — module obj for module funcs, instance for methods
+    pub m_module: *mut c_void, // PyObject* — __module__ attribute
+    pub m_weakreflist: *mut c_void,
+    pub vectorcall: *const c_void,
+}
+
+// =============================================================================
 // PYTHON C API TYPES
 // =============================================================================
 
@@ -177,6 +201,10 @@ pub struct PythonApi {
     pub tstate_next: Option<PyThreadState_NextFn>,
     pub tstate_get_interp: Option<PyThreadState_GetInterpreterFn>,
     pub tstate_unchecked_get: Option<PyThreadState_UncheckedGetFn>,
+    /// PyModule_Type — the type object for module instances.
+    /// Used to distinguish module-level C functions from instance methods.
+    /// Unlike PyExc_PermissionError (pointer-to-pointer), this IS the type object directly.
+    pub module_type: *const c_void,
 }
 
 // Safety: PythonApi function pointers and exc_permission_error are
@@ -311,6 +339,13 @@ pub fn resolve_python_api() -> Option<PythonApi> {
             .ok()
             .map(|addr| unsafe { std::mem::transmute(addr) });
 
+    // PyModule_Type is a PyTypeObject struct (not a pointer-to-pointer like PyExc_PermissionError),
+    // so the symbol address IS the type object address — no dereference needed.
+    let module_type: *const c_void = native::find_export(None, "PyModule_Type")
+        .ok()
+        .map(|addr| addr as *const c_void)
+        .unwrap_or(std::ptr::null());
+
     Some(PythonApi {
         frame_get_code,
         unicode_as_utf8,
@@ -337,6 +372,7 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         tstate_next,
         tstate_get_interp,
         tstate_unchecked_get,
+        module_type,
     })
 }
 

@@ -452,7 +452,7 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
 
 /// Actually perform the profile hook registration (called from audit hook context).
 /// GIL is already held when this is called.
-pub fn do_register_profile_hook() -> bool {
+pub fn register_profile_hook() -> bool {
     // Already registered?
     if PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) {
         return true;
@@ -587,7 +587,7 @@ pub fn register_profile_hook_with_gil() -> bool {
     debug!("Acquiring GIL for eager profile hook registration (using SetProfileAllThreads)");
     unsafe {
         let gil_state = gil_ensure();
-        let result = do_register_profile_hook();
+        let result = register_profile_hook();
         gil_release(gil_state);
         result
     }

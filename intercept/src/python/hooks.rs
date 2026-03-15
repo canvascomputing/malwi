@@ -202,24 +202,36 @@ pub unsafe fn try_resolve_pending() {
             continue;
         }
 
-        // Get the C function pointer and method flags
+        // Get the C function pointer — also validates this is a PyCFunctionObject.
+        // PyCFunction_GetFunction returns NULL if the object is not a PyCFunctionObject.
         let c_func_ptr = get_function(func_obj);
+        if c_func_ptr.is_null() {
+            if let Some(err_clear) = api.err_clear {
+                err_clear();
+            }
+            (api.py_decref)(func_obj);
+            continue;
+        }
+
         let method_flags = match api.pycfunction_get_flags {
             Some(get_flags) => get_flags(func_obj),
             None => 0,
         };
 
+        // Detect module function before decref.
+        // Safe: c_func_ptr was non-null, so func_obj is a valid PyCFunctionObject.
+        let is_module_function = check_is_module_function(func_obj, api);
+
         (api.py_decref)(func_obj);
 
-        if c_func_ptr.is_null() {
-            if let Some(err_clear) = api.err_clear {
-                err_clear();
-            }
-            continue;
-        }
-
         let addr = c_func_ptr as usize;
-        replace_interceptor(addr, &hook.display_name, hook.capture_stack, method_flags);
+        replace_interceptor(
+            addr,
+            &hook.display_name,
+            hook.capture_stack,
+            method_flags,
+            is_module_function,
+        );
 
         // Remove from pending (resolved)
         pending.swap_remove(i);
@@ -239,6 +251,11 @@ struct HookData {
     display_name: String,
     capture_stack: bool,
     method_flags: i32,
+    /// Whether this C function is a module-level function (vs instance method).
+    /// Detected at registration time by reading m_self from PyCFunctionObject struct
+    /// and checking Py_TYPE(m_self) == PyModule_Type (or m_self == NULL).
+    /// When true, the module object (self_obj) is stripped from arguments at call time.
+    is_module_function: bool,
     /// Pointer to the trampoline that calls through to the original function.
     /// Set by `Interceptor::replace()`.
     trampoline: *const c_void,
@@ -262,6 +279,7 @@ fn replace_interceptor(
     display_name: &str,
     capture_stack: bool,
     method_flags: i32,
+    is_module_function: bool,
 ) -> bool {
     let mut hooked = HOOKED_C_FUNCTIONS.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -283,6 +301,7 @@ fn replace_interceptor(
         display_name: display_name.to_string(),
         capture_stack,
         method_flags,
+        is_module_function,
         trampoline: std::ptr::null(),
     });
     let data_ptr = Box::into_raw(data);
@@ -330,6 +349,35 @@ fn replace_interceptor(
     false // Was not previously replaced
 }
 
+/// Check if a PyCFunctionObject is a module-level function by reading `m_self` directly.
+///
+/// Module-level C functions (like `socket.getaddrinfo`) have `m_self` set to the
+/// module object (Py_TYPE(m_self) == PyModule_Type). Instance methods (like
+/// `socket.socket.connect`) have `m_self` set to the instance. Unbound module
+/// functions have `m_self == NULL`.
+///
+/// This matches CPython's own pattern in methodobject.c:184 — read m->m_self
+/// directly from the struct, then PyModule_Check (i.e. ob_type == &PyModule_Type).
+///
+/// # Safety
+/// `func_obj` must be a valid PyCFunctionObject pointer. GIL must be held.
+unsafe fn check_is_module_function(func_obj: *mut c_void, api: &super::ffi::PythonApi) -> bool {
+    if func_obj.is_null() || api.module_type.is_null() {
+        return false;
+    }
+    // Read m_self directly from PyCFunctionObject struct layout.
+    // CPython does the same: methodobject.c:184 reads m->m_self.
+    let cfunc = func_obj as *const super::ffi::PyCFunctionObject;
+    let m_self = (*cfunc).m_self;
+    if m_self.is_null() {
+        // NULL m_self = unbound module function (CPython convention)
+        return true;
+    }
+    // Check Py_TYPE(m_self) == PyModule_Type — same as PyModule_Check.
+    let ob_type = (*(m_self as *const super::ffi::PyObjectHead)).ob_type;
+    ob_type == api.module_type
+}
+
 /// Ensure a C function (from PYTRACE_C_CALL arg) has a tracing replacement installed.
 ///
 /// If the function is already replaced, this is a no-op. Otherwise, installs
@@ -364,8 +412,18 @@ pub unsafe fn ensure_replaced(arg: *mut c_void, display_name: &str, capture_stac
         None => 0,
     };
 
+    // Detect module function: check __self__.__class__ == PyModule_Type.
+    // Safe here: we're in profile hook context, not a frida-gum replacement.
+    let is_module_function = check_is_module_function(arg, api);
+
     // Single-lock: check + replace in one call
-    replace_interceptor(addr, display_name, capture_stack, method_flags);
+    replace_interceptor(
+        addr,
+        display_name,
+        capture_stack,
+        method_flags,
+        is_module_function,
+    );
 }
 
 // =============================================================================
@@ -577,11 +635,12 @@ unsafe fn handle_replacement(
     let mut arguments =
         extract_args_from_params(self_obj, second_arg, third_arg, data.method_flags, api);
 
-    // Module-level C functions (e.g. _socket.getaddrinfo) have the module
-    // object as self_obj — not a meaningful argument. Instance methods (e.g.
-    // socket.socket.connect) have the instance, which formatters expect.
-    // Detect by dot count: "module.func" = 1 dot, "module.type.method" = 2+.
-    if !arguments.is_empty() && data.display_name.matches('.').count() <= 1 {
+    // Module-level C functions (e.g. _socket.getaddrinfo) receive the module
+    // object as self_obj. Instance methods (e.g. socket.socket.connect) receive
+    // the instance. Strip self_obj only for module functions.
+    // is_module_function was detected at registration time (safe Python context)
+    // by reading m_self from PyCFunctionObject and checking Py_TYPE == PyModule_Type.
+    if data.is_module_function && !arguments.is_empty() {
         arguments.remove(0);
     }
 

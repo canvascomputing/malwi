@@ -18,7 +18,7 @@ use super::ffi::{
 };
 use super::filters::{has_any_filters, matches_filter};
 use super::helpers::{cstr_to_string, extract_tuple_arguments, strip_python_repr_quotes};
-use super::profile::{do_register_profile_hook, set_thread_created, PROFILE_HOOK_REGISTERED};
+use super::profile::{register_profile_hook, set_thread_created, PROFILE_HOOK_REGISTERED};
 use super::stack::capture_current_python_stack;
 
 static AUDIT_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -205,7 +205,7 @@ unsafe extern "C" fn audit_hook(
 unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
     // Try to register profile hook if we have filters and haven't registered yet
     if !PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst) && has_any_filters() {
-        do_register_profile_hook();
+        register_profile_hook();
     }
 
     // Only log audit events that match registered filters

@@ -61,7 +61,7 @@ pub fn has_filters() -> bool {
 }
 
 /// Check if profile hook is registered.
-pub fn ensure_profile_hook_registered() -> bool {
+pub fn is_profile_hook_registered() -> bool {
     PROFILE_HOOK_REGISTERED.load(Ordering::SeqCst)
 }
 
