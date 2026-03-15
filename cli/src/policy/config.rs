@@ -79,7 +79,7 @@ pub(crate) fn reset_policies() -> Result<()> {
     let names = [
         "default",
         "npm-install",
-        "pip-install",
+        "pypi-install",
         "comfyui",
         "openclaw",
         "bash-install",
@@ -112,7 +112,7 @@ pub(crate) fn write_policy(name: &str) -> Result<()> {
     } else {
         super::templates::embedded_policy(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown policy '{}'. Available: default, npm-install, pip-install, comfyui, openclaw, bash-install, air-gap",
+                "Unknown policy '{}'. Available: default, npm-install, pypi-install, comfyui, openclaw, bash-install, air-gap",
                 name
             )
         })?
@@ -195,7 +195,7 @@ mod tests {
         let expected = [
             "default",
             "npm-install",
-            "pip-install",
+            "pypi-install",
             "comfyui",
             "openclaw",
             "bash-install",

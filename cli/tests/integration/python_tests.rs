@@ -1242,3 +1242,117 @@ fn test_python_c_function_module_self_not_in_args() {
         }
     });
 }
+
+// ============================================================================
+// uv auto-detection: pypi-install policy
+// ============================================================================
+
+#[test]
+fn test_uv_pip_install_auto_selects_pypi_install_policy() {
+    setup();
+
+    let uv = match which("uv") {
+        Some(p) => p,
+        None => {
+            println!("SKIPPED: uv not found in PATH");
+            return;
+        }
+    };
+
+    let pkg_dir = fixture("fixtures/malicious-uv-package");
+
+    // Create a temp dir for the install target
+    let tmp_dir = std::env::temp_dir().join(format!("malwi-uv-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+
+    // Run `malwi x uv pip install --system --target <tmp> ./package` —
+    // auto-detection should select pypi-install policy because program is "uv"
+    // and arg contains "install". Use --system to avoid venv requirement and
+    // --target to avoid polluting the real system Python.
+    let output = run_tracer_with_timeout(
+        &[
+            "x",
+            "-f",
+            "json",
+            "--",
+            uv.to_str().unwrap(),
+            "pip",
+            "install",
+            "--system",
+            "--no-deps",
+            "--target",
+            tmp_dir.to_str().unwrap(),
+            pkg_dir.to_str().unwrap(),
+        ],
+        std::time::Duration::from_secs(30),
+    );
+
+    // Clean up temp dir
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("stdout: {}", stdout);
+    println!("stderr: {}", stderr);
+
+    // Verify auto-detection selected pypi-install policy
+    assert!(
+        stderr.contains("pypi-install"),
+        "Expected 'pypi-install' in stderr (auto-detection). stderr: {}",
+        stderr
+    );
+
+    // Verify Python startup doesn't crash — no denied open() by the python deny
+    // category (which would break imports). File-category denials (e.g. ~/.ssh/**)
+    // are expected from the credential theft attack vectors.
+    let has_open_python_denied = stdout.lines().any(|line| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            v["name"].as_str() == Some("open")
+                && v["policy"]["decision"].as_str() == Some("denied")
+                && v["policy"]["category"].as_str() == Some("python")
+        } else {
+            false
+        }
+    });
+    assert!(
+        !has_open_python_denied,
+        "open() should not be denied by python deny section. stdout: {}",
+        stdout
+    );
+
+    // The pypi-install policy denies subprocess.* at the Python level, so child
+    // commands (curl, wget, nc, bash) never spawn. Verify the python deny section
+    // blocks subprocess calls from setup.py.
+    let has_subprocess_deny = stdout.lines().any(|line| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            v["source"].as_str() == Some("python")
+                && v["name"]
+                    .as_str()
+                    .map_or(false, |n| n.starts_with("subprocess."))
+                && v["policy"]["decision"].as_str() == Some("denied")
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_subprocess_deny,
+        "Expected subprocess.* to be denied by pypi-install python section. stdout: {}",
+        stdout
+    );
+
+    // Verify evil.com network connection is denied by network allow-list
+    let has_network_deny = stdout.lines().any(|line| {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            v["endpoint"]["host"].as_str() == Some("evil.com")
+                && v["policy"]["decision"].as_str() == Some("denied")
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_network_deny,
+        "Expected evil.com network access to be denied. stdout: {}",
+        stdout
+    );
+}

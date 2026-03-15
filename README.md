@@ -136,14 +136,17 @@ malwi x npm add lodash
 malwi x npm ci
 ```
 
-#### <a id="pip-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pip-install](https://pypi.org/)
+#### <a id="pypi-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pypi-install](https://pypi.org/)
 
-([policy](cli/src/policy/presets/pip-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths.
+([policy](cli/src/policy/presets/pypi-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths. Works with pip, pip3, and uv.
 
 ```bash
 malwi x pip install flask
 malwi x pip3 install requests
 malwi x python3 -m pip install six
+malwi x uv pip install flask
+malwi x uv add requests
+malwi x uv sync
 ```
 
 #### <a id="bash-execution"></a><img src="images/bash.png" alt="Bash" height="20"> [bash-execution](https://www.gnu.org/software/bash/)

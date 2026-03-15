@@ -57,7 +57,8 @@ EXAMPLES (policy mode — default):
   malwi x python3 app.py              Default security policy
   malwi x node server.js              Default security policy
   malwi x npm install express         Auto-detects npm-install policy
-  malwi x pip install flask           Auto-detects pip-install policy
+  malwi x pip install flask           Auto-detects pypi-install policy
+  malwi x uv add flask                Auto-detects pypi-install policy
   malwi x bash install.sh             Auto-detects bash-install policy
 
 EXAMPLES (custom policy):
@@ -86,7 +87,7 @@ POLICY SECTIONS (for YAML policy files):
 
 AUTO-DETECTED POLICIES:
   npm-install    npm install/add/ci — blocks reverse shells, exfiltration
-  pip-install    pip/pip3 install — blocks suspicious network/file access
+  pypi-install   pip/pip3/uv install — blocks suspicious network/file access
   bash-install   Shell scripts — blocks obfuscation, persistence, DNS exfil
   comfyui        ComfyUI — blocks ctypes, os.system, credential theft
   openclaw       OpenClaw — blocks eval, vm.runInContext, dangerous commands
@@ -112,7 +113,7 @@ EXAMPLES:
 AVAILABLE POLICIES:
   default        Observe-mode (warn/log, nothing blocked)
   npm-install    npm install/add/ci
-  pip-install    pip/pip3 install
+  pypi-install   pip/pip3/uv install
   bash-install   Shell install scripts
   comfyui        ComfyUI applications
   openclaw       OpenClaw gateway

@@ -192,7 +192,7 @@ When `malwi` detects a known command, it automatically applies a tailored policy
 | Command                              | Policy          |
 |--------------------------------------|-----------------|
 | `npm install`, `npm add`, `npm ci`   | `npm-install`   |
-| `pip install`, `pip3 install`        | `pip-install`   |
+| `pip install`, `pip3 install`, `uv pip install`, `uv add`, `uv sync` | `pypi-install`  |
 | `comfyui`, `python main.py` (ComfyUI)| `comfyui`      |
 | `openclaw`                           | `openclaw`      |
 

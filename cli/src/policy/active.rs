@@ -1081,20 +1081,20 @@ commands:
     }
 
     // =====================================================================
-    // pip-install: network passthrough tests (ActivePolicy level)
+    // pypi-install: network passthrough tests (ActivePolicy level)
     // =====================================================================
 
-    fn pip_install_policy() -> ActivePolicy {
+    fn pypi_install_policy() -> ActivePolicy {
         ActivePolicy::from_yaml(
-            &crate::policy::templates::embedded_policy("pip-install")
-                .expect("pip-install policy must exist"),
+            &crate::policy::templates::embedded_policy("pypi-install")
+                .expect("pypi-install policy must exist"),
         )
-        .expect("pip-install policy must parse")
+        .expect("pypi-install policy must parse")
     }
 
     #[test]
-    fn test_pip_install_native_socket_not_blocked() {
-        let policy = pip_install_policy();
+    fn test_pypi_install_native_socket_not_blocked() {
+        let policy = pypi_install_policy();
 
         // Native socket() should NOT be blocked — the policy has network allow rules
         // for pypi.org, so native networking symbols pass through to network phase.
@@ -1107,8 +1107,8 @@ commands:
     }
 
     #[test]
-    fn test_pip_install_native_connect_not_blocked() {
-        let policy = pip_install_policy();
+    fn test_pypi_install_native_connect_not_blocked() {
+        let policy = pypi_install_policy();
 
         let event = make_trace_event(HookType::Native, "connect", &[]);
         let disp = policy.evaluate_trace(&event);
@@ -1119,8 +1119,8 @@ commands:
     }
 
     #[test]
-    fn test_pip_install_native_getpass_warned() {
-        let policy = pip_install_policy();
+    fn test_pypi_install_native_getpass_warned() {
+        let policy = pypi_install_policy();
 
         // Non-networking symbols should be warned
         let event = make_trace_event(HookType::Native, "getpass", &[]);
@@ -1132,8 +1132,8 @@ commands:
     }
 
     #[test]
-    fn test_pip_install_python_socket_pypi_allowed() {
-        let policy = pip_install_policy();
+    fn test_pypi_install_python_socket_pypi_allowed() {
+        let policy = pypi_install_policy();
 
         // Python socket.create_connection to pypi.org should be allowed
         let net = malwi_intercept::NetworkInfo {
@@ -1155,8 +1155,8 @@ commands:
     }
 
     #[test]
-    fn test_pip_install_python_socket_evil_blocked() {
-        let policy = pip_install_policy();
+    fn test_pypi_install_python_socket_evil_blocked() {
+        let policy = pypi_install_policy();
 
         // Python socket.create_connection to evil.com should be blocked
         let net = malwi_intercept::NetworkInfo {

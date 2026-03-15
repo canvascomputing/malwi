@@ -42,11 +42,11 @@ static RULES: &[DetectionRule] = &[
         policy_name: "npm-install",
     },
     DetectionRule {
-        programs: &["pip", "pip3"],
-        command_patterns: &["install"],
+        programs: &["pip", "pip3", "uv"],
+        command_patterns: &["install", "add", "sync"],
         path_patterns: &[],
         extra_check: None,
-        policy_name: "pip-install",
+        policy_name: "pypi-install",
     },
     // ComfyUI via python — confirmed by path keyword or sibling file
     DetectionRule {
@@ -274,7 +274,7 @@ mod tests {
     fn test_detect_pip_install() {
         assert_eq!(
             detect_policy(&strs(&["pip", "install", "flask"])),
-            Some("pip-install"),
+            Some("pypi-install"),
         );
     }
 
@@ -282,7 +282,7 @@ mod tests {
     fn test_detect_pip3_install() {
         assert_eq!(
             detect_policy(&strs(&["/usr/bin/pip3", "install", "flask"])),
-            Some("pip-install"),
+            Some("pypi-install"),
         );
     }
 
@@ -290,7 +290,7 @@ mod tests {
     fn test_detect_python_m_pip_install() {
         assert_eq!(
             detect_policy(&strs(&["python3", "-m", "pip", "install", "six"])),
-            Some("pip-install"),
+            Some("pypi-install"),
         );
     }
 
@@ -360,11 +360,46 @@ mod tests {
     }
 
     #[test]
-    fn test_pip_install_comfyui_matches_pip() {
+    fn test_pypi_install_comfyui_matches_pip() {
         assert_eq!(
             detect_policy(&strs(&["pip", "install", "comfyui"])),
-            Some("pip-install"),
+            Some("pypi-install"),
         );
+    }
+
+    // =====================================================================
+    // uv detection tests
+    // =====================================================================
+
+    #[test]
+    fn test_detect_uv_pip_install() {
+        assert_eq!(
+            detect_policy(&strs(&["uv", "pip", "install", "flask"])),
+            Some("pypi-install"),
+        );
+    }
+
+    #[test]
+    fn test_detect_uv_add() {
+        assert_eq!(
+            detect_policy(&strs(&["uv", "add", "requests"])),
+            Some("pypi-install"),
+        );
+    }
+
+    #[test]
+    fn test_detect_uv_sync() {
+        assert_eq!(detect_policy(&strs(&["uv", "sync"])), Some("pypi-install"),);
+    }
+
+    #[test]
+    fn test_detect_uv_run_no_match() {
+        assert_eq!(detect_policy(&strs(&["uv", "run", "script.py"])), None);
+    }
+
+    #[test]
+    fn test_detect_uv_no_subcommand() {
+        assert_eq!(detect_policy(&strs(&["uv", "venv"])), None);
     }
 
     #[test]

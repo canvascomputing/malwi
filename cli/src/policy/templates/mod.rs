@@ -551,19 +551,28 @@ pub fn npm_install() -> PolicyFile {
     ])
 }
 
-/// pip install policy: restrict to pypi.org, block credential access.
-pub fn pip_install() -> PolicyFile {
+/// PyPI install policy: restrict to pypi.org, block credential access.
+/// Applies to pip, pip3, and uv package installers.
+pub fn pypi_install() -> PolicyFile {
     policy(vec![
         (
             "python",
             ad(AllowDenySection {
-                allow: rules![
-                    "socket.create_connection",
-                    "socket.socket.connect",
-                    "ssl.SSLSocket.connect",
-                    "urllib.request.urlopen",
-                    "http.client.HTTPConnection.request",
-                    "http.client.HTTPSConnection.request"
+                deny: rules![
+                    "os.system",
+                    "os.popen",
+                    "subprocess.call",
+                    "subprocess.Popen",
+                    "subprocess.run",
+                    "subprocess.check_call",
+                    "subprocess.check_output",
+                    "ctypes.CDLL",
+                    "ctypes.cdll.LoadLibrary",
+                    "ctypes.WinDLL",
+                    "getpass.getpass",
+                    "keyring.get_password",
+                    "keyring.set_password",
+                    "webbrowser.open"
                 ],
                 ..Default::default()
             }),
@@ -571,7 +580,7 @@ pub fn pip_install() -> PolicyFile {
         (
             "commands",
             ad(AllowDenySection {
-                allow: rules!["git"],
+                allow: rules!["git", "python*", "uv"],
                 deny: rules![
                     "curl", "wget", "ssh", "nc", "ncat", "*sudo*", "sh", "bash", "perl", "ruby"
                 ],
@@ -1424,7 +1433,7 @@ pub static DEFAULT_SECURITY_YAML: LazyLock<String> =
 pub fn embedded_policy(name: &str) -> Option<String> {
     let (policy, label) = match name {
         "npm-install" => (npm_install(), name),
-        "pip-install" => (pip_install(), name),
+        "pypi-install" => (pypi_install(), name),
         "comfyui" => (comfyui(), name),
         "openclaw" => (openclaw(), name),
         "bash-install" => (bash_install(), name),
@@ -1595,7 +1604,7 @@ mod tests {
         let presets: Vec<(&str, PolicyFile)> = vec![
             ("default", default_policy()),
             ("npm-install", npm_install()),
-            ("pip-install", pip_install()),
+            ("pypi-install", pypi_install()),
             ("comfyui", comfyui()),
             ("openclaw", openclaw()),
             ("bash-install", bash_install()),
@@ -2272,24 +2281,24 @@ mod tests {
     }
 
     // =====================================================================
-    // pip-install: base coverage tests
+    // pypi-install: base coverage tests
     // =====================================================================
 
-    fn pip_install_engine() -> PolicyEngine {
-        let yaml = embedded_policy("pip-install").expect("pip-install policy must exist");
+    fn pypi_install_engine() -> PolicyEngine {
+        let yaml = embedded_policy("pypi-install").expect("pypi-install policy must exist");
         PolicyEngine::from_yaml_with_includes(&yaml, &|name| embedded_policy(name))
-            .expect("pip-install policy must parse")
+            .expect("pypi-install policy must parse")
     }
 
     #[test]
-    fn test_pip_install_policy_parses() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_policy_parses() {
+        let engine = pypi_install_engine();
         assert!(engine.policy().iter_sections().count() > 0);
     }
 
     #[test]
-    fn test_pip_install_blocks_credential_files() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_blocks_credential_files() {
+        let engine = pypi_install_engine();
 
         let d = engine.evaluate_file("~/.ssh/id_rsa");
         assert_eq!(d.action, PolicyAction::Deny);
@@ -2302,8 +2311,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pip_install_blocks_env_secrets() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_blocks_env_secrets() {
+        let engine = pypi_install_engine();
 
         let d = engine.evaluate_envvar("AWS_SECRET_ACCESS_KEY");
         assert_eq!(d.action, PolicyAction::Deny);
@@ -2319,16 +2328,16 @@ mod tests {
     }
 
     #[test]
-    fn test_pip_install_blocks_native_getpass() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_blocks_native_getpass() {
+        let engine = pypi_install_engine();
 
         let d = engine.evaluate_native_function("getpass", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
     #[test]
-    fn test_pip_install_blocks_filesystem_bypass_symbols() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_blocks_filesystem_bypass_symbols() {
+        let engine = pypi_install_engine();
 
         for sym in &["symlink", "link", "syscall"] {
             let d = engine.evaluate_native_function(sym, &[]);
@@ -2337,14 +2346,98 @@ mod tests {
     }
 
     #[test]
-    fn test_pip_install_blocks_cloud_metadata() {
-        let engine = pip_install_engine();
+    fn test_pypi_install_blocks_cloud_metadata() {
+        let engine = pypi_install_engine();
 
         let d = engine.evaluate_http_url(
             "http://169.254.169.254/latest/meta-data/",
             "169.254.169.254/latest/meta-data/",
         );
         assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_pypi_network() {
+        let engine = pypi_install_engine();
+
+        let d =
+            engine.evaluate_http_url("https://pypi.org/simple/flask/", "pypi.org/simple/flask/");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_blocks_non_pypi_network() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_http_url("https://evil.com/exfil", "evil.com/exfil");
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_python_child_command() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_execution("python3");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_uv_child_command() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_execution("uv");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_git_command() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_execution("git");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_blocks_curl_command() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_execution("curl");
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_blocks_python_os_system() {
+        let engine = pypi_install_engine();
+        let d = engine.evaluate_function(Runtime::Python, "os.system", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_blocks_python_subprocess() {
+        let engine = pypi_install_engine();
+        let d = engine.evaluate_function(Runtime::Python, "subprocess.Popen", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_blocks_python_ctypes() {
+        let engine = pypi_install_engine();
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL", &[]);
+        assert_eq!(d.action, PolicyAction::Deny);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_python_open() {
+        let engine = pypi_install_engine();
+        let d = engine.evaluate_function(Runtime::Python, "open", &[]);
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_python_socket() {
+        let engine = pypi_install_engine();
+        let d = engine.evaluate_function(Runtime::Python, "socket.create_connection", &[]);
+        assert_eq!(d.action, PolicyAction::Allow);
     }
 
     // =====================================================================
