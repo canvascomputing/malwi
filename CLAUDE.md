@@ -35,6 +35,7 @@ The agent library is embedded in the CLI binary at compile time (`include_bytes!
 - **Never add crate dependencies without explicit user approval** (~48 production deps, keep minimal)
 - **Update this file** when adding, renaming, moving, or removing files/modules
 - **Update CLI help text** (`cli/src/main.rs` const strings) when changing runtime versions, policies, or subcommands
+- **When tests fail after your changes, assume your changes caused it.** Do not dismiss failures as pre-existing or flaky. Investigate the failure, read the test, and trace it back to your diff before considering other causes.
 
 ## Workspace Crates
 
