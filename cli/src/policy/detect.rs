@@ -207,7 +207,11 @@ pub(crate) fn ensure_auto_policy(name: &str) -> Result<PathBuf> {
     if !path.exists() {
         let yaml = super::templates::embedded_policy(name)
             .ok_or_else(|| anyhow::anyhow!("No embedded policy template for '{}'", name))?;
-        std::fs::write(&path, &yaml)?;
+        // Atomic write: temp file + rename prevents partial-read races
+        // when parallel processes call ensure_auto_policy concurrently.
+        let tmp = dir.join(format!(".{}.{}.yaml.tmp", name, std::process::id()));
+        std::fs::write(&tmp, &yaml)?;
+        std::fs::rename(&tmp, &path)?;
     }
 
     Ok(path)
