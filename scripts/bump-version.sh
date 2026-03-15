@@ -35,7 +35,9 @@ mv "$VERSION_FILE.tmp" "$VERSION_FILE"
 # Propagate to all files
 bash "$SCRIPT_DIR/sync-version.sh"
 
-# Tag
+# Commit and tag
+git -C "$ROOT" add -A
+git -C "$ROOT" commit -m "bump version"
 git -C "$ROOT" tag "v$NEW"
 echo ""
-echo "Tagged v$NEW"
+echo "Committed and tagged v$NEW"
