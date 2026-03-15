@@ -1200,3 +1200,45 @@ fn test_python_envvar_monitoring_allows_subprocess_run() {
         );
     });
 }
+
+#[test]
+fn test_python_c_function_module_self_not_in_args() {
+    setup();
+
+    skip_if_no_python!(python => {
+        let py_code = "import socket\ntry:\n socket.getaddrinfo('test.example.com', 443)\nexcept: pass";
+        let output = run_tracer(&[
+            "x",
+            "-f", "json",
+            "--py", "*.getaddrinfo",
+            "--",
+            python.to_str().unwrap(),
+            "-c", py_code,
+        ]);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let events: Vec<serde_json::Value> = stdout.lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        let gai_events: Vec<_> = events.iter()
+            .filter(|e| {
+                e["source"] == "python"
+                    && e["name"].as_str().map_or(false, |n| n.ends_with("getaddrinfo"))
+            })
+            .collect();
+
+        assert!(!gai_events.is_empty(), "Expected getaddrinfo event. stdout: {}", stdout);
+
+        // Every getaddrinfo event must have the hostname as args[0], not a module repr
+        for event in &gai_events {
+            let args = event["args"].as_array().expect("args should be array");
+            let first_arg = args[0].as_str().unwrap_or("");
+            assert!(
+                first_arg.contains("test.example.com"),
+                "First arg should contain hostname, not module self. args: {:?}",
+                args
+            );
+        }
+    });
+}

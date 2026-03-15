@@ -576,6 +576,15 @@ unsafe fn handle_replacement(
     // Extract arguments from direct C parameters
     let mut arguments =
         extract_args_from_params(self_obj, second_arg, third_arg, data.method_flags, api);
+
+    // Module-level C functions (e.g. _socket.getaddrinfo) have the module
+    // object as self_obj — not a meaningful argument. Instance methods (e.g.
+    // socket.socket.connect) have the instance, which formatters expect.
+    // Detect by dot count: "module.func" = 1 dot, "module.type.method" = 2+.
+    if !arguments.is_empty() && data.display_name.matches('.').count() <= 1 {
+        arguments.remove(0);
+    }
+
     let network_info = super::format::format_python_arguments(&data.display_name, &mut arguments);
 
     let event = crate::tracing::event::python_enter(&data.display_name)
