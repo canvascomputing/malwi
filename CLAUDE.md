@@ -95,6 +95,16 @@ Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`
 
 **Command taxonomy** (`taxonomy.rs`) classifies commands into categories (Safe, Build, Text, Package, FileOperation, Threat) from per-category YAML files. OS-specific files (`commands_threat_macos.yaml`, `commands_safe_linux.yaml`) are included via `#[cfg(target_os)]`.
 
+## Releasing
+
+```bash
+# Bump patch version (0.0.29 → 0.0.30), sync all files, and tag
+bash scripts/bump-version.sh
+
+# Set explicit version
+bash scripts/bump-version.sh 0.1.0
+```
+
 ## Building and Testing
 
 ```bash
