@@ -207,13 +207,19 @@ network:
     )
     .unwrap();
 
-    let key = SectionKey::global(Category::Domains);
+    let key = SectionKey::global(Category::Network);
     let section = policy.get_section(&key).unwrap();
 
-    // Pattern should match case-insensitively
-    assert!(section.deny_rules[0].pattern.matches("test.onion"));
-    assert!(section.deny_rules[0].pattern.matches("TEST.ONION"));
-    assert!(section.deny_rules[0].pattern.matches("Test.Onion"));
+    // Domain matcher should match case-insensitively
+    assert!(section.network_deny_rules[0]
+        .domain_pattern
+        .matches("test.onion"));
+    assert!(section.network_deny_rules[0]
+        .domain_pattern
+        .matches("TEST.ONION"));
+    assert!(section.network_deny_rules[0]
+        .domain_pattern
+        .matches("Test.Onion"));
 }
 
 #[test]
@@ -247,7 +253,7 @@ commands:
         .get_section(&SectionKey::for_runtime(Runtime::Node, Category::Functions))
         .is_some());
     assert!(policy
-        .get_section(&SectionKey::global(Category::Domains))
+        .get_section(&SectionKey::global(Category::Network))
         .is_some());
     assert!(policy
         .get_section(&SectionKey::global(Category::Execution))
@@ -375,19 +381,19 @@ network:
     )
     .unwrap();
 
-    // Child's allow and base's deny/warn should all be present in the network sections
-    let http_key = SectionKey::global(Category::Http);
-    let http = policy.get_section(&http_key).unwrap();
+    // Child's allow and base's deny/warn should all be present in the unified network section
+    let net_key = SectionKey::global(Category::Network);
+    let net = policy.get_section(&net_key).unwrap();
     // Child's allow
-    assert!(http
-        .allow_rules
+    assert!(net
+        .network_allow_rules
         .iter()
-        .any(|r| r.pattern.matches("registry.npmjs.org/foo")));
+        .any(|r| r.url_pattern.matches("registry.npmjs.org/foo")));
     // Base's deny
-    assert!(http
-        .deny_rules
+    assert!(net
+        .network_deny_rules
         .iter()
-        .any(|r| r.pattern.matches("169.254.169.254/latest")));
+        .any(|r| r.url_pattern.matches("169.254.169.254/latest")));
 }
 
 #[test]

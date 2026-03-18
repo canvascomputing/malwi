@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::compiled::{
-    Category, CompiledPolicy, CompiledRule, CompiledSection, Constraint, ConstraintKind,
-    EnforcementMode, Runtime, SectionKey,
+    Category, CompiledNetworkRule, CompiledPolicy, CompiledRule, CompiledSection, Constraint,
+    ConstraintKind, EnforcementMode, Runtime, SectionKey,
 };
 use super::error::{PolicyError, Result};
 use super::parser::{parse_section_name, AllowDenySection, PolicyFile, Rule, SectionValue};
@@ -55,27 +55,6 @@ fn mode_severity(mode: EnforcementMode) -> u8 {
         EnforcementMode::Review => 3,
         EnforcementMode::Block => 4,
         EnforcementMode::Hide => 5,
-    }
-}
-
-/// Pattern type determined by auto-classification of network patterns.
-enum PatternType {
-    /// Contains `/` — matches against full URL and schemeless URL.
-    Url,
-    /// Contains `:` (host:port format) — matches against endpoint strings.
-    Endpoint,
-    /// Bare hostname pattern — matches against domain names.
-    Domain,
-}
-
-/// Classify a network pattern into URL, endpoint, or domain.
-fn classify_network_pattern(pattern: &str) -> PatternType {
-    if pattern.contains('/') {
-        PatternType::Url
-    } else if pattern.contains(':') {
-        PatternType::Endpoint
-    } else {
-        PatternType::Domain
     }
 }
 
@@ -164,14 +143,13 @@ fn compile_section(name: &str, value: &SectionValue) -> Result<Vec<(SectionKey, 
     Ok(vec![(key, section)])
 }
 
-/// Compile a `network` section into multiple compiled sections (Http, Domains, Endpoints, Protocols).
+/// Compile a `network` section into a unified Network section + optional Protocols section.
 ///
-/// Patterns are auto-classified:
-/// - Contains `/` → URL pattern (Category::Http)
-/// - Contains `:` → endpoint pattern (Category::Endpoints)
-/// - Otherwise → domain pattern (Category::Domains)
+/// Every pattern is compiled for all three match modes (URL, domain, endpoint)
+/// so evaluation can try each pattern against all available event representations
+/// in a single pass — no classification heuristic needed.
 ///
-/// The `protocols` field becomes a Protocols section with allowed_values.
+/// The `protocols` field becomes a separate Protocols section with allowed_values.
 fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, CompiledSection)>> {
     let section = match value {
         SectionValue::AllowDeny(s) => s,
@@ -184,26 +162,13 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
         }
     };
 
-    let mut url_allow = vec![];
-    let mut url_deny = vec![];
-    let mut domain_allow = vec![];
-    let mut domain_deny = vec![];
-    let mut endpoint_allow = vec![];
-    let mut endpoint_deny = vec![];
+    let mut network_allow = vec![];
+    let mut network_deny = vec![];
 
-    // Allow rules
+    // Allow rules — compile each for all representations
     for rule in &section.allow {
         let pattern_str = rule_pattern(rule);
-        let mode = EnforcementMode::Block; // mode on allow rules is not used for matching
-        match classify_network_pattern(pattern_str) {
-            PatternType::Url => url_allow.push(compile_rule(rule, false, Category::Http, mode)?),
-            PatternType::Domain => {
-                domain_allow.push(compile_rule(rule, true, Category::Domains, mode)?)
-            }
-            PatternType::Endpoint => {
-                endpoint_allow.push(compile_rule(rule, false, Category::Endpoints, mode)?)
-            }
-        }
+        network_allow.push(compile_network_rule(pattern_str, EnforcementMode::Block)?);
     }
 
     // Deny-side rules: each key's rules get their respective mode
@@ -218,40 +183,23 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
     for (rules, mode) in deny_keys {
         for rule in *rules {
             let pattern_str = rule_pattern(rule);
-            match classify_network_pattern(pattern_str) {
-                PatternType::Url => {
-                    url_deny.push(compile_rule(rule, false, Category::Http, *mode)?)
-                }
-                PatternType::Domain => {
-                    domain_deny.push(compile_rule(rule, true, Category::Domains, *mode)?)
-                }
-                PatternType::Endpoint => {
-                    endpoint_deny.push(compile_rule(rule, false, Category::Endpoints, *mode)?)
-                }
-            }
+            network_deny.push(compile_network_rule(pattern_str, *mode)?);
         }
     }
 
     let mut results = vec![];
 
-    let subsections: [(Category, Vec<CompiledRule>, Vec<CompiledRule>); 3] = [
-        (Category::Http, url_allow, url_deny),
-        (Category::Domains, domain_allow, domain_deny),
-        (Category::Endpoints, endpoint_allow, endpoint_deny),
-    ];
-    for (category, allow_rules, deny_rules) in subsections {
-        if !allow_rules.is_empty() || !deny_rules.is_empty() {
-            let mode = strictest_mode_of_rules(&deny_rules, section);
-            results.push((
-                SectionKey::global(category),
-                CompiledSection {
-                    mode,
-                    allow_rules,
-                    deny_rules,
-                    ..Default::default()
-                },
-            ));
-        }
+    if !network_allow.is_empty() || !network_deny.is_empty() {
+        let mode = strictest_mode_of_network_rules(&network_deny, section);
+        results.push((
+            SectionKey::global(Category::Network),
+            CompiledSection {
+                mode,
+                network_allow_rules: network_allow,
+                network_deny_rules: network_deny,
+                ..Default::default()
+            },
+        ));
     }
 
     // Protocols from the special field
@@ -270,10 +218,20 @@ fn compile_network_section(value: &SectionValue) -> Result<Vec<(SectionKey, Comp
     Ok(results)
 }
 
-/// Compute the strictest mode among deny rules assigned to a sub-section,
+/// Compile a network pattern into a `CompiledNetworkRule` with three matchers.
+fn compile_network_rule(pattern: &str, mode: EnforcementMode) -> Result<CompiledNetworkRule> {
+    Ok(CompiledNetworkRule {
+        url_pattern: compile_url_pattern(pattern)?,
+        domain_pattern: compile_pattern_case_insensitive(pattern)?,
+        endpoint_pattern: compile_pattern(pattern)?,
+        mode,
+    })
+}
+
+/// Compute the strictest mode among network deny rules,
 /// falling back to `compute_section_mode` if there are no rules.
-fn strictest_mode_of_rules(
-    deny_rules: &[CompiledRule],
+fn strictest_mode_of_network_rules(
+    deny_rules: &[CompiledNetworkRule],
     section: &AllowDenySection,
 ) -> EnforcementMode {
     let mut strictest = None;
@@ -363,13 +321,9 @@ fn compile_rule(
     category: Category,
     mode: EnforcementMode,
 ) -> Result<CompiledRule> {
-    let is_url_category = category == Category::Http;
-
     match rule {
         Rule::Simple(pattern) => {
-            let compiled = if is_url_category {
-                compile_url_pattern(pattern)?
-            } else if case_insensitive {
+            let compiled = if case_insensitive {
                 compile_pattern_case_insensitive(pattern)?
             } else {
                 compile_pattern(pattern)?
@@ -380,9 +334,7 @@ fn compile_rule(
             pattern,
             constraints,
         } => {
-            let compiled_pattern = if is_url_category {
-                compile_url_pattern(pattern)?
-            } else if case_insensitive {
+            let compiled_pattern = if case_insensitive {
                 compile_pattern_case_insensitive(pattern)?
             } else {
                 compile_pattern(pattern)?
@@ -635,12 +587,16 @@ network:
     - "*.ONION"
 "#;
         let policy = compile_policy_yaml(yaml).unwrap();
-        let key = SectionKey::global(Category::Domains);
+        let key = SectionKey::global(Category::Network);
         let section = policy.get_section(&key).unwrap();
 
-        // Should match case-insensitively
-        assert!(section.deny_rules[0].pattern.matches("test.onion"));
-        assert!(section.deny_rules[0].pattern.matches("TEST.ONION"));
+        // Domain matcher should match case-insensitively
+        assert!(section.network_deny_rules[0]
+            .domain_pattern
+            .matches("test.onion"));
+        assert!(section.network_deny_rules[0]
+            .domain_pattern
+            .matches("TEST.ONION"));
     }
 
     #[test]
@@ -703,7 +659,7 @@ nodejs:
     }
 
     #[test]
-    fn test_compile_network_auto_classification() {
+    fn test_compile_network_unified_rules() {
         let yaml = r#"
 version: 1
 network:
@@ -719,25 +675,21 @@ network:
 "#;
         let policy = compile_policy_yaml(yaml).unwrap();
 
-        // URL patterns
-        let http_key = SectionKey::global(Category::Http);
-        let http = policy.get_section(&http_key).unwrap();
-        assert_eq!(http.allow_rules.len(), 1); // huggingface.co/**
-        assert_eq!(http.deny_rules.len(), 1); // *.evil.com/**
+        // All network patterns in a single unified section
+        let net_key = SectionKey::global(Category::Network);
+        let net = policy.get_section(&net_key).unwrap();
+        assert_eq!(net.network_allow_rules.len(), 3);
+        assert_eq!(net.network_deny_rules.len(), 3);
 
-        // Domain patterns
-        let domain_key = SectionKey::global(Category::Domains);
-        let domains = policy.get_section(&domain_key).unwrap();
-        assert_eq!(domains.allow_rules.len(), 1); // *.example.com
-        assert_eq!(domains.deny_rules.len(), 1); // *.onion
+        // Each rule has all 3 matchers compiled
+        let allow0 = &net.network_allow_rules[0]; // huggingface.co/**
+        assert!(allow0.url_pattern.matches("huggingface.co/model"));
+        assert!(!allow0.url_pattern.matches("evil.com/model"));
 
-        // Endpoint patterns
-        let ep_key = SectionKey::global(Category::Endpoints);
-        let eps = policy.get_section(&ep_key).unwrap();
-        assert_eq!(eps.allow_rules.len(), 1); // 127.0.0.1:*
-        assert_eq!(eps.deny_rules.len(), 1); // *:22
+        let deny2 = &net.network_deny_rules[2]; // *:22
+        assert!(deny2.endpoint_pattern.matches("example.com:22"));
 
-        // Protocols
+        // Protocols still separate
         let proto_key = SectionKey::global(Category::Protocols);
         let protos = policy.get_section(&proto_key).unwrap();
         assert_eq!(protos.allowed_values, vec!["https", "http"]);
@@ -757,15 +709,14 @@ network:
 "#;
         let policy = compile_policy_yaml(yaml).unwrap();
 
-        // URL allow from allow key
-        let http_key = SectionKey::global(Category::Http);
-        let http = policy.get_section(&http_key).unwrap();
-        assert_eq!(http.allow_rules.len(), 1);
+        let net_key = SectionKey::global(Category::Network);
+        let net = policy.get_section(&net_key).unwrap();
 
-        // Domain deny from warn key
-        let domain_key = SectionKey::global(Category::Domains);
-        let domains = policy.get_section(&domain_key).unwrap();
-        assert_eq!(domains.deny_rules.len(), 1);
-        assert_eq!(domains.deny_rules[0].mode, EnforcementMode::Warn);
+        // Allow from allow key
+        assert_eq!(net.network_allow_rules.len(), 1);
+
+        // Deny from warn key
+        assert_eq!(net.network_deny_rules.len(), 1);
+        assert_eq!(net.network_deny_rules[0].mode, EnforcementMode::Warn);
     }
 }

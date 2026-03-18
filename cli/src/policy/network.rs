@@ -49,14 +49,11 @@ impl ActivePolicy {
         disp
     }
 
-    /// Evaluate structured networking metadata against all networking policy sections.
+    /// Evaluate structured networking metadata against network policy.
     ///
-    /// Evaluation order (broadest → most specific), short-circuits on Block:
-    /// 1. Protocol — broadest constraint ("HTTPS only")
-    /// 2. URL match — full URL pattern
-    /// 3. Domain-only bridge — synthetic URL for socket events (no URL but domain known)
-    /// 4. Domain — hostname pattern
-    /// 5. Endpoint — domain:port or ip:port, most specific
+    /// Two-step evaluation:
+    /// 1. Protocol check — broadest constraint (orthogonal to patterns)
+    /// 2. Unified pattern match — every pattern tried against all representations
     fn evaluate_network_info(&self, info: &NetworkInfo) -> Option<EventDisposition> {
         let mut s: Option<EventDisposition> = None;
 
@@ -68,51 +65,30 @@ impl ActivePolicy {
             }
         }
 
-        // 2. HTTP URL rules (network section, URL patterns)
-        if let Some(ref url) = info.url {
-            if url.contains("://") {
-                if let Some(parsed) = ParsedUrl::parse(url) {
-                    merge_decision(
-                        &mut s,
-                        self.engine
-                            .evaluate_http_url(&parsed.full_url(), &parsed.url_without_scheme()),
-                    );
-                    if s.as_ref().is_some_and(|d| d.is_blocked()) {
-                        return s;
-                    }
-                }
-            }
-        }
+        // 2. Unified pattern match — build all available representations
+        let parsed = info
+            .url
+            .as_deref()
+            .filter(|u| u.contains("://"))
+            .and_then(ParsedUrl::parse);
+        let full_url = parsed.as_ref().map(|p| p.full_url());
+        let no_scheme_url = parsed.as_ref().map(|p| p.url_without_scheme());
 
-        // 3. Domain-only bridge: synthetic URL for socket events without a URL.
-        // Only uses domain (never constructs URLs from raw IPs — meaningless for
-        // hostname-based patterns like "pypi.org/**").
-        if info.url.is_none() {
-            if let Some(ref domain) = info.domain {
-                let synthetic = format!("{}/", domain);
-                merge_decision(
-                    &mut s,
-                    self.engine.evaluate_http_url(&synthetic, &synthetic),
-                );
-                if s.as_ref().is_some_and(|d| d.is_blocked()) {
-                    return s;
-                }
-            }
-        }
-
-        // 4. Domain — hostname pattern
-        if let Some(ref domain) = info.domain {
-            merge_decision(&mut s, self.engine.evaluate_domain(domain));
-        }
-        if s.as_ref().is_some_and(|d| d.is_blocked()) {
-            return s;
-        }
-
-        // 5. Endpoint — domain:port or ip:port, most specific
         let endpoint_host = info.domain.as_deref().or(info.ip.as_deref());
-        if let (Some(host), Some(port)) = (endpoint_host, info.port) {
-            merge_decision(&mut s, self.engine.evaluate_endpoint(host, port));
-        }
+        let endpoint = match (endpoint_host, info.port) {
+            (Some(host), Some(port)) => Some(format!("{}:{}", host, port)),
+            _ => None,
+        };
+
+        merge_decision(
+            &mut s,
+            self.engine.evaluate_network(
+                full_url.as_deref(),
+                no_scheme_url.as_deref(),
+                info.domain.as_deref(),
+                endpoint.as_deref(),
+            ),
+        );
 
         s
     }

@@ -117,7 +117,7 @@ fn include_resolver(name: &str) -> Option<String> {
     super::templates::embedded_policy(name)
 }
 
-/// Check if a policy engine has any network allow rules (Http, Domains, or Endpoints).
+/// Check if a policy engine has any network allow rules (unified Network section).
 /// Called once at construction time; result is cached on `ActivePolicy`.
 ///
 /// `Category::Protocols` is intentionally excluded: a protocol-only allowlist
@@ -127,13 +127,9 @@ fn include_resolver(name: &str) -> Option<String> {
 /// native socket passthrough.
 fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
     let policy = engine.policy();
-    for cat in &[Category::Http, Category::Domains, Category::Endpoints] {
-        let key = SectionKey::global(*cat);
-        if let Some(section) = policy.get_section(&key) {
-            if section.has_allow_rules() {
-                return true;
-            }
-        }
+    let key = SectionKey::global(Category::Network);
+    if let Some(section) = policy.get_section(&key) {
+        return section.has_allow_rules();
     }
     false
 }

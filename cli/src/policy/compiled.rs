@@ -2,6 +2,27 @@ use std::collections::HashMap;
 
 use super::pattern::CompiledPattern;
 
+/// A network rule compiled for matching against all representations.
+///
+/// Each source pattern (e.g. `"evil.com"`, `"*.evil.com/**"`, `"*:22"`) is
+/// compiled into three matchers so that evaluation can try each pattern
+/// against every available event representation (URL, domain, endpoint)
+/// in a single pass — no classification heuristic needed.
+#[derive(Debug)]
+pub struct CompiledNetworkRule {
+    /// For matching against URLs (full URL and schemeless URL).
+    /// Compiled with `compile_url_pattern` (case-insensitive, path-aware).
+    pub url_pattern: CompiledPattern,
+    /// For matching against domain names.
+    /// Compiled with `compile_pattern_case_insensitive`.
+    pub domain_pattern: CompiledPattern,
+    /// For matching against endpoint strings (host:port).
+    /// Compiled with `compile_pattern` (case-sensitive).
+    pub endpoint_pattern: CompiledPattern,
+    /// Per-rule enforcement mode.
+    pub mode: EnforcementMode,
+}
+
 /// A fully compiled policy ready for evaluation.
 #[derive(Debug)]
 pub struct CompiledPolicy {
@@ -63,6 +84,10 @@ pub struct CompiledSection {
     pub hide_rules: Vec<CompiledRule>,
     /// For list-based sections (e.g., protocols).
     pub allowed_values: Vec<String>,
+    /// Unified network allow rules (each compiled for URL/domain/endpoint matching).
+    pub network_allow_rules: Vec<CompiledNetworkRule>,
+    /// Unified network deny rules (each compiled for URL/domain/endpoint matching).
+    pub network_deny_rules: Vec<CompiledNetworkRule>,
 }
 
 impl Default for CompiledSection {
@@ -73,17 +98,21 @@ impl Default for CompiledSection {
             deny_rules: Vec::new(),
             hide_rules: Vec::new(),
             allowed_values: Vec::new(),
+            network_allow_rules: Vec::new(),
+            network_deny_rules: Vec::new(),
         }
     }
 }
 
 impl CompiledSection {
     pub fn has_allow_rules(&self) -> bool {
-        !self.allow_rules.is_empty() || !self.allowed_values.is_empty()
+        !self.allow_rules.is_empty()
+            || !self.allowed_values.is_empty()
+            || !self.network_allow_rules.is_empty()
     }
 
     pub fn has_deny_rules(&self) -> bool {
-        !self.deny_rules.is_empty()
+        !self.deny_rules.is_empty() || !self.network_deny_rules.is_empty()
     }
 
     pub fn has_hide_rules(&self) -> bool {
@@ -95,6 +124,8 @@ impl CompiledSection {
             && self.deny_rules.is_empty()
             && self.hide_rules.is_empty()
             && self.allowed_values.is_empty()
+            && self.network_allow_rules.is_empty()
+            && self.network_deny_rules.is_empty()
     }
 }
 
@@ -210,14 +241,10 @@ pub enum Category {
     Files,
     /// Environment variable access.
     EnvVars,
-    /// Network endpoints (host:port).
-    Endpoints,
-    /// Domain names.
-    Domains,
+    /// Unified network patterns (URL, domain, endpoint — all tried in single pass).
+    Network,
     /// Network protocols.
     Protocols,
-    /// HTTP-specific rules.
-    Http,
     /// Command execution.
     Execution,
 }
@@ -240,6 +267,6 @@ impl Category {
 
     /// Check if this category uses case-insensitive matching.
     pub fn is_case_insensitive(&self) -> bool {
-        matches!(self, Self::Domains | Self::Protocols)
+        matches!(self, Self::Protocols)
     }
 }

@@ -1,6 +1,6 @@
 use super::compiled::{
-    Category, CompiledPolicy, CompiledRule, Constraint, ConstraintKind, EnforcementMode, Runtime,
-    SectionKey,
+    Category, CompiledNetworkRule, CompiledPolicy, CompiledRule, Constraint, ConstraintKind,
+    EnforcementMode, Runtime, SectionKey,
 };
 use super::compiler::compile_policy_yaml;
 use super::error::Result;
@@ -109,17 +109,17 @@ impl PolicyEngine {
         self.evaluate_with_key(&key, path, &[])
     }
 
-    /// Evaluate a domain name.
+    /// Evaluate a domain name against network patterns.
+    /// Convenience wrapper around `evaluate_network`.
     pub fn evaluate_domain(&self, domain: &str) -> PolicyDecision {
-        let key = SectionKey::global(Category::Domains);
-        self.evaluate_with_key(&key, domain, &[])
+        self.evaluate_network(None, None, Some(domain), None)
     }
 
     /// Evaluate a network endpoint (host:port format).
+    /// Convenience wrapper around `evaluate_network`.
     pub fn evaluate_endpoint(&self, host: &str, port: u16) -> PolicyDecision {
-        let key = SectionKey::global(Category::Endpoints);
         let endpoint = format!("{}:{}", host, port);
-        self.evaluate_with_key(&key, &endpoint, &[])
+        self.evaluate_network(None, None, Some(host), Some(&endpoint))
     }
 
     /// Evaluate a protocol.
@@ -161,27 +161,32 @@ impl PolicyEngine {
         }
     }
 
-    /// Evaluate an HTTP URL against the global `network` section's URL patterns.
-    ///
-    /// The `full_url` should be the complete URL string (e.g., "https://example.com/path").
-    /// The `no_scheme_url` should be the URL without scheme (e.g., "example.com/path") for
-    /// matching patterns that omit the scheme.
+    /// Evaluate an HTTP URL against network patterns.
+    /// Convenience wrapper around `evaluate_network`.
     pub fn evaluate_http_url(&self, full_url: &str, no_scheme_url: &str) -> PolicyDecision {
-        let key = SectionKey::global(Category::Http);
-        self.evaluate_http_url_against_section(&key, full_url, no_scheme_url)
+        self.evaluate_network(Some(full_url), Some(no_scheme_url), None, None)
     }
 
-    /// Evaluate a URL against a specific http section.
-    /// Tries matching the full URL first, then the URL without scheme.
-    fn evaluate_http_url_against_section(
+    /// Unified network pattern evaluation.
+    ///
+    /// Tries every pattern against all available representations in a single pass.
+    /// No pattern classification needed — each `CompiledNetworkRule` has matchers
+    /// for URL, domain, and endpoint pre-compiled.
+    ///
+    /// When no URL is provided but a domain is, a synthetic `"domain/"` is also
+    /// tried against URL matchers (handles URL-style allow patterns like `"pypi.org/**"`
+    /// for socket events that only have a hostname).
+    pub fn evaluate_network(
         &self,
-        key: &SectionKey,
-        full_url: &str,
-        no_scheme_url: &str,
+        full_url: Option<&str>,
+        no_scheme_url: Option<&str>,
+        domain: Option<&str>,
+        endpoint: Option<&str>,
     ) -> PolicyDecision {
-        let section_name = format_section_name(key);
+        let key = SectionKey::global(Category::Network);
+        let section_name = "network".to_string();
 
-        let section = match self.policy.get_section(key) {
+        let section = match self.policy.get_section(&key) {
             Some(s) => s,
             None => {
                 return PolicyDecision {
@@ -211,60 +216,80 @@ impl PolicyEngine {
             };
         }
 
-        // Find the most specific matching rule from each side
-        let best_deny = find_best_url_match(&section.deny_rules, full_url, no_scheme_url);
-        let best_allow = find_best_url_match(&section.allow_rules, full_url, no_scheme_url);
-
-        match (best_allow, best_deny) {
-            (Some(allow), Some(deny)) => {
-                // Both matched — most specific wins, deny on tie
-                if pattern_specificity(&allow.pattern) > pattern_specificity(&deny.pattern) {
-                    return PolicyDecision {
-                        action: PolicyAction::Allow,
-                        matched_rule: Some(allow.pattern.original().to_string()),
-                        section: section_name,
-                        mode: allow.mode,
-                    };
-                } else {
-                    return PolicyDecision {
-                        action: PolicyAction::Deny,
-                        matched_rule: Some(deny.pattern.original().to_string()),
-                        section: section_name,
-                        mode: deny.mode,
-                    };
-                }
-            }
-            (Some(allow), None) => {
-                return PolicyDecision {
-                    action: PolicyAction::Allow,
-                    matched_rule: Some(allow.pattern.original().to_string()),
-                    section: section_name,
-                    mode: allow.mode,
-                };
-            }
-            (None, Some(deny)) => {
-                return PolicyDecision {
-                    action: PolicyAction::Deny,
-                    matched_rule: Some(deny.pattern.original().to_string()),
-                    section: section_name,
-                    mode: deny.mode,
-                };
-            }
-            (None, None) => {}
-        }
-
-        // No rules matched
-        let action = if section.has_allow_rules() {
-            PolicyAction::Deny
+        // Synthetic URL for socket events: "domain/" allows URL patterns to
+        // match domain-only events (e.g., "pypi.org/**" matches socket to pypi.org).
+        let synthetic_url = if full_url.is_none() {
+            domain.map(|d| format!("{}/", d))
         } else {
-            PolicyAction::Allow
+            None
         };
 
-        PolicyDecision {
-            action,
-            matched_rule: None,
-            section: section_name,
-            mode: section.mode,
+        let best_deny = find_best_network_match(
+            &section.network_deny_rules,
+            full_url,
+            no_scheme_url,
+            synthetic_url.as_deref(),
+            domain,
+            endpoint,
+        );
+        let best_allow = find_best_network_match(
+            &section.network_allow_rules,
+            full_url,
+            no_scheme_url,
+            synthetic_url.as_deref(),
+            domain,
+            endpoint,
+        );
+
+        match (best_allow, best_deny) {
+            (Some((allow, allow_spec)), Some((deny, deny_spec))) => {
+                // Both matched — most specific wins, deny on tie
+                if allow_spec > deny_spec {
+                    PolicyDecision {
+                        action: PolicyAction::Allow,
+                        matched_rule: Some(allow.url_pattern.original().to_string()),
+                        section: section_name,
+                        mode: allow.mode,
+                    }
+                } else {
+                    PolicyDecision {
+                        action: PolicyAction::Deny,
+                        matched_rule: Some(deny.url_pattern.original().to_string()),
+                        section: section_name,
+                        mode: deny.mode,
+                    }
+                }
+            }
+            (Some((allow, _)), None) => PolicyDecision {
+                action: PolicyAction::Allow,
+                matched_rule: Some(allow.url_pattern.original().to_string()),
+                section: section_name,
+                mode: allow.mode,
+            },
+            (None, Some((deny, _))) => PolicyDecision {
+                action: PolicyAction::Deny,
+                matched_rule: Some(deny.url_pattern.original().to_string()),
+                section: section_name,
+                mode: deny.mode,
+            },
+            (None, None) => {
+                // No rules matched — implicit action depends on allow rules.
+                // IP-only events (no domain, no URL) shouldn't be implicitly
+                // denied by hostname/URL allow rules — there's no hostname
+                // context to evaluate against.
+                let has_hostname_context = full_url.is_some() || domain.is_some();
+                let action = if section.has_allow_rules() && has_hostname_context {
+                    PolicyAction::Deny
+                } else {
+                    PolicyAction::Allow
+                };
+                PolicyDecision {
+                    action,
+                    matched_rule: None,
+                    section: section_name,
+                    mode: section.mode,
+                }
+            }
         }
     }
 
@@ -478,23 +503,68 @@ fn find_best_match<'a>(
     best
 }
 
-/// Find the most specific URL-matching rule. Checks both full URL and schemeless URL.
-fn find_best_url_match<'a>(
-    rules: &'a [CompiledRule],
-    full_url: &str,
-    no_scheme_url: &str,
-) -> Option<&'a CompiledRule> {
-    let mut best: Option<&CompiledRule> = None;
-    let mut best_spec = 0;
+/// Find the most specific network rule that matches any of the available representations.
+///
+/// Returns the best-matching rule and the specificity of its match. The specificity
+/// is taken from whichever matcher hit (url, domain, or endpoint), choosing the
+/// highest specificity across all representations for each rule.
+fn find_best_network_match<'a>(
+    rules: &'a [CompiledNetworkRule],
+    full_url: Option<&str>,
+    no_scheme_url: Option<&str>,
+    synthetic_url: Option<&str>,
+    domain: Option<&str>,
+    endpoint: Option<&str>,
+) -> Option<(&'a CompiledNetworkRule, usize)> {
+    let mut best: Option<(&CompiledNetworkRule, usize)> = None;
+
     for rule in rules {
-        if rule.pattern.matches(full_url) || rule.pattern.matches(no_scheme_url) {
-            let spec = pattern_specificity(&rule.pattern);
-            if best.is_none() || spec > best_spec {
-                best = Some(rule);
-                best_spec = spec;
+        let mut rule_spec = None;
+
+        // Try URL matchers
+        if let Some(url) = full_url {
+            if rule.url_pattern.matches(url) {
+                let s = pattern_specificity(&rule.url_pattern);
+                rule_spec = Some(rule_spec.map_or(s, |prev: usize| prev.max(s)));
+            }
+        }
+        if let Some(url) = no_scheme_url {
+            if rule.url_pattern.matches(url) {
+                let s = pattern_specificity(&rule.url_pattern);
+                rule_spec = Some(rule_spec.map_or(s, |prev: usize| prev.max(s)));
+            }
+        }
+        // Synthetic URL: "domain/" for socket events without a URL
+        if let Some(url) = synthetic_url {
+            if rule.url_pattern.matches(url) {
+                let s = pattern_specificity(&rule.url_pattern);
+                rule_spec = Some(rule_spec.map_or(s, |prev: usize| prev.max(s)));
+            }
+        }
+
+        // Try domain matcher
+        if let Some(d) = domain {
+            if rule.domain_pattern.matches(d) {
+                let s = pattern_specificity(&rule.domain_pattern);
+                rule_spec = Some(rule_spec.map_or(s, |prev: usize| prev.max(s)));
+            }
+        }
+
+        // Try endpoint matcher
+        if let Some(ep) = endpoint {
+            if rule.endpoint_pattern.matches(ep) {
+                let s = pattern_specificity(&rule.endpoint_pattern);
+                rule_spec = Some(rule_spec.map_or(s, |prev: usize| prev.max(s)));
+            }
+        }
+
+        if let Some(spec) = rule_spec {
+            if best.is_none() || spec > best.unwrap().1 {
+                best = Some((rule, spec));
             }
         }
     }
+
     best
 }
 
@@ -544,7 +614,7 @@ fn format_section_name(key: &SectionKey) -> String {
         Category::Functions => "symbols",
         Category::Files => "files",
         Category::EnvVars => "envvars",
-        Category::Http | Category::Endpoints | Category::Domains | Category::Protocols => "network",
+        Category::Network | Category::Protocols => "network",
         Category::Execution => "commands",
     };
 
