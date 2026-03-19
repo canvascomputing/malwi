@@ -65,6 +65,11 @@ pub struct ActivePolicy {
     /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
     /// Computed once at construction time since the policy is immutable after load.
     has_network_allow: bool,
+    /// Whether the policy has any network rules at all (deny, allow, warn, or protocols).
+    /// Broader than `has_network_allow` — true for deny-only policies like
+    /// `network: deny: ["*.evil.com"]`. Used to auto-emit native networking hooks
+    /// and to defer native networking symbols to the network phase.
+    has_network_rules: bool,
     /// Whether the policy has any commands allow rules (implicit deny for unlisted).
     /// When true, a wildcard `*` exec filter is emitted so the agent intercepts
     /// all spawned commands, letting the CLI evaluate them against the allowlist.
@@ -77,11 +82,13 @@ impl ActivePolicy {
     /// Create an ActivePolicy from a PolicyEngine, computing cached fields.
     pub(super) fn new(engine: PolicyEngine) -> Self {
         let has_network_allow = compute_has_network_allow(&engine);
+        let has_network_rules = compute_has_network_rules(&engine);
         let has_commands_allow = compute_has_commands_allow(&engine);
         Self {
             engine,
             fn_cache: Default::default(),
             has_network_allow,
+            has_network_rules,
             has_commands_allow,
         }
     }
@@ -132,6 +139,22 @@ fn compute_has_network_allow(engine: &PolicyEngine) -> bool {
         return section.has_allow_rules();
     }
     false
+}
+
+/// Check if a policy engine has any network rules at all (deny, allow, warn, or protocols).
+/// Broader than `compute_has_network_allow` — includes deny-only and protocol-only policies.
+/// Used to decide whether to auto-emit native networking symbol hooks.
+fn compute_has_network_rules(engine: &PolicyEngine) -> bool {
+    let policy = engine.policy();
+    let net_key = SectionKey::global(Category::Network);
+    let proto_key = SectionKey::global(Category::Protocols);
+    let has_net = policy
+        .get_section(&net_key)
+        .map_or(false, |s| !s.is_empty());
+    let has_proto = policy
+        .get_section(&proto_key)
+        .map_or(false, |s| !s.is_empty());
+    has_net || has_proto
 }
 
 /// Check if a policy engine has any commands allow rules (Execution category).
@@ -398,6 +421,16 @@ impl ActivePolicy {
             }
         }
 
+        // Auto-add native networking symbol hooks when any network rules exist.
+        // These produce NetworkInfo (domain, IP, port) that the network phase
+        // evaluates against deny/allow patterns. SeenSet prevents duplicates
+        // when symbols are already hooked from the symbols: section.
+        if self.has_network_rules {
+            for sym in super::templates::networking_symbols() {
+                emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
+            }
+        }
+
         configs
     }
 }
@@ -418,12 +451,13 @@ impl ActivePolicy {
         // Phase 1: Function-level (cached for Python/Node/Native)
         let mut disp = self.evaluate_function_phase(event);
 
-        // Native `connect`/`socket` are low-level plumbing. When the policy
-        // has network destination rules (like `network: allow: [pypi.org]`),
-        // don't block on the symbol name — let the network phase decide based
-        // on the actual destination.
+        // Native networking symbols are low-level plumbing. When the policy has
+        // network rules (deny, allow, or protocols), don't block on the symbol
+        // name — let the network phase decide based on the actual destination.
+        // Even socket() is deferred because blocking it prevents subsequent
+        // connect() calls from being evaluated by the network phase.
         let deferred_to_network = disp.is_blocked()
-            && self.has_network_allow
+            && self.has_network_rules
             && matches!(event.hook_type, HookType::Native)
             && is_networking_symbol(&event.function);
         if deferred_to_network {
@@ -437,7 +471,9 @@ impl ActivePolicy {
         // allow rules didn't match. If we only have a raw IP (no domain or
         // URL), that's expected — domain rules *can't* match a bare IP.
         // Don't block in that case; the event simply has no domain context.
-        if deferred_to_network && disp.is_blocked() {
+        // Only applies when allow rules exist (implicit deny); explicit deny
+        // rules (e.g. port-based) can match bare IPs and should stick.
+        if deferred_to_network && disp.is_blocked() && self.has_network_allow {
             if let Some(ref net) = event.network_info {
                 if !has_hostname_context(net) {
                     disp = EventDisposition::Display;
@@ -1174,9 +1210,9 @@ commands:
     }
 
     #[test]
-    fn test_no_network_allow_still_blocks_native_socket() {
-        // Policy denies socket but has NO network allow rules —
-        // native socket should remain blocked (no passthrough).
+    fn test_network_deny_defers_native_symbols_to_network_phase() {
+        // Policy denies socket + connect at symbol level, with network: deny rules.
+        // All networking symbols defer to the network phase.
         let policy = ActivePolicy::from_yaml(
             r#"
 version: 1
@@ -1191,11 +1227,61 @@ network:
         )
         .unwrap();
 
+        // socket() deferred → network phase has nothing to match → Display (not blocked)
+        let event = make_trace_event(HookType::Native, "socket", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "socket() should be deferred, not blocked (network phase has no info)"
+        );
+
+        // connect() to evil.com → deferred, network phase blocks
+        let net = malwi_intercept::NetworkInfo {
+            domain: Some("x.evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect to evil.com should be blocked by network deny"
+        );
+
+        // connect() to safe.com → deferred, network phase doesn't deny → Display
+        let net = malwi_intercept::NetworkInfo {
+            domain: Some("safe.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "connect to safe.com should not be blocked"
+        );
+    }
+
+    #[test]
+    fn test_no_network_rules_still_blocks_native_socket() {
+        // Policy denies socket but has NO network rules at all —
+        // no deferral, symbol-level block stands.
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - socket
+    - connect
+"#,
+        )
+        .unwrap();
+
         let event = make_trace_event(HookType::Native, "socket", &[]);
         let disp = policy.evaluate_trace(&event);
         assert!(
             disp.is_blocked(),
-            "native socket should be blocked when no network allow rules exist"
+            "native socket should be blocked when no network rules exist"
         );
     }
 
@@ -1266,14 +1352,15 @@ python:
 
         let configs = policy.derive_hook_configs(false);
 
-        // Only python should produce configs (network categories have no hooks)
+        // Python hooks from python: deny
         assert!(configs
             .iter()
             .any(|c| matches!(c.hook_type, HookType::Python) && c.symbol == "eval"));
-        // No native, exec, or envvar hooks
-        assert!(!configs
+        // Native networking hooks auto-emitted from network rules
+        assert!(configs
             .iter()
-            .any(|c| matches!(c.hook_type, HookType::Native)));
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "connect"));
+        // No exec or envvar hooks (no commands or envvars sections)
         assert!(!configs
             .iter()
             .any(|c| matches!(c.hook_type, HookType::Exec)));
@@ -1461,5 +1548,308 @@ envvars:
         // Only wildcard — no individual deny patterns (warn mode doesn't block)
         assert_eq!(envvar_configs.len(), 1);
         assert_eq!(envvar_configs[0].symbol, "*");
+    }
+
+    // =====================================================================
+    // has_network_rules construction tests
+    // =====================================================================
+
+    #[test]
+    fn test_has_network_rules_deny_only() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        assert!(
+            policy.has_network_rules,
+            "deny-only should set has_network_rules"
+        );
+        assert!(
+            !policy.has_network_allow,
+            "deny-only should not set has_network_allow"
+        );
+    }
+
+    #[test]
+    fn test_has_network_rules_allow_only() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        assert!(policy.has_network_rules);
+        assert!(policy.has_network_allow);
+    }
+
+    #[test]
+    fn test_has_network_rules_warn_only() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  warn:\n    - \"*.sketchy.io\"\n")
+                .unwrap();
+        assert!(
+            policy.has_network_rules,
+            "warn-only should set has_network_rules"
+        );
+        assert!(!policy.has_network_allow);
+    }
+
+    #[test]
+    fn test_has_network_rules_protocols_only() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  protocols: [https]\n").unwrap();
+        assert!(
+            policy.has_network_rules,
+            "protocols should set has_network_rules"
+        );
+        assert!(!policy.has_network_allow);
+    }
+
+    #[test]
+    fn test_has_network_rules_empty() {
+        let policy = ActivePolicy::from_yaml("version: 1\n").unwrap();
+        assert!(!policy.has_network_rules);
+        assert!(!policy.has_network_allow);
+    }
+
+    // =====================================================================
+    // Native networking hook auto-generation tests
+    // =====================================================================
+
+    #[test]
+    fn test_network_deny_auto_generates_native_hooks() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let has_connect = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "connect");
+        let has_getaddrinfo = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "getaddrinfo");
+        let has_sendto = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "sendto");
+        assert!(has_connect, "network deny should auto-add connect hook");
+        assert!(
+            has_getaddrinfo,
+            "network deny should auto-add getaddrinfo hook"
+        );
+        assert!(has_sendto, "network deny should auto-add sendto hook");
+    }
+
+    #[test]
+    fn test_network_allow_auto_generates_native_hooks() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let has_connect = configs
+            .iter()
+            .any(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "connect");
+        assert!(has_connect, "network allow should auto-add connect hook");
+    }
+
+    #[test]
+    fn test_network_rules_native_hooks_dedup() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  deny:
+    - "*"
+"#,
+        )
+        .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let connect_count = configs
+            .iter()
+            .filter(|c| matches!(c.hook_type, HookType::Native) && c.symbol == "connect")
+            .count();
+        assert_eq!(connect_count, 1, "connect should appear only once (dedup)");
+    }
+
+    #[test]
+    fn test_no_network_rules_no_native_hooks() {
+        let policy =
+            ActivePolicy::from_yaml("version: 1\nfiles:\n  deny:\n    - \"/etc/passwd\"\n")
+                .unwrap();
+        let configs = policy.derive_hook_configs(false);
+        let networking_syms: Vec<&str> = crate::policy::templates::networking_symbols()
+            .iter()
+            .map(|s: &String| s.as_str())
+            .collect();
+        let has_net_native = configs.iter().any(|c| {
+            matches!(c.hook_type, HookType::Native) && networking_syms.contains(&c.symbol.as_str())
+        });
+        assert!(
+            !has_net_native,
+            "no network rules should not emit native networking hooks"
+        );
+    }
+
+    // =====================================================================
+    // Deferred-to-network with deny-only tests
+    // =====================================================================
+
+    #[test]
+    fn test_deferred_deny_only_blocks_evil_connect() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  deny:
+    - "*.evil.com"
+"#,
+        )
+        .unwrap();
+
+        let net = malwi_intercept::NetworkInfo {
+            domain: Some("x.evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect to evil.com should be blocked via network phase"
+        );
+    }
+
+    #[test]
+    fn test_deferred_deny_only_allows_safe_connect() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  deny:
+    - "*.evil.com"
+"#,
+        )
+        .unwrap();
+
+        let net = malwi_intercept::NetworkInfo {
+            domain: Some("safe.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "connect to safe.com should not be blocked with deny-only"
+        );
+    }
+
+    #[test]
+    fn test_deferred_allow_blocks_unlisted_connect() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  allow:
+    - "pypi.org/**"
+"#,
+        )
+        .unwrap();
+
+        let net = malwi_intercept::NetworkInfo {
+            domain: Some("evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect to evil.com should be blocked by implicit deny"
+        );
+    }
+
+    #[test]
+    fn test_deferred_allow_ip_only_not_blocked() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  allow:
+    - "pypi.org/**"
+"#,
+        )
+        .unwrap();
+
+        let net = malwi_intercept::NetworkInfo {
+            ip: Some("93.184.216.34".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.is_blocked(),
+            "IP-only connect should not be blocked (no domain context)"
+        );
+    }
+
+    #[test]
+    fn test_no_deferral_without_network_rules() {
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+"#,
+        )
+        .unwrap();
+
+        let event = make_trace_event(HookType::Native, "connect", &[]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect should be blocked without network rules (no deferral)"
+        );
+    }
+
+    #[test]
+    fn test_deferred_deny_port_blocks_bare_ip() {
+        // Port-based deny should still work on bare IP (no hostname needed)
+        let policy = ActivePolicy::from_yaml(
+            r#"
+version: 1
+symbols:
+  deny:
+    - connect
+network:
+  deny:
+    - "*:22"
+"#,
+        )
+        .unwrap();
+
+        let net = malwi_intercept::NetworkInfo {
+            ip: Some("1.2.3.4".to_string()),
+            port: Some(22),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "port 22 should be blocked by port deny rule"
+        );
     }
 }

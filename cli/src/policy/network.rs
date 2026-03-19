@@ -4,7 +4,7 @@ use super::active::{
     decision_to_disposition, pick_stricter, pick_stricter_opt, ActivePolicy, EventDisposition,
 };
 use crate::policy::PolicyDecision;
-use malwi_intercept::{NetworkInfo, TraceEvent};
+use malwi_intercept::{HookType, NetworkInfo, TraceEvent};
 
 /// Evaluate a policy decision and merge into the running strictest disposition.
 fn merge_decision(strictest: &mut Option<EventDisposition>, decision: PolicyDecision) {
@@ -27,6 +27,30 @@ impl ActivePolicy {
         if let Some(ref net) = event.network_info {
             if let Some(net_disp) = self.evaluate_network_info(net) {
                 disp = pick_stricter(disp, net_disp);
+            }
+        } else if matches!(event.hook_type, HookType::Bash | HookType::Exec) {
+            // Command-aware extraction for known network tools (curl, nc, ssh, etc.)
+            // Handles bare domains (e.g., `curl evil.com`) that lack a scheme.
+            let args: Vec<&str> = event
+                .arguments
+                .iter()
+                .filter_map(|a| a.display.as_deref())
+                .collect();
+            if let Some(net) = extract_network_target_from_command(&event.function, &args) {
+                if let Some(net_disp) = self.evaluate_network_info(&net) {
+                    disp = pick_stricter(disp, net_disp);
+                }
+            }
+            // Still fall through to text-based URL extraction for URLs with schemes
+            if !disp.is_blocked() {
+                if let Some(http_disp) = self.evaluate_http_from_args(&args) {
+                    disp = pick_stricter(disp, http_disp);
+                }
+            }
+            if !disp.is_blocked() {
+                if let Some(net_disp) = self.evaluate_networking_from_args(&args) {
+                    disp = pick_stricter(disp, net_disp);
+                }
             }
         } else {
             // Fallback: text-based extraction from argument display strings
@@ -253,6 +277,272 @@ impl ParsedUrl {
         };
         format!("{}{}{}", self.host, port_suffix, self.path)
     }
+}
+
+/// Extract a network target from a known network command's arguments.
+///
+/// Recognizes bare hostnames and host:port patterns for commands like
+/// curl, wget, nc, ssh, dig, ping, telnet, etc. Returns structured
+/// NetworkInfo for evaluation against network policy rules.
+///
+/// Returns None for:
+/// - Unknown commands (not in the recognized list)
+/// - Arguments that contain `://` (handled by the existing URL extractor)
+/// - Commands with no parseable host argument
+fn extract_network_target_from_command(function: &str, args: &[&str]) -> Option<NetworkInfo> {
+    match function {
+        "curl" | "wget" | "aria2c" => extract_curl_wget_target(args),
+        "nc" | "ncat" | "netcat" | "socat" => extract_nc_target(args),
+        "ssh" | "scp" | "sftp" => extract_ssh_target(args),
+        "dig" | "nslookup" | "host" => extract_dns_target(args),
+        "ping" | "ping6" | "traceroute" | "tracepath" | "mtr" => extract_host_target(args),
+        "telnet" | "ftp" => extract_host_port_target(args),
+        _ => None,
+    }
+}
+
+/// Check if a string looks like a hostname or domain (not a flag, not a path).
+fn looks_like_host(s: &str) -> bool {
+    !s.starts_with('-')
+        && !s.starts_with('/')
+        && !s.contains("://")
+        && !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == ':')
+}
+
+/// Extract target from curl/wget/aria2c: first non-flag arg that looks like a host.
+fn extract_curl_wget_target(args: &[&str]) -> Option<NetworkInfo> {
+    // Skip argv[0] (command name)
+    let args = args.get(1..)?;
+    // Flags that take a value argument (skip next arg too)
+    const VALUE_FLAGS: &[&str] = &[
+        "-o",
+        "-O",
+        "--output",
+        "-d",
+        "--data",
+        "-H",
+        "--header",
+        "-u",
+        "--user",
+        "-e",
+        "--referer",
+        "-A",
+        "--user-agent",
+        "-b",
+        "--cookie",
+        "-c",
+        "--cookie-jar",
+        "-x",
+        "--proxy",
+        "-T",
+        "--upload-file",
+        "-w",
+        "--write-out",
+        "--connect-timeout",
+        "--max-time",
+        "-m",
+        "-X",
+        "--request",
+        "--retry",
+        "--retry-delay",
+        "-E",
+        "--cert",
+        "--key",
+        "--cacert",
+        "--capath",
+    ];
+    let mut skip_next = false;
+    for &arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            if VALUE_FLAGS.contains(&arg) {
+                skip_next = true;
+            }
+            continue;
+        }
+        // Skip args with :// — handled by the URL extractor
+        if arg.contains("://") {
+            return None;
+        }
+        // Strip path component for bare domains (e.g., "evil.com/path")
+        let host_part = arg.split('/').next().unwrap_or(arg);
+        if looks_like_host(host_part) {
+            return Some(NetworkInfo {
+                domain: Some(host_part.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+    None
+}
+
+/// Extract target from nc/ncat/netcat: `nc [-flags] host port`
+fn extract_nc_target(args: &[&str]) -> Option<NetworkInfo> {
+    let args = args.get(1..)?;
+    const VALUE_FLAGS: &[&str] = &["-w", "-p", "-s", "-I", "-O", "-q", "-X"];
+    let mut positional = Vec::new();
+    let mut skip_next = false;
+    for &arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            if VALUE_FLAGS.contains(&arg) {
+                skip_next = true;
+            }
+            continue;
+        }
+        positional.push(arg);
+    }
+    let host = positional.first()?;
+    if !looks_like_host(host) {
+        return None;
+    }
+    let port = positional.get(1).and_then(|p| p.parse::<u16>().ok());
+    Some(NetworkInfo {
+        domain: Some(host.to_string()),
+        port,
+        ..Default::default()
+    })
+}
+
+/// Extract target from ssh/scp/sftp: `ssh [-p port] [user@]host`
+fn extract_ssh_target(args: &[&str]) -> Option<NetworkInfo> {
+    let args = args.get(1..)?;
+    const VALUE_FLAGS: &[&str] = &[
+        "-p", "-l", "-i", "-F", "-o", "-J", "-L", "-R", "-D", "-W", "-b", "-c", "-m", "-S", "-w",
+        "-E",
+    ];
+    let mut port: Option<u16> = None;
+    let mut skip_next = false;
+    let mut host: Option<&str> = None;
+    for &arg in args {
+        if skip_next {
+            // Check if the skipped value is a port for -p
+            if port.is_none() {
+                if let Ok(p) = arg.parse::<u16>() {
+                    port = Some(p);
+                }
+            }
+            skip_next = false;
+            continue;
+        }
+        if arg == "-p" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            if VALUE_FLAGS.contains(&arg) {
+                skip_next = true;
+            }
+            continue;
+        }
+        if host.is_none() {
+            host = Some(arg);
+        }
+    }
+    let host = host?;
+    // Handle user@host
+    let hostname = host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host);
+    if !looks_like_host(hostname) {
+        return None;
+    }
+    Some(NetworkInfo {
+        domain: Some(hostname.to_string()),
+        port,
+        ..Default::default()
+    })
+}
+
+/// Extract target from dig/nslookup/host: first non-flag arg is the domain.
+fn extract_dns_target(args: &[&str]) -> Option<NetworkInfo> {
+    let args = args.get(1..)?;
+    for &arg in args {
+        if arg.starts_with('-') || arg.starts_with('@') {
+            continue;
+        }
+        // Skip DNS record types
+        if matches!(
+            arg.to_uppercase().as_str(),
+            "A" | "AAAA"
+                | "MX"
+                | "NS"
+                | "TXT"
+                | "CNAME"
+                | "SOA"
+                | "PTR"
+                | "SRV"
+                | "ANY"
+                | "IN"
+                | "CH"
+                | "HS"
+        ) {
+            continue;
+        }
+        if looks_like_host(arg) {
+            return Some(NetworkInfo {
+                domain: Some(arg.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+    None
+}
+
+/// Extract target from ping/traceroute: first non-flag arg is the host.
+fn extract_host_target(args: &[&str]) -> Option<NetworkInfo> {
+    let args = args.get(1..)?;
+    const VALUE_FLAGS: &[&str] = &[
+        "-c", "-i", "-s", "-t", "-W", "-w", "-I", "-m", "-Q", "-S", "-T", "-p", "-q", "-f",
+    ];
+    let mut skip_next = false;
+    for &arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            if VALUE_FLAGS.contains(&arg) {
+                skip_next = true;
+            }
+            continue;
+        }
+        if looks_like_host(arg) {
+            return Some(NetworkInfo {
+                domain: Some(arg.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+    None
+}
+
+/// Extract target from telnet/ftp: `telnet host [port]`
+fn extract_host_port_target(args: &[&str]) -> Option<NetworkInfo> {
+    let args = args.get(1..)?;
+    let mut positional = Vec::new();
+    for &arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        positional.push(arg);
+    }
+    let host = positional.first()?;
+    if !looks_like_host(host) {
+        return None;
+    }
+    let port = positional.get(1).and_then(|p| p.parse::<u16>().ok());
+    Some(NetworkInfo {
+        domain: Some(host.to_string()),
+        port,
+        ..Default::default()
+    })
 }
 
 /// Extract a URL from a formatted argument display string.
@@ -1122,6 +1412,374 @@ mod tests {
         assert!(
             disp.is_blocked(),
             "connect with domain=evil.com should be blocked when only pypi.org is allowed"
+        );
+    }
+
+    // =====================================================================
+    // Native event evaluation via NetworkInfo
+    // =====================================================================
+
+    #[test]
+    fn test_native_getaddrinfo_blocked_by_domain_deny() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            domain: Some("x.evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "getaddrinfo", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "getaddrinfo to evil.com should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_native_getaddrinfo_allowed_for_safe_domain() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            domain: Some("pypi.org".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "getaddrinfo", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.should_display(),
+            "getaddrinfo to pypi.org should be suppressed"
+        );
+    }
+
+    #[test]
+    fn test_native_connect_blocked_with_resolved_domain() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            ip: Some("1.2.3.4".to_string()),
+            domain: Some("x.evil.com".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "connect with resolved evil.com should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_native_connect_ip_only_not_blocked_by_domain_deny() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            ip: Some("1.2.3.4".to_string()),
+            port: Some(443),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.should_display(),
+            "IP-only connect should not be blocked by domain deny (no domain context)"
+        );
+    }
+
+    #[test]
+    fn test_native_connect_blocked_by_port_deny() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*:22\"\n").unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            ip: Some("1.2.3.4".to_string()),
+            port: Some(22),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "connect", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "port 22 should be blocked by port deny");
+    }
+
+    #[test]
+    fn test_native_sendto_blocked_by_domain_deny() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let net = NetworkInfo {
+            domain: Some("dns.evil.com".to_string()),
+            port: Some(53),
+            ..Default::default()
+        };
+        let event = make_trace_event_with_net(HookType::Native, "sendto", &[], net);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "sendto to dns.evil.com should be blocked"
+        );
+    }
+
+    // =====================================================================
+    // Bash command extraction unit tests
+    // =====================================================================
+
+    #[test]
+    fn test_extract_curl_bare_domain() {
+        let net = extract_network_target_from_command("curl", &["curl", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_curl_with_flags() {
+        let net =
+            extract_network_target_from_command("curl", &["curl", "-o", "out", "-L", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_curl_bare_domain_with_path() {
+        let net = extract_network_target_from_command("curl", &["curl", "evil.com/path"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_curl_url_passthrough() {
+        let net = extract_network_target_from_command("curl", &["curl", "https://evil.com"]);
+        assert!(
+            net.is_none(),
+            "URLs with :// should be handled by the URL extractor"
+        );
+    }
+
+    #[test]
+    fn test_extract_nc_host_port() {
+        let net = extract_network_target_from_command("nc", &["nc", "evil.com", "443"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+        assert_eq!(net.port, Some(443));
+    }
+
+    #[test]
+    fn test_extract_nc_with_flags() {
+        let net = extract_network_target_from_command("nc", &["nc", "-v", "-w5", "evil.com", "80"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+        assert_eq!(net.port, Some(80));
+    }
+
+    #[test]
+    fn test_extract_ssh_user_host() {
+        let net = extract_network_target_from_command("ssh", &["ssh", "user@evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_ssh_host_only() {
+        let net = extract_network_target_from_command("ssh", &["ssh", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_ssh_with_port() {
+        let net = extract_network_target_from_command("ssh", &["ssh", "-p", "2222", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+        assert_eq!(net.port, Some(2222));
+    }
+
+    #[test]
+    fn test_extract_dig_domain() {
+        let net = extract_network_target_from_command("dig", &["dig", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_dig_with_type() {
+        let net = extract_network_target_from_command("dig", &["dig", "evil.com", "MX"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_nslookup_domain() {
+        let net = extract_network_target_from_command("nslookup", &["nslookup", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_ping_host() {
+        let net = extract_network_target_from_command("ping", &["ping", "-c3", "evil.com"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+    }
+
+    #[test]
+    fn test_extract_telnet_host_port() {
+        let net = extract_network_target_from_command("telnet", &["telnet", "evil.com", "25"]);
+        let net = net.expect("should extract");
+        assert_eq!(net.domain.as_deref(), Some("evil.com"));
+        assert_eq!(net.port, Some(25));
+    }
+
+    #[test]
+    fn test_extract_unknown_command() {
+        let net = extract_network_target_from_command("ls", &["ls", "-la"]);
+        assert!(net.is_none());
+    }
+
+    #[test]
+    fn test_extract_no_args() {
+        let net = extract_network_target_from_command("curl", &["curl"]);
+        assert!(net.is_none());
+    }
+
+    // =====================================================================
+    // End-to-end Bash event evaluation
+    // =====================================================================
+
+    fn make_bash_event(cmd: &str, args: &[&str]) -> TraceEvent {
+        let mut all_args: Vec<&str> = vec![cmd];
+        all_args.extend_from_slice(args);
+        make_trace_event(HookType::Bash, cmd, &all_args)
+    }
+
+    #[test]
+    fn test_bash_curl_bare_domain_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("curl", &["dl.evil.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "curl dl.evil.com should be blocked");
+    }
+
+    #[test]
+    fn test_bash_curl_bare_domain_allowed() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("curl", &["safe.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            !disp.should_display(),
+            "curl safe.com should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_bash_nc_host_port_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("nc", &["c2.evil.com", "443"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "nc c2.evil.com 443 should be blocked");
+    }
+
+    #[test]
+    fn test_bash_nc_port_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*:22\"\n").unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("nc", &["safe.com", "22"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "nc to port 22 should be blocked");
+    }
+
+    #[test]
+    fn test_bash_ssh_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("ssh", &["user@srv.evil.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "ssh user@srv.evil.com should be blocked");
+    }
+
+    #[test]
+    fn test_bash_dig_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("dig", &["ns.evil.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(disp.is_blocked(), "dig ns.evil.com should be blocked");
+    }
+
+    #[test]
+    fn test_bash_curl_url_still_works() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  deny:\n    - \"*.evil.com\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("curl", &["https://dl.evil.com/path"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.should_display(),
+            "curl with URL should still be caught"
+        );
+    }
+
+    #[test]
+    fn test_bash_curl_allowed_domain() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("curl", &["pypi.org/simple/"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(!disp.is_blocked(), "curl pypi.org should be allowed");
+    }
+
+    #[test]
+    fn test_bash_curl_unlisted_domain_blocked() {
+        let engine =
+            PolicyEngine::from_yaml("version: 1\nnetwork:\n  allow:\n    - \"pypi.org/**\"\n")
+                .unwrap();
+        let policy = ActivePolicy::new(engine);
+
+        let event = make_bash_event("curl", &["evil.com"]);
+        let disp = policy.evaluate_trace(&event);
+        assert!(
+            disp.is_blocked(),
+            "curl evil.com should be blocked by implicit deny"
         );
     }
 }

