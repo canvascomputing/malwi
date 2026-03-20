@@ -33,20 +33,16 @@ fn test_nodejs_tracing_captures_user_defined_function() {
 
     skip_if_no_node!(node => {
         // Trace a simple function using --eval (works with Node.js 22+)
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function foo() { return 1; } foo();",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}", node.display(),
+            sq("function foo() { return 1; } foo();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -66,20 +62,17 @@ fn test_nodejs_tracing_captures_nested_function_calls() {
 
     skip_if_no_node!(node => {
         // Trace nested function calls using --eval
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function outer() { return inner(); } function inner() { return 42; } outer();",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("function outer() { return inner(); } function inner() { return 42; } outer();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -104,20 +97,17 @@ fn test_nodejs_tracing_glob_filter_limits_captured_functions() {
 
     skip_if_no_node!(node => {
         // Trace only functions matching "foo*" using --eval
-        let output = run_tracer(&[
-            "x",
-            "--js", "foo*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function foo() { return 1; } function bar() { return 2; } foo(); bar();",
-        ]);
+        let output = cmd(&format!(
+            "x --js foo* -- {} --eval {}",
+            node.display(),
+            sq("function foo() { return 1; } function bar() { return 2; } foo(); bar();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -147,20 +137,17 @@ fn test_nodejs_tracing_captures_recursive_function_calls() {
 
     skip_if_no_node!(node => {
         // Trace recursive function using --eval
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function factorial(n) { return n <= 1 ? 1 : n * factorial(n-1); } factorial(5);",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("function factorial(n) { return n <= 1 ? 1 : n * factorial(n-1); } factorial(5);")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -179,20 +166,17 @@ fn test_nodejs_tracing_captures_class_method_calls() {
 
     skip_if_no_node!(node => {
         // Trace class methods using --eval
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "class Foo { method() { return 1; } } new Foo().method();",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("class Foo { method() { return 1; } } new Foo().method();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -212,20 +196,17 @@ fn test_nodejs_tracing_captures_functions_from_file() {
     skip_if_no_node!(node => {
         // Run a simple inline test instead of the full test file
         // (test_v8.js may have issues with some Node.js versions)
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function testFunc() { return 42; } console.log('result:', testFunc());",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("function testFunc() { return 42; } console.log('result:', testFunc());")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -244,15 +225,13 @@ fn test_nodejs_tracing_suppresses_v8_native_trace_output() {
 
     skip_if_no_node!(node => {
         // Verify V8's native trace output is suppressed using --eval
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function foo() { return 1; } foo();",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("function foo() { return 1; } foo();")
+        )).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout_raw();
 
         // Should NOT have V8's native trace format (these indicate stdout pollution):
         // - "~+0(this=..." - interpreted function trace format from V8
@@ -275,20 +254,17 @@ fn test_nodejs_tracing_captures_functions_across_scripts() {
 
     skip_if_no_node!(node => {
         // Run with --eval (single script for Node.js 22 compatibility)
-        let output = run_tracer(&[
-            "x",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function first() { return 1; } function second() { return 2; } first(); second();",
-        ]);
+        let output = cmd(&format!(
+            "x --js * -- {} --eval {}",
+            node.display(),
+            sq("function first() { return 1; } function second() { return 2; } first(); second();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Process should exit successfully. stderr: {}",
             stderr
         );
@@ -316,21 +292,17 @@ fn test_nodejs_stack_trace_shows_call_chain_with_t_flag() {
 
     skip_if_no_node!(node => {
         // Trace with stack traces enabled (--st flag)
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--js", "innerFunc",
-            "--st",  // Enable stack traces
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function outerFunc() { innerFunc(); } function innerFunc() { return 42; } outerFunc();",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!(
+            "x --js innerFunc --st -- {} --eval {}",
+            node.display(),
+            sq("function outerFunc() { innerFunc(); } function innerFunc() { return 42; } outerFunc();")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -365,21 +337,17 @@ fn test_nodejs_stack_trace_captures_deep_call_hierarchy() {
 
     skip_if_no_node!(node => {
         // Deep call stack to verify stack trace captures multiple levels
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--js", "level3",
-            "--st",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function level1() { level2(); } function level2() { level3(); } function level3() { return 'deep'; } level1();",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!(
+            "x --js level3 --st -- {} --eval {}",
+            node.display(),
+            sq("function level1() { level2(); } function level2() { level3(); } function level3() { return 'deep'; } level1();")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 nested stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -409,21 +377,17 @@ fn test_nodejs_stack_trace_omitted_without_t_flag() {
 
     skip_if_no_node!(node => {
         // Trace WITHOUT --st flag - should NOT have stack traces
-        let output = run_tracer(&[
-            "x",
-            "--js", "myFunc",
-            // No --st flag
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function caller() { myFunc(); } function myFunc() { return 1; } caller();",
-        ]);
+        let output = cmd(&format!(
+            "x --js myFunc -- {} --eval {}",
+            node.display(),
+            sq("function caller() { myFunc(); } function myFunc() { return 1; } caller();")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 no stack test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -453,21 +417,17 @@ fn test_nodejs_bytecode_stack_trace_with_eval() {
         // This test specifically exercises the GC-safe stack capture in
         // replacement_trace_enter (bytecode.rs). If capture_stack is silenced
         // with an _ prefix, this test will fail.
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--js", "deepTarget",
-            "--st",  // Enable stack traces
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function topCaller() { middleFunc(); } function middleFunc() { deepTarget(); } function deepTarget() { return 99; } topCaller();",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!(
+            "x --js deepTarget --st -- {} --eval {}",
+            node.display(),
+            sq("function topCaller() { middleFunc(); } function middleFunc() { deepTarget(); } function deepTarget() { return 99; } topCaller();")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Bytecode stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -502,21 +462,17 @@ fn test_nodejs_addon_stack_trace_with_module_function() {
     skip_if_no_node!(node => {
         // Test the addon callback path for stack capture.
         // fs.readFileSync goes through the addon (N-API wrapped function).
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--js", "fs.readFileSync",
-            "--st",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "const fs = require('fs'); function myReader() { try { fs.readFileSync('/tmp/nonexistent-malwi-test'); } catch(e) {} } myReader();",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!(
+            "x --js fs.readFileSync --st -- {} --eval {}",
+            node.display(),
+            sq("const fs = require('fs'); function myReader() { try { fs.readFileSync('/tmp/nonexistent-malwi-test'); } catch(e) {} } myReader();")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Addon stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -547,24 +503,18 @@ fn test_nodejs_tracing_propagates_to_spawned_child_process() {
         // We trace specific JS spawn functions (not js:* which is too verbose)
         // and the unique simple_target_marker function in the spawned child
         // to verify tracing propagates correctly
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--js", "spawnSync",         // Trace the spawn function calls
-            "--js", "execFileSync",
-            "--js", "execSync",
-            "-s", "simple_target_marker",  // Unique to simple_target binary
-            "--",
-            node.to_str().unwrap(),
-            fixture("test_nodejs_child_x.js").to_str().unwrap(),
-        ], std::time::Duration::from_secs(20));
+        let output = cmd(&format!(
+            "x --js spawnSync --js execFileSync --js execSync -s simple_target_marker -- {} {}",
+            node.display(),
+            fixture("test_nodejs_child_x.js").display()
+        )).timeout(secs(20)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 child spawn test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -620,304 +570,244 @@ fn test_nodejs_tracing_propagates_to_spawned_child_process() {
 fn test_nodejs_arguments_display_strings_with_quotes() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js string test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Use module-based wrapping (addon) instead of V8 bytecode tracing to keep
+        // the tests stable across platforms/configurations.
+        let script_path = write_temp_node_module(
+            "string-quotes",
+            "exports.myFunc = function myFunc(a) { return 42; };",
+        );
+        let eval = require_call_eval(&script_path, "m.myFunc('hello')");
 
-    // Use module-based wrapping (addon) instead of V8 bytecode tracing to keep
-    // the tests stable across platforms/configurations.
-    let script_path = write_temp_node_module(
-        "string-quotes",
-        "exports.myFunc = function myFunc(a) { return 42; };",
-    );
-    let eval = require_call_eval(&script_path, "m.myFunc('hello')");
+        // Test that string arguments are displayed as quoted strings
+        let output = cmd(&format!(
+            "x --js myFunc -- {} --eval {}",
+            node.display(), sq(&eval)
+        )).run();
 
-    // Test that string arguments are displayed as quoted strings
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "myFunc",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        &eval,
-    ]);
+        let _ = std::fs::remove_file(&script_path);
 
-    let _ = std::fs::remove_file(&script_path);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 string argument test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 string argument test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced myFunc with the string argument "hello"
+        assert!(
+            stdout.contains("myFunc"),
+            "Expected js:myFunc trace. stdout: {}",
+            stdout
+        );
 
-    // Should have traced myFunc with the string argument "hello"
-    assert!(
-        stdout.contains("myFunc"),
-        "Expected js:myFunc trace. stdout: {}",
-        stdout
-    );
-
-    // The string argument should be displayed as "hello" (quoted)
-    assert!(
-        stdout.contains("\"hello\""),
-        "Expected string argument to be displayed as \"hello\". stdout: {}",
-        stdout
-    );
+        // The string argument should be displayed as "hello" (quoted)
+        assert!(
+            stdout.contains("\"hello\""),
+            "Expected string argument to be displayed as \"hello\". stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_nodejs_arguments_display_mixed_types_correctly() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js string test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let script_path = write_temp_node_module(
+            "mixed-args",
+            "exports.mixedArgs = function mixedArgs(str, num, bool) { return str; };",
+        );
+        let eval = require_call_eval(&script_path, "m.mixedArgs('test', 42, true)");
 
-    let script_path = write_temp_node_module(
-        "mixed-args",
-        "exports.mixedArgs = function mixedArgs(str, num, bool) { return str; };",
-    );
-    let eval = require_call_eval(&script_path, "m.mixedArgs('test', 42, true)");
+        // Test mixed argument types: string, number, boolean
+        let output = cmd(&format!(
+            "x --js mixedArgs -- {} --eval {}",
+            node.display(), sq(&eval)
+        )).run();
 
-    // Test mixed argument types: string, number, boolean
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "mixedArgs",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        &eval,
-    ]);
+        let _ = std::fs::remove_file(&script_path);
 
-    let _ = std::fs::remove_file(&script_path);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 mixed arguments test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 mixed arguments test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced mixedArgs
+        assert!(
+            stdout.contains("mixedArgs"),
+            "Expected js:mixedArgs trace. stdout: {}",
+            stdout
+        );
 
-    // Should have traced mixedArgs
-    assert!(
-        stdout.contains("mixedArgs"),
-        "Expected js:mixedArgs trace. stdout: {}",
-        stdout
-    );
+        // String argument should be quoted
+        assert!(
+            stdout.contains("\"test\""),
+            "Expected string argument \"test\". stdout: {}",
+            stdout
+        );
 
-    // String argument should be quoted
-    assert!(
-        stdout.contains("\"test\""),
-        "Expected string argument \"test\". stdout: {}",
-        stdout
-    );
+        // Number should be displayed as-is
+        assert!(
+            stdout.contains("42"),
+            "Expected number argument 42. stdout: {}",
+            stdout
+        );
 
-    // Number should be displayed as-is
-    assert!(
-        stdout.contains("42"),
-        "Expected number argument 42. stdout: {}",
-        stdout
-    );
-
-    // Boolean should be displayed
-    assert!(
-        stdout.contains("true"),
-        "Expected boolean argument true. stdout: {}",
-        stdout
-    );
+        // Boolean should be displayed
+        assert!(
+            stdout.contains("true"),
+            "Expected boolean argument true. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_nodejs_arguments_handle_empty_string_correctly() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js string test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let script_path = write_temp_node_module(
+            "empty-string",
+            "exports.emptyStr = function emptyStr(s) { return s.length; };",
+        );
+        let eval = require_call_eval(&script_path, "m.emptyStr('')");
 
-    let script_path = write_temp_node_module(
-        "empty-string",
-        "exports.emptyStr = function emptyStr(s) { return s.length; };",
-    );
-    let eval = require_call_eval(&script_path, "m.emptyStr('')");
+        // Test empty string argument
+        let output = cmd(&format!(
+            "x --js emptyStr -- {} --eval {}",
+            node.display(), sq(&eval)
+        )).run();
 
-    // Test empty string argument
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "emptyStr",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        &eval,
-    ]);
+        let _ = std::fs::remove_file(&script_path);
 
-    let _ = std::fs::remove_file(&script_path);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 empty string test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 empty string test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced emptyStr
+        assert!(
+            stdout.contains("emptyStr"),
+            "Expected js:emptyStr trace. stdout: {}",
+            stdout
+        );
 
-    // Should have traced emptyStr
-    assert!(
-        stdout.contains("emptyStr"),
-        "Expected js:emptyStr trace. stdout: {}",
-        stdout
-    );
-
-    // Empty string should be displayed as "" (or the trace completes successfully)
-    // Note: empty strings may or may not be captured depending on V8 internals
+        // Empty string should be displayed as "" (or the trace completes successfully)
+        // Note: empty strings may or may not be captured depending on V8 internals
+    });
 }
 
 #[test]
 fn test_nodejs_arguments_display_long_strings_visibly() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js string test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let script_path = write_temp_node_module(
+            "long-string",
+            "exports.processData = function processData(data) { return data.length; };",
+        );
+        let eval = require_call_eval(&script_path, "m.processData('hello world from javascript')");
 
-    let script_path = write_temp_node_module(
-        "long-string",
-        "exports.processData = function processData(data) { return data.length; };",
-    );
-    let eval = require_call_eval(&script_path, "m.processData('hello world from javascript')");
+        // Test longer string argument
+        let output = cmd(&format!(
+            "x --js processData -- {} --eval {}",
+            node.display(), sq(&eval)
+        )).run();
 
-    // Test longer string argument
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "processData",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        &eval,
-    ]);
+        let _ = std::fs::remove_file(&script_path);
 
-    let _ = std::fs::remove_file(&script_path);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 longer string test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 longer string test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced processData
+        assert!(
+            stdout.contains("processData"),
+            "Expected js:processData trace. stdout: {}",
+            stdout
+        );
 
-    // Should have traced processData
-    assert!(
-        stdout.contains("processData"),
-        "Expected js:processData trace. stdout: {}",
-        stdout
-    );
-
-    // The string content should be visible (may be truncated)
-    assert!(
-        stdout.contains("hello") || stdout.contains("world"),
-        "Expected string content to be visible. stdout: {}",
-        stdout
-    );
+        // The string content should be visible (may be truncated)
+        assert!(
+            stdout.contains("hello") || stdout.contains("world"),
+            "Expected string content to be visible. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_nodejs_arguments_show_values_not_type_names() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js string test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let script_path = write_temp_node_module(
+            "no-type-only",
+            "exports.checkStr = function checkStr(s) { return s; };",
+        );
+        let eval = require_call_eval(&script_path, "m.checkStr('actual_value')");
 
-    let script_path = write_temp_node_module(
-        "no-type-only",
-        "exports.checkStr = function checkStr(s) { return s; };",
-    );
-    let eval = require_call_eval(&script_path, "m.checkStr('actual_value')");
+        // Verify strings are NOT displayed as just "String" type name
+        let output = cmd(&format!(
+            "x --js checkStr -- {} --eval {}",
+            node.display(), sq(&eval)
+        )).run();
 
-    // Verify strings are NOT displayed as just "String" type name
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "checkStr",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        &eval,
-    ]);
+        let _ = std::fs::remove_file(&script_path);
 
-    let _ = std::fs::remove_file(&script_path);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 string type name test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 string type name test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced checkStr
+        assert!(
+            stdout.contains("checkStr"),
+            "Expected js:checkStr trace. stdout: {}",
+            stdout
+        );
 
-    // Should have traced checkStr
-    assert!(
-        stdout.contains("checkStr"),
-        "Expected js:checkStr trace. stdout: {}",
-        stdout
-    );
+        // Should show actual value, not just "String"
+        // Look for the actual string value in the output
+        let has_actual_value = stdout.contains("actual_value") || stdout.contains("\"actual_value\"");
 
-    // Should show actual value, not just "String"
-    // Look for the actual string value in the output
-    let has_actual_value = stdout.contains("actual_value") || stdout.contains("\"actual_value\"");
+        // Should NOT show generic "String" type name (unless it's part of value)
+        // The pattern "(String)" without any string content indicates type-only output
+        let shows_type_only = stdout.contains("(String)") && !stdout.contains("actual_value");
 
-    // Should NOT show generic "String" type name (unless it's part of value)
-    // The pattern "(String)" without any string content indicates type-only output
-    let shows_type_only = stdout.contains("(String)") && !stdout.contains("actual_value");
-
-    assert!(
-        has_actual_value || !shows_type_only,
-        "String should show actual value, not just type name. stdout: {}",
-        stdout
-    );
+        assert!(
+            has_actual_value || !shows_type_only,
+            "String should show actual value, not just type name. stdout: {}",
+            stdout
+        );
+    });
 }
 
 // ============================================================================
@@ -931,20 +821,17 @@ fn test_nodejs_hybrid_traces_functions_in_eval_code() {
     skip_if_no_node!(node => {
         // Test that user functions in --eval are traced (by v8_trace)
         // These have script path "[eval]" and should NOT be skipped
-        let output = run_tracer(&[
-            "x",
-            "--js", "myFunc",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "function myFunc(a) { return a * 2; } console.log(myFunc(42));",
-        ]);
+        let output = cmd(&format!(
+            "x --js myFunc -- {} --eval {}",
+            node.display(),
+            sq("function myFunc(a) { return a * 2; } console.log(myFunc(42));")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 hybrid eval test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -969,101 +856,78 @@ fn test_nodejs_hybrid_traces_functions_in_eval_code() {
 fn test_nodejs_hybrid_traces_module_functions_once() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js hybrid test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Test that module functions (like fs.existsSync) are traced only once
+        // The wrapper handles CommonJS module exports, v8_trace should skip them
+        let output = cmd(&format!(
+            r#"x --js fs.existsSync -- {} --eval "require('fs').existsSync('/tmp');""#,
+            node.display()
+        )).run();
 
-    // Test that module functions (like fs.existsSync) are traced only once
-    // The wrapper handles CommonJS module exports, v8_trace should skip them
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "fs.existsSync",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        "require('fs').existsSync('/tmp');",
-    ]);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 hybrid module test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 hybrid module test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced fs.existsSync
+        assert!(
+            stdout.contains("fs.existsSync"),
+            "Expected js:fs.existsSync to be traced. stdout: {}",
+            stdout
+        );
 
-    // Should have traced fs.existsSync
-    assert!(
-        stdout.contains("fs.existsSync"),
-        "Expected js:fs.existsSync to be traced. stdout: {}",
-        stdout
-    );
-
-    // Count how many times fs.existsSync appears - should be exactly 1 (no duplicates)
-    let fs_count = stdout.matches("fs.existsSync").count();
-    assert!(
-        fs_count == 1,
-        "Expected exactly 1 trace for fs.existsSync (no duplicates), got {}. stdout: {}",
-        fs_count,
-        stdout
-    );
+        // Count how many times fs.existsSync appears - should be exactly 1 (no duplicates)
+        let fs_count = stdout.matches("fs.existsSync").count();
+        assert!(
+            fs_count == 1,
+            "Expected exactly 1 trace for fs.existsSync (no duplicates), got {}. stdout: {}",
+            fs_count,
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_nodejs_hybrid_traces_esm_module_functions() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js hybrid test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Create an ESM test file
+        let test_script = "export function esmFunc() { return 1; }\nconsole.log(esmFunc());\n";
+        std::fs::write("/tmp/test_esm.mjs", test_script).unwrap();
 
-    // Create an ESM test file
-    let test_script = "export function esmFunc() { return 1; }\nconsole.log(esmFunc());\n";
-    std::fs::write("/tmp/test_esm.mjs", test_script).unwrap();
+        // Test that ESM functions (.mjs) are traced by v8_trace
+        // ESM bypasses the require hook, so v8_trace should NOT skip them
+        let output = cmd(&format!(
+            "x --js esmFunc -- {} /tmp/test_esm.mjs",
+            node.display()
+        )).run();
 
-    // Test that ESM functions (.mjs) are traced by v8_trace
-    // ESM bypasses the require hook, so v8_trace should NOT skip them
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "esmFunc",
-        "--",
-        node.to_str().unwrap(),
-        "/tmp/test_esm.mjs",
-    ]);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        // Clean up
+        let _ = std::fs::remove_file("/tmp/test_esm.mjs");
 
-    // Clean up
-    let _ = std::fs::remove_file("/tmp/test_esm.mjs");
+        assert!(
+            output.success(),
+            "V8 hybrid ESM test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 hybrid ESM test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Should have traced esmFunc
-    assert!(
-        stdout.contains("esmFunc"),
-        "Expected js:esmFunc to be traced from ESM module. stdout: {}",
-        stdout
-    );
+        // Should have traced esmFunc
+        assert!(
+            stdout.contains("esmFunc"),
+            "Expected js:esmFunc to be traced from ESM module. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
@@ -1078,24 +942,20 @@ fn test_nodejs_hybrid_traces_dynamic_import_functions() {
         // Use --input-type=module + top-level await to keep the event loop alive.
         // The old .then() approach failed on Node v21 because there are no active
         // handles to keep the event loop alive while the Promise resolves.
-        let output = run_tracer(&[
-            "x",
-            "--js", "dynamicFunc",
-            "--",
-            node.to_str().unwrap(),
-            "--input-type=module",
-            "--eval", "const m = await import('/tmp/test_dynamic_module.mjs'); console.log(m.dynamicFunc());",
-        ]);
+        let output = cmd(&format!(
+            "x --js dynamicFunc -- {} --input-type=module --eval {}",
+            node.display(),
+            sq("const m = await import('/tmp/test_dynamic_module.mjs'); console.log(m.dynamicFunc());")
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Clean up
         let _ = std::fs::remove_file("/tmp/test_dynamic_module.mjs");
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 hybrid dynamic import test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1113,71 +973,57 @@ fn test_nodejs_hybrid_traces_dynamic_import_functions() {
 fn test_nodejs_hybrid_no_duplicate_events_for_mixed_calls() {
     setup();
 
-    let node = match find_node() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Node.js hybrid test: node not found in PATH");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Test both user functions and module functions together
+        // userFn should be traced (from eval), fs.existsSync should be traced (by wrapper)
+        // No duplicates for either
+        let output = cmd(&format!(
+            r#"x --js userFn --js fs.existsSync -- {} --eval "function userFn() {{ return 1; }} userFn(); require('fs').existsSync('/');"#,
+            node.display()
+        )).run();
 
-    // Test both user functions and module functions together
-    // userFn should be traced (from eval), fs.existsSync should be traced (by wrapper)
-    // No duplicates for either
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "userFn",
-        "--js",
-        "fs.existsSync",
-        "--",
-        node.to_str().unwrap(),
-        "--eval",
-        "function userFn() { return 1; } userFn(); require('fs').existsSync('/');",
-    ]);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        assert!(
+            output.success(),
+            "V8 hybrid mixed test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "V8 hybrid mixed test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have traced userFn (from eval, by v8_trace)
+        assert!(
+            stdout.contains("userFn"),
+            "Expected js:userFn to be traced. stdout: {}",
+            stdout
+        );
 
-    // Should have traced userFn (from eval, by v8_trace)
-    assert!(
-        stdout.contains("userFn"),
-        "Expected js:userFn to be traced. stdout: {}",
-        stdout
-    );
+        // Should have traced fs.existsSync (by wrapper)
+        assert!(
+            stdout.contains("fs.existsSync"),
+            "Expected js:fs.existsSync to be traced. stdout: {}",
+            stdout
+        );
 
-    // Should have traced fs.existsSync (by wrapper)
-    assert!(
-        stdout.contains("fs.existsSync"),
-        "Expected js:fs.existsSync to be traced. stdout: {}",
-        stdout
-    );
+        // Count occurrences - each should appear exactly once
+        let user_fn_count = stdout.matches("userFn").count();
+        let fs_count = stdout.matches("fs.existsSync").count();
 
-    // Count occurrences - each should appear exactly once
-    let user_fn_count = stdout.matches("userFn").count();
-    let fs_count = stdout.matches("fs.existsSync").count();
+        assert!(
+            user_fn_count == 1,
+            "Expected exactly 1 trace for userFn, got {}. stdout: {}",
+            user_fn_count,
+            stdout
+        );
 
-    assert!(
-        user_fn_count == 1,
-        "Expected exactly 1 trace for userFn, got {}. stdout: {}",
-        user_fn_count,
-        stdout
-    );
-
-    assert!(
-        fs_count == 1,
-        "Expected exactly 1 trace for fs.existsSync, got {}. stdout: {}",
-        fs_count,
-        stdout
-    );
+        assert!(
+            fs_count == 1,
+            "Expected exactly 1 trace for fs.existsSync, got {}. stdout: {}",
+            fs_count,
+            stdout
+        );
+    });
 }
 
 // ============================================================================
@@ -1190,20 +1036,16 @@ fn test_nodejs_module_glob_pattern_matches_fs_functions() {
 
     skip_if_no_node!(node => {
         // Glob patterns should match module functions via require hook
-        let output = run_tracer(&[
-            "x",
-            "--js", "fs.*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "const fs = require('fs'); fs.readFileSync('/etc/passwd', 'utf8');",
-        ]);
+        let output = cmd(&format!(
+            r#"x --js fs.* -- {} --eval "const fs = require('fs'); fs.readFileSync('/etc/passwd', 'utf8');""#,
+            node.display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Module glob filter test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1228,22 +1070,18 @@ fn test_nodejs_module_exact_filter_matches_single_function() {
 
     skip_if_no_node!(node => {
         // Specific filters should match module functions via require hook
-        let output = run_tracer(&[
-            "x",
-            "--js", "fs.writeFileSync",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "const fs = require('fs'); fs.writeFileSync('/tmp/malwi_test.txt', 'test data');",
-        ]);
+        let output = cmd(&format!(
+            r#"x --js fs.writeFileSync -- {} --eval "const fs = require('fs'); fs.writeFileSync('/tmp/malwi_test.txt', 'test data');""#,
+            node.display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         let _ = std::fs::remove_file("/tmp/malwi_test.txt");
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Module specific filter test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1270,20 +1108,16 @@ fn test_nodejs_module_traces_non_preloaded_modules() {
         // Test that modules NOT in any pre-load list are still traced.
         // The require hook should intercept all module loads.
         // Using 'os' module which was never pre-loaded.
-        let output = run_tracer(&[
-            "x",
-            "--js", "os.*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "const os = require('os'); console.log(os.hostname());",
-        ]);
+        let output = cmd(&format!(
+            r#"x --js os.* -- {} --eval "const os = require('os'); console.log(os.hostname());""#,
+            node.display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Non-preloaded module test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1330,23 +1164,13 @@ fn test_npm_postinstall_exec_tracing() {
     // Use "npm run postinstall" instead of "npm install" because npm v10+
     // skips lifecycle scripts when the install tree is already up-to-date
     // (no dependencies to install). "npm run" explicitly runs the script.
-    let output = run_tracer_with_timeout_in_dir(
-        &[
-            "x",
-            "-c",
-            "curl",
-            "--",
-            npm.to_str().unwrap(),
-            "run",
-            "postinstall",
-        ],
-        std::time::Duration::from_secs(30),
-        &pkg_dir,
-    );
+    let output = cmd(&format!("x -c curl -- {} run postinstall", npm.display()))
+        .dir(&pkg_dir)
+        .timeout(secs(30))
+        .run();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // The postinstall script runs "curl --version"
     assert!(
@@ -1400,23 +1224,13 @@ fn test_npm_postinstall_exec_tracing_macos() {
 
     // Run npm postinstall with exec tracing
     // npm's postinstall script runs "curl --version" via sh
-    let output = run_tracer_with_timeout_in_dir(
-        &[
-            "x",
-            "-c",
-            "sh", // npm runs scripts via sh -c
-            "--",
-            npm.to_str().unwrap(),
-            "run",
-            "postinstall",
-        ],
-        std::time::Duration::from_secs(30),
-        &pkg_dir,
-    );
+    let output = cmd(&format!("x -c sh -- {} run postinstall", npm.display()))
+        .dir(&pkg_dir)
+        .timeout(secs(30))
+        .run();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // npm runs postinstall scripts via "sh -c '<command>'"
     assert!(
@@ -1445,20 +1259,13 @@ fn test_nodejs_object_args_show_properties() {
         // Use http.request which receives an options object and goes through
         // the addon wrapper path. The request will fail (no server) but the
         // trace event should still capture the argument.
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--js", "http.request",
-                "--",
-                node.to_str().unwrap(),
-                "-e", "try { require('http').request({hostname: 'localhost', port: 19999, method: 'GET'}); } catch(e) {}",
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            r#"x --js http.request -- {} -e "try {{ require('http').request({{hostname: 'localhost', port: 19999, method: 'GET'}}); }} catch(e) {{}}""#,
+            node.display()
+        )).timeout(secs(10)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // If addon-wrapped tracing captured the call, verify formatting
         if stdout.contains("http.request") {
@@ -1486,17 +1293,13 @@ fn test_nodejs_mixed_array_shows_elements() {
         // Use a user-defined function with a mixed-type array argument.
         // The bytecode path can only show type-level info (Smi, String, etc.)
         // rather than expanded values.
-        let output = run_tracer(&[
-            "x",
-            "--js", "processList",
-            "--",
-            node.to_str().unwrap(),
-            "-e", "function processList(arr) { return arr; } processList([1, 'two', true]);",
-        ]);
+        let output = cmd(&format!(
+            r#"x --js processList -- {} -e "function processList(arr) {{ return arr; }} processList([1, 'two', true]);""#,
+            node.display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Verify function call is captured
         if stdout.contains("processList") {
@@ -1560,12 +1363,7 @@ fn test_nodejs_wrapping_function_constructor_does_not_break_bind() {
     skip_if_no_node!(node => {
         // Explicitly try to wrap `Function` - the addon should skip it
         // and JavaScript's .bind() should still work correctly
-        let output = run_tracer(&[
-            "x",
-            "--js", "Function",  // Try to wrap the Function constructor (should be skipped)
-            "--",
-            node.to_str().unwrap(),
-            "--eval", r#"
+        let code = r#"
                 // Test that Function.prototype.bind works
                 // This was the exact failure mode: "TypeError: Function.prototype.bind called on incompatible undefined"
                 function myFunc(x) { return x * 2; }
@@ -1577,23 +1375,25 @@ fn test_nodejs_wrapping_function_constructor_does_not_break_bind() {
                 const dynamicFn = new Function('a', 'b', 'return a + b');
                 const dynResult = dynamicFn(3, 4);
                 console.log('dynamic_fn_result=' + dynResult);
-            "#,
-        ]);
+            "#;
+        let output = cmd(&format!(
+            "x --js Function -- {} --eval {}",
+            node.display(), sq(code)
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // The process should complete successfully (not crash with bind error)
         // This is the PRIMARY assertion - if the addon incorrectly wraps Function,
         // we get: TypeError: Function.prototype.bind called on incompatible undefined
         assert!(
-            output.status.success(),
+            output.success(),
             "REGRESSION: Function constructor wrapping broke JavaScript! \
             The addon likely wrapped globalThis.Function which breaks .bind(). \
             Expected: success, Got: exit code {:?}. \
             stderr: {}",
-            output.status.code(), stderr
+            output.inner.status.code(), stderr
         );
 
         // Verify .bind() worked correctly (result = 5 * 2 = 10)
@@ -1622,14 +1422,7 @@ fn test_nodejs_wrapping_builtin_constructors_does_not_break_runtime() {
 
     skip_if_no_node!(node => {
         // Try to wrap multiple dangerous constructors - all should be skipped
-        let output = run_tracer(&[
-            "x",
-            "--js", "Object",    // Try to wrap Object (should be skipped)
-            "--js", "Array",     // Try to wrap Array (should be skipped)
-            "--js", "Promise",   // Try to wrap Promise (should be skipped)
-            "--",
-            node.to_str().unwrap(),
-            "--eval", r#"
+        let code = r#"
                 // Test that Object methods work
                 const obj = Object.assign({}, {a: 1}, {b: 2});
                 console.log('object_test=' + JSON.stringify(obj));
@@ -1643,21 +1436,23 @@ fn test_nodejs_wrapping_builtin_constructors_does_not_break_runtime() {
 
                 // Mark completion
                 console.log('builtin_test_complete');
-            "#,
-        ]);
+            "#;
+        let output = cmd(&format!(
+            "x --js Object --js Array --js Promise -- {} --eval {}",
+            node.display(), sq(code)
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // The process should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "REGRESSION: Built-in constructor wrapping broke JavaScript! \
             The addon likely wrapped Object/Array/Promise which breaks runtime. \
             Expected: success, Got: exit code {:?}. \
             stderr: {}",
-            output.status.code(), stderr
+            output.inner.status.code(), stderr
         );
 
         // Verify Object.assign worked
@@ -1694,21 +1489,16 @@ fn test_nodejs_eval_traces_dynamically_created_functions() {
     setup();
 
     skip_if_no_node!(node => {
-        let output = run_tracer(&[
-            "x",
-            "--js", "evilFunc",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", "eval('function evilFunc() { return 42; }'); evilFunc();",
-        ]);
+        let output = cmd(&format!(
+            r#"x --js evilFunc --js * -- {} --eval "eval('function evilFunc() {{ return 42; }}'); evilFunc();""#,
+            node.display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Node.js eval() tracing test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1734,27 +1524,20 @@ fn test_nodejs_nested_eval_fires_codegen_gate_twice() {
     skip_if_no_node!(node => {
         // Outer eval compiles "eval('1+1')" — V8 must compile both strings.
         // The codegen gate fires once for the outer eval and once for the inner.
-        let output = run_tracer(&[
-            "x",
-            "-f", "json",
-            "--js", "eval",
-            "--",
-            node.to_str().unwrap(),
-            "--eval", r#"eval("eval('1+1')")"#,
-        ]);
+        let output = cmd(&format!(
+            r#"x -f json --js eval -- {} --eval "eval(\"eval('1+1')\")"#,
+            node.display()
+        )).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Node.js nested eval test failed. stderr: {}",
             stderr
         );
 
-        let events: Vec<serde_json::Value> = stdout.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let events = output.json_events();
 
         // Count codegen gate events — each eval() triggers
         // ModifyCodeGenerationFromStrings independently.
@@ -1782,28 +1565,20 @@ fn test_nodejs_nested_eval_traces_inner_function() {
 
     skip_if_no_node!(node => {
         // Outer eval runs code that calls eval to define and call a function.
-        let output = run_tracer(&[
-            "x",
-            "-f", "json",
-            "--js", "*",
-            "--",
-            node.to_str().unwrap(),
-            "--eval",
-            r#"eval("eval('function nestedTarget() { return 42; }'); nestedTarget();")"#,
-        ]);
+        let output = cmd(&format!(
+            r#"x -f json --js * -- {} --eval "eval(\"eval('function nestedTarget() {{ return 42; }}'); nestedTarget();\")"#,
+            node.display()
+        )).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Node.js nested eval function test failed. stderr: {}",
             stderr
         );
 
-        let events: Vec<serde_json::Value> = stdout.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let events = output.json_events();
 
         // The codegen gate should fire for the eval calls (hard assertion).
         assert!(
@@ -1849,25 +1624,18 @@ if (isMainThread) {
         ));
         std::fs::write(&script_path, script).expect("failed to write worker test script");
 
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--js", "workerFunc",
-                "--",
-                node.to_str().unwrap(),
-                script_path.to_str().unwrap(),
-            ],
-            std::time::Duration::from_secs(15),
-        );
+        let output = cmd(&format!(
+            "x --js workerFunc -- {} {}",
+            node.display(), script_path.display()
+        )).timeout(secs(15)).run();
 
         let _ = std::fs::remove_file(&script_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Node.js worker_threads test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1894,17 +1662,13 @@ fn test_nodejs_native_addon_dlopen_detected() {
         let script = r#"
 try { process.dlopen({exports:{}}, '/nonexistent_addon_12345.node'); } catch(e) {}
 "#;
-        let output = run_tracer(&[
-            "x",
-            "-s", "dlopen",
-            "--",
-            node.to_str().unwrap(),
-            "-e", script,
-        ]);
+        let output = cmd(&format!(
+            "x -s dlopen -- {} -e {}",
+            node.display(), sq(script)
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // The native dlopen symbol should be traced regardless of whether the
         // load succeeds
@@ -1947,20 +1711,13 @@ axios.get('http://127.0.0.1:1/test').catch(() => {});
 // Keep event loop alive briefly for the request to fire
 setTimeout(() => {}, 500);
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--js", "http.request",
-                "--",
-                node.to_str().unwrap(),
-                "-e", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            "x --js http.request -- {} -e {}",
+            node.display(), sq(script)
+        )).timeout(secs(10)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // axios uses http.request internally — should produce a trace
         if stdout.contains("http.request") {
@@ -1990,21 +1747,13 @@ fn test_nodejs_tracing_survives_gc_pressure() {
     setup();
 
     skip_if_no_node!(node => {
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--js", "*",
-                "--",
-                node.to_str().unwrap(),
-                "--max-semi-space-size=1",
-                "-e",
-                "function alloc(n) { return Array.from({length: 100}, (_, i) => i + n); }\n\
-                 for (let i = 0; i < 500; i++) alloc(i);",
-            ],
-            std::time::Duration::from_secs(30),
-        );
+        let output = cmd(&format!(
+            "x --js * -- {} --max-semi-space-size=1 -e {}",
+            node.display(),
+            sq("function alloc(n) { return Array.from({length: 100}, (_, i) => i + n); }\nfor (let i = 0; i < 500; i++) alloc(i);")
+        )).timeout(secs(30)).run();
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr();
 
         assert!(
             !stderr.contains("Fatal error"),
@@ -2017,14 +1766,14 @@ fn test_nodejs_tracing_survives_gc_pressure() {
             stderr
         );
         assert!(
-            output.status.success(),
+            output.success(),
             "GC pressure test should succeed. stderr: {}",
             stderr
         );
 
         // Should have traced some function calls (name may be "alloc" or
         // "<function>" depending on Node.js version and addon availability)
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout_raw();
         assert!(
             stdout.contains("alloc") || stdout.contains("<function>"),
             "Should trace function calls. stdout: {}",

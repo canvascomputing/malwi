@@ -19,25 +19,21 @@ fn test_native_tracing_captures_marker_function() {
     // Hook simple_target_marker — a custom function compiled with -rdynamic,
     // reliably hookable on all platforms (unlike malloc which may resist
     // inline patching on hardened glibc configurations).
-    let output = run_tracer(&["x", "-s", "simple_target_marker", "--", "./simple_target"]);
+    let output = cmd("x -s simple_target_marker -- ./simple_target").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Tracer exited with error. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
 
     // Should have a [malwi] trace line for simple_target_marker
-    let stdout_clean = strip_ansi_codes(&stdout);
-    let has_trace = stdout_clean
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker"));
     assert!(
-        has_trace,
+        output.has_traced("simple_target_marker"),
         "Expected [malwi] trace event for simple_target_marker. stdout: {}",
         stdout
     );
@@ -49,31 +45,21 @@ fn test_native_tracing_glob_pattern_matches_prefixed_functions() {
 
     // Use a glob pattern that matches simple_target_marker — a custom function
     // always present in the dynamic symbol table via -rdynamic.
-    let output = run_tracer(&[
-        "x",
-        "-s",
-        "simple_target*", // Matches simple_target_marker
-        "--",
-        "./simple_target",
-    ]);
+    let output = cmd("x -s simple_target* -- ./simple_target").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Glob pattern test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
 
     // Glob pattern should have matched simple_target_marker and produced trace events
-    let stdout_clean = strip_ansi_codes(&stdout);
-    let has_trace = stdout_clean
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker"));
     assert!(
-        has_trace,
+        output.has_traced("simple_target_marker"),
         "Expected [malwi] trace event from glob pattern simple_target*. stdout: {}",
         stdout
     );
@@ -84,18 +70,10 @@ fn test_native_tracing_captures_multiple_functions_simultaneously() {
     setup();
 
     // Use simple_target_marker and getpid instead of malloc/free which generate too much output
-    let output = run_tracer(&[
-        "x",
-        "-s",
-        "simple_target_marker",
-        "-s",
-        "getpid",
-        "--",
-        "./simple_target",
-    ]);
+    let output = cmd("x -s simple_target_marker -s getpid -- ./simple_target").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
     let combined = format!("{}\n{}", stdout, stderr);
 
     // Should have simple_target_marker traces (called twice in simple_target)
@@ -117,24 +95,21 @@ fn test_native_stack_trace_omitted_without_t_flag() {
     setup();
 
     // Run WITHOUT --st flag - should NOT have stack traces
-    let output = run_tracer(&["x", "-s", "simple_target_marker", "--", "./simple_target"]);
+    let output = cmd("x -s simple_target_marker -- ./simple_target").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Native test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
 
     // Precondition: tracing must have produced events (avoid vacuous pass)
-    let stdout_clean = strip_ansi_codes(&stdout);
     assert!(
-        stdout_clean
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker")),
+        output.has_traced("simple_target_marker"),
         "Precondition failed: no trace events captured. stdout: {}",
         stdout
     );
@@ -152,34 +127,23 @@ fn test_native_stack_trace_included_with_t_flag() {
     setup();
 
     // Run WITH --st flag - should have stack traces
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "--st", // Enable stack traces
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        STACK_TRACE_TIMEOUT,
-    );
+    let output = cmd("x --st -s simple_target_marker -- ./simple_target")
+        .timeout(STACK_TRACE_TIMEOUT)
+        .run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
     );
 
     // Should have simple_target_marker function call
-    let stdout_clean = strip_ansi_codes(&stdout);
     assert!(
-        stdout_clean
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("simple_target_marker")),
+        output.has_traced("simple_target_marker"),
         "Expected simple_target_marker trace. stdout: {}",
         stdout
     );
@@ -196,23 +160,15 @@ fn test_native_stack_trace_included_with_t_flag() {
 fn test_native_stack_trace_shows_symbol_and_address() {
     setup();
 
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "--st",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        STACK_TRACE_TIMEOUT,
-    );
+    let output = cmd("x --st -s simple_target_marker -- ./simple_target")
+        .timeout(STACK_TRACE_TIMEOUT)
+        .run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -245,23 +201,15 @@ fn test_native_stack_trace_shows_symbol_and_address() {
 fn test_native_stack_trace_resolves_known_symbol() {
     setup();
 
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "--st",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        STACK_TRACE_TIMEOUT,
-    );
+    let output = cmd("x --st -s simple_target_marker -- ./simple_target")
+        .timeout(STACK_TRACE_TIMEOUT)
+        .run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "Native stack trace test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -301,15 +249,15 @@ fn test_native_stack_trace_resolves_known_symbol() {
 fn test_native_hooks_trace_events_from_multiple_threads() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "multithread_marker", "--", "./multithread"]);
+    let output = cmd("x -s multithread_marker -- ./multithread").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
     let combined = format!("{}\n{}", stdout, stderr);
 
     // Should complete without crashing
     assert!(
-        output.status.success(),
+        output.success(),
         "Multi-threaded test crashed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -333,15 +281,9 @@ fn test_native_hooks_trace_events_from_multiple_threads() {
 fn test_nonexistent_symbol_exits_gracefully_with_warning() {
     setup();
 
-    let output = run_tracer(&[
-        "x",
-        "-s",
-        "this_symbol_definitely_does_not_exist_xyz123",
-        "--",
-        "./simple_target",
-    ]);
+    let output = cmd("x -s this_symbol_definitely_does_not_exist_xyz123 -- ./simple_target").run();
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = output.stderr();
 
     // Should report an error about the symbol not being found
     assert!(
@@ -355,11 +297,11 @@ fn test_nonexistent_symbol_exits_gracefully_with_warning() {
 fn test_invalid_program_path_exits_gracefully_with_error() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "malloc", "--", "./nonexistent_program_xyz"]);
+    let output = cmd("x -s malloc -- ./nonexistent_program_xyz").run();
 
     // Should fail but not crash
     assert!(
-        !output.status.success(),
+        !output.success(),
         "Expected failure for nonexistent program"
     );
 }
@@ -381,14 +323,14 @@ fn test_native_tracing_hooks_function_with_pac_prologue() {
         return;
     }
 
-    let output = run_tracer(&["x", "-s", "compute", "--", pac.to_str().unwrap()]);
+    let output = cmd(&format!("x -s compute -- {}", pac.display())).run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
     let combined = format!("{}\n{}", stdout, stderr);
 
     assert!(
-        output.status.success(),
+        output.success(),
         "pac_target tracing failed. stdout: {}, stderr: {}",
         stdout,
         stderr

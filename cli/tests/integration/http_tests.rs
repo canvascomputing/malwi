@@ -7,30 +7,9 @@
 use crate::common::*;
 use crate::skip_if_no_node_primary;
 use crate::skip_if_no_python_primary;
-use std::io::Write;
-use std::path::PathBuf;
 
 fn setup() {
     build_fixtures();
-}
-
-/// Write a temporary policy YAML file and return its path.
-fn write_temp_policy(content: &str) -> (PathBuf, std::fs::File) {
-    let dir = std::env::temp_dir();
-    let id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = dir.join(format!(
-        "malwi-http-test-{}-{:x}.yaml",
-        std::process::id(),
-        id
-    ));
-    let mut f = std::fs::File::create(&path).expect("failed to create temp policy file");
-    f.write_all(content.as_bytes())
-        .expect("failed to write policy");
-    f.flush().expect("failed to flush policy");
-    (path, f)
 }
 
 // ============================================================================
@@ -51,17 +30,11 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "http.client.HTTPConnection.__init__",
-            "--py", "http.client.HTTPConnection.request",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py http.client.HTTPConnection.__init__ --py http.client.HTTPConnection.request -- {} -c {}",
+                python.display(), sq(script)))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should trace HTTPConnection.__init__ with host argument
         assert!(
@@ -91,16 +64,10 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "urllib.request.urlopen",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py urllib.request.urlopen -- {} -c {}", python.display(), sq(script)))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should capture the urlopen call with arguments (fully qualified name)
         assert!(
@@ -142,17 +109,10 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "socket.socket",
-            "--py", "socket.connect",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py socket.socket --py socket.connect -- {} -c {}", python.display(), sq(script)))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // socket.connect should be traced with address arguments
         assert!(
@@ -196,18 +156,10 @@ req.on('error', () => {});
 req.end();
 req.destroy();
 "#;
-        let output = run_tracer(
-            &[
-                "x",
-                "--js", "http.request",
-                "--",
-                node.to_str().unwrap(),
-                "-e", script,
-            ],
-        );
+        let output = cmd(&format!("x --js http.request -- {} -e {}", node.display(), sq(script)))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should capture http.request call with URL argument and source
         assert!(
@@ -258,21 +210,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should show a denied message for the function with URL
         assert!(
@@ -307,21 +250,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // The function itself is denied by python section, with URL args
         assert!(
@@ -358,21 +292,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should be flagged (either by function deny or protocol deny) with URL
         assert!(
@@ -410,21 +335,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         assert!(
             stdout.contains("denied: urllib.request.urlopen(url='http://example.com:22/ssh-tunnel'"),
@@ -460,21 +376,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should be denied by function policy (and http URL policy too) with URL
         assert!(
@@ -507,21 +414,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         assert!(
             stdout.contains("denied: urllib.request.urlopen(url='http://127.0.0.1:1/admin/secret'"),
@@ -554,21 +452,12 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // Should show denied (function deny hits first) with URL
         assert!(
@@ -615,21 +504,12 @@ except Exception:
     pass
 time.sleep(0.5)
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", policy_path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         assert!(
             stdout.contains("denied: socket.connect([Object], address=('127.0.0.1', 6379))"),

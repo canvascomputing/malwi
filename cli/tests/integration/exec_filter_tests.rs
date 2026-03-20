@@ -3,6 +3,7 @@
 //! Tests for command execution filtering with the ex: prefix.
 
 use crate::common::*;
+use crate::skip_if_no_node_primary;
 use crate::skip_if_no_python;
 
 fn setup() {
@@ -17,234 +18,162 @@ fn setup() {
 fn test_exec_wildcard_filter_captures_all_commands() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let output = cmd(&format!(
+            "x -c * -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello'])")
+        )).run();
 
-    let output = run_tracer(&[
-        "x",
-        "-c",
-        "*",
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['hello'])",
-    ]);
+        assert!(
+            output.success(),
+            "Exec filter wildcard test failed. stdout: {}, stderr: {}",
+            output.stdout(),
+            output.stderr()
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "Exec filter wildcard test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Should show echo trace
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo_trace,
-        "Expected echo trace with wildcard filter. stdout: {}",
-        stdout
-    );
+        // Should show echo trace
+        assert!(
+            output.has_traced("echo"),
+            "Expected echo trace with wildcard filter. stdout: {}",
+            output.stdout()
+        );
+    });
 }
 
 #[test]
 fn test_exec_filter_captures_only_specified_command() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Run both echo and ls, but only filter for echo
+        let output = cmd(&format!(
+            "x -c echo -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello']); require('child_process').spawnSync('ls', ['-la'])")
+        )).run();
 
-    // Run both echo and ls, but only filter for echo
-    let output = run_tracer(&[
-        "x",
-        "-c", "echo",
-        "--",
-        node.to_str().unwrap(),
-        "-e", "require('child_process').spawnSync('echo', ['hello']); require('child_process').spawnSync('ls', ['-la'])",
-    ]);
+        assert!(
+            output.success(),
+            "Exec filter specific command test failed. stdout: {}, stderr: {}",
+            output.stdout(),
+            output.stderr()
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "Exec filter specific command test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Should show echo but NOT ls on [malwi] lines
-    let malwi_lines: Vec<&str> = stdout.lines().filter(|l| l.contains("[malwi]")).collect();
-    let has_echo = malwi_lines.iter().any(|l| l.contains("echo"));
-    let has_ls = malwi_lines.iter().any(|l| l.contains(" ls"));
-    assert!(has_echo, "Expected echo trace. stdout: {}", stdout);
-    assert!(
-        !has_ls,
-        "Should NOT show ls trace when filtering for echo only. stdout: {}",
-        stdout
-    );
+        // Should show echo but NOT ls on [malwi] lines
+        assert!(output.has_traced("echo"), "Expected echo trace. stdout: {}", output.stdout());
+        assert!(
+            !output.has_traced("ls"),
+            "Should NOT show ls trace when filtering for echo only. stdout: {}",
+            output.stdout()
+        );
+    });
 }
 
 #[test]
 fn test_exec_events_hidden_without_ex_prefix_filter() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Use js: filter without ex: - child events should be hidden
+        let output = cmd(&format!(
+            "x --js spawnSync -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello'])")
+        )).run();
 
-    // Use js: filter without ex: - child events should be hidden
-    let output = run_tracer(&[
-        "x",
-        "--js",
-        "spawnSync",
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['hello'])",
-    ]);
+        assert!(
+            output.success(),
+            "Exec filter hidden by default test failed. stdout: {}, stderr: {}",
+            output.stdout(),
+            output.stderr()
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "Exec filter hidden by default test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Should have spawnSync trace but NOT echo as a traced command
-    let stdout_clean = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-    assert!(
-        stdout_clean.contains("spawnSync"),
-        "Expected spawnSync trace. stdout: {}",
-        stdout_clean
-    );
-    // With no exec filter, only JS traces should appear — echo should not appear
-    // as a standalone command trace (it may appear as an argument to spawnSync).
-    // Exec traces show: "[malwi] echo ..." while JS traces show: "[malwi] spawnSync(...)"
-    let has_echo_as_command = stdout_clean.lines().any(|l| {
-        l.contains("[malwi]") && {
-            // After "[malwi] ", check if "echo" is the command name (not inside parens)
-            if let Some(pos) = l.find("[malwi] ") {
-                let after_tag = &l[pos + 8..];
-                after_tag.starts_with("echo")
-            } else {
-                false
+        // Should have spawnSync trace but NOT echo as a traced command
+        let stdout_clean = output.stdout();
+        assert!(
+            stdout_clean.contains("spawnSync"),
+            "Expected spawnSync trace. stdout: {}",
+            stdout_clean
+        );
+        // With no exec filter, only JS traces should appear — echo should not appear
+        // as a standalone command trace (it may appear as an argument to spawnSync).
+        // Exec traces show: "[malwi] echo ..." while JS traces show: "[malwi] spawnSync(...)"
+        let has_echo_as_command = stdout_clean.lines().any(|l| {
+            l.contains("[malwi]") && {
+                // After "[malwi] ", check if "echo" is the command name (not inside parens)
+                if let Some(pos) = l.find("[malwi] ") {
+                    let after_tag = &l[pos + 8..];
+                    after_tag.starts_with("echo")
+                } else {
+                    false
+                }
             }
-        }
+        });
+        assert!(
+            !has_echo_as_command,
+            "Should NOT show echo as traced command when no exec filter specified. stdout: {}",
+            stdout_clean
+        );
     });
-    assert!(
-        !has_echo_as_command,
-        "Should NOT show echo as traced command when no exec filter specified. stdout: {}",
-        stdout_clean
-    );
 }
 
 #[test]
 fn test_exec_glob_pattern_matches_command_prefix() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Use glob pattern to match echo*
+        let output = cmd(&format!(
+            "x -c ech* -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello'])")
+        )).run();
 
-    // Use glob pattern to match echo*
-    let output = run_tracer(&[
-        "x",
-        "-c",
-        "ech*",
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['hello'])",
-    ]);
+        assert!(
+            output.success(),
+            "Exec filter glob pattern test failed. stdout: {}, stderr: {}",
+            output.stdout(),
+            output.stderr()
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "Exec filter glob pattern test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Glob pattern should match echo
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(
-        has_echo_trace,
-        "Expected echo trace with glob pattern. stdout: {}",
-        stdout
-    );
+        // Glob pattern should match echo
+        assert!(
+            output.has_traced("echo"),
+            "Expected echo trace with glob pattern. stdout: {}",
+            output.stdout()
+        );
+    });
 }
 
 #[test]
 fn test_exec_output_shows_command_name_and_full_args() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        let output = cmd(&format!(
+            "x -c * -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello', 'world'])")
+        )).run();
 
-    let output = run_tracer(&[
-        "x",
-        "-c",
-        "*",
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['hello', 'world'])",
-    ]);
+        assert!(
+            output.success(),
+            "Exec filter output format test failed. stdout: {}, stderr: {}",
+            output.stdout(),
+            output.stderr()
+        );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "Exec filter output format test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
-
-    // Should show format: [malwi] <cmd> <args>
-    let has_echo_line = stdout.lines().any(|l| {
-        l.contains("[malwi]") && l.contains("echo") && l.contains("hello") && l.contains("world")
+        // Should show format: [malwi] <cmd> <args>
+        let has_echo_line = output.stdout().lines().any(|l| {
+            l.contains("[malwi]") && l.contains("echo") && l.contains("hello") && l.contains("world")
+        });
+        assert!(
+            has_echo_line,
+            "Expected 'echo hello world' trace format. stdout: {}",
+            output.stdout()
+        );
     });
-    assert!(
-        has_echo_line,
-        "Expected 'echo hello world' trace format. stdout: {}",
-        stdout
-    );
 }
 
 // ============================================================================
@@ -265,31 +194,21 @@ fn test_python_subprocess_fork_exec_captures_exec_event() {
     skip_if_no_python!(python => {
         // Python subprocess uses fork+exec internally
         // Use timeout because tracer may hang after fork+exec
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-c",
-                "echo",
-                "--",
-                python.to_str().unwrap(),
-                "-c",
-                "import subprocess; subprocess.run(['echo', 'FORKEXEC_TEST'])",
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            "x -c echo -- {} -c {}",
+            python.display(),
+            sq("import subprocess; subprocess.run(['echo', 'FORKEXEC_TEST'])")
+        )).timeout(secs(10)).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
         // Should capture the exec event from the forked child process
         // Note: We don't check exit status because we may have killed the process
-        let has_echo_trace = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("echo"));
         assert!(
-            has_echo_trace,
+            output.has_traced("echo"),
             "Expected echo trace from Python subprocess (fork+exec). stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -302,28 +221,20 @@ fn test_python_subprocess_wildcard_captures_all_exec_events() {
 
     skip_if_no_python!(python => {
         // Run multiple commands via subprocess
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-c", "*",
-                "--",
-                python.to_str().unwrap(),
-                "-c", "import subprocess; subprocess.run(['echo', 'first']); subprocess.run(['echo', 'second'])",
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            "x -c * -- {} -c {}",
+            python.display(),
+            sq("import subprocess; subprocess.run(['echo', 'first']); subprocess.run(['echo', 'second'])")
+        )).timeout(secs(10)).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
         // Should capture echo events (may appear multiple times due to PATH search)
-        let has_echo_trace = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("echo"));
         assert!(
-            has_echo_trace,
+            output.has_traced("echo"),
             "Expected echo traces with wildcard filter. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -344,25 +255,20 @@ if not hasattr(os, 'posix_spawn'):
     sys.exit(0)
 os.posix_spawn('/bin/echo', ['/bin/echo', 'POSIX_SPAWN_TEST'], os.environ)
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x", "-c", "echo", "--",
-                python.to_str().unwrap(), "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            "x -c echo -- {} -c {}",
+            python.display(),
+            sq(script)
+        )).timeout(secs(10)).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
         // If os.posix_spawn is available, we must detect the echo command
-        let has_echo_trace = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("echo"));
         assert!(
-            has_echo_trace,
+            output.has_traced("echo"),
             "Expected echo trace from os.posix_spawn. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -391,30 +297,20 @@ print("MALICIOUS: Simulating supply chain attack", file=sys.stderr)
 subprocess.run(["curl", "--version"])
 "#;
 
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-c",
-                "curl",
-                "--",
-                python.to_str().unwrap(),
-                "-c",
-                malicious_script,
-            ],
-            std::time::Duration::from_secs(15),
-        );
+        let output = cmd(&format!(
+            "x -c curl -- {} -c {}",
+            python.display(),
+            sq(malicious_script)
+        )).timeout(secs(15)).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
         // Should detect curl being executed by the Python subprocess
-        let has_curl_trace = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("curl"));
         assert!(
-            has_curl_trace,
+            output.has_traced("curl"),
             "Expected curl trace (supply chain detection pattern). stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -431,112 +327,79 @@ subprocess.run(["curl", "--version"])
 fn test_exec_stack_trace_omitted_without_t_flag() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Run exec tracing WITHOUT --st flag
+        let output = cmd(&format!(
+            "x -c echo -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['test'])")
+        )).run();
 
-    // Run exec tracing WITHOUT --st flag
-    let output = run_tracer(&[
-        "x",
-        "-c",
-        "echo", // NO --st flag
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['test'])",
-    ]);
+        let stdout = output.stdout();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.success(),
+            "Exec trace without --st flag failed. stdout: {}, stderr: {}",
+            stdout,
+            output.stderr()
+        );
 
-    assert!(
-        output.status.success(),
-        "Exec trace without --st flag failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have echo trace
+        assert!(output.has_traced("echo"), "Expected echo trace. stdout: {}", stdout);
 
-    // Should have echo trace
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(has_echo_trace, "Expected echo trace. stdout: {}", stdout);
-
-    // Should NOT have stack frames without --st flag
-    assert!(
-        !has_stack_trace(&stdout),
-        "Should NOT have stack frames without --st flag. stdout: {}",
-        stdout
-    );
+        // Should NOT have stack frames without --st flag
+        assert!(
+            !has_stack_trace(&stdout),
+            "Should NOT have stack frames without --st flag. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_exec_stack_trace_included_with_t_flag() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Run exec tracing WITH --st flag
+        let output = cmd(&format!(
+            "x --st -c echo -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['test'])")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-    // Run exec tracing WITH --st flag
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "--st", // WITH --st flag
-            "-c",
-            "echo",
-            "--",
-            node.to_str().unwrap(),
-            "-e",
-            "require('child_process').spawnSync('echo', ['test'])",
-        ],
-        STACK_TRACE_TIMEOUT,
-    );
+        let stdout = output.stdout();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.success(),
+            "Exec trace with --st flag failed. stdout: {}, stderr: {}",
+            stdout,
+            output.stderr()
+        );
 
-    assert!(
-        output.status.success(),
-        "Exec trace with --st flag failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should have echo trace
+        assert!(output.has_traced("echo"), "Expected echo trace. stdout: {}", stdout);
 
-    // Should have echo trace
-    let has_echo_trace = stdout
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("echo"));
-    assert!(has_echo_trace, "Expected echo trace. stdout: {}", stdout);
+        // Should have stack frames with --st flag
+        assert!(
+            has_stack_trace(&stdout),
+            "Should have stack frames with --st flag. stdout: {}",
+            stdout
+        );
 
-    // Should have stack frames with --st flag
-    assert!(
-        has_stack_trace(&stdout),
-        "Should have stack frames with --st flag. stdout: {}",
-        stdout
-    );
+        // With CLI-side symbol resolution, at least some frames should be resolved
+        let has_resolved = stdout.lines().any(|line| {
+            line.starts_with("    at ")
+                && !line.contains("<unknown>")
+                && !line.trim_start_matches("    at ").starts_with("0x")
+        });
 
-    // With CLI-side symbol resolution, at least some frames should be resolved
-    let stdout_clean = strip_ansi_codes(&stdout);
-    let has_resolved = stdout_clean.lines().any(|line| {
-        line.starts_with("    at ")
-            && !line.contains("<unknown>")
-            && !line.trim_start_matches("    at ").starts_with("0x")
+        assert!(
+            has_resolved,
+            "Expected at least one resolved symbol in exec stack trace. stdout: {}",
+            stdout
+        );
     });
-
-    assert!(
-        has_resolved,
-        "Expected at least one resolved symbol in exec stack trace. stdout: {}",
-        stdout
-    );
 }
 
 #[test]
@@ -546,22 +409,14 @@ fn test_exec_stack_trace_from_python_subprocess() {
     skip_if_no_python!(python => {
         // Run exec tracing from Python with --st flag
         // Note: macOS can have objc fork issues with Python, so we allow partial success
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--st",
-                "-c",
-                "echo",
-                "--",
-                python.to_str().unwrap(),
-                "-c",
-                "import subprocess; subprocess.run(['echo', 'test'])",
-            ],
-            STACK_TRACE_TIMEOUT,
-        );
+        let output = cmd(&format!(
+            "x --st -c echo -- {} -c {}",
+            python.display(),
+            sq("import subprocess; subprocess.run(['echo', 'test'])")
+        )).timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
@@ -572,11 +427,8 @@ fn test_exec_stack_trace_from_python_subprocess() {
         }
 
         // Should have echo trace
-        let has_echo_trace = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("echo"));
         assert!(
-            has_echo_trace,
+            output.has_traced("echo"),
             "Expected echo trace. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -605,96 +457,73 @@ fn test_exec_stack_trace_from_python_subprocess() {
 fn test_exec_dedup_single_spawn_produces_one_event() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // spawnSync internally uses execvp() which tries execve() for each PATH
+        // entry. Without dedup this would produce N ex:echo lines (one per PATH dir).
+        let output = cmd(&format!(
+            "x -c echo -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['hello'])")
+        )).run();
 
-    // spawnSync internally uses execvp() which tries execve() for each PATH
-    // entry. Without dedup this would produce N ex:echo lines (one per PATH dir).
-    let output = run_tracer(&[
-        "x",
-        "-c",
-        "echo",
-        "--",
-        node.to_str().unwrap(),
-        "-e",
-        "require('child_process').spawnSync('echo', ['hello'])",
-    ]);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi_codes(&stdout_raw);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.success(),
+            "Exec dedup test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    assert!(
-        output.status.success(),
-        "Exec dedup test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Count ex:echo lines — should be exactly 1 after dedup
+        let exec_lines: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.contains("[malwi]") && l.contains("echo"))
+            .collect();
 
-    // Count ex:echo lines — should be exactly 1 after dedup
-    let exec_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.contains("[malwi]") && l.contains("echo"))
-        .collect();
-
-    assert_eq!(
-        exec_lines.len(),
-        1,
-        "Expected exactly 1 ex:echo line after dedup, got {}:\n{}",
-        exec_lines.len(),
-        exec_lines.join("\n")
-    );
+        assert_eq!(
+            exec_lines.len(),
+            1,
+            "Expected exactly 1 ex:echo line after dedup, got {}:\n{}",
+            exec_lines.len(),
+            exec_lines.join("\n")
+        );
+    });
 }
 
 #[test]
 fn test_exec_dedup_separate_spawns_produce_separate_events() {
     setup();
 
-    let node = match find_node() {
-        Some(n) => n,
-        None => {
-            println!("SKIPPED: test: node not found");
-            return;
-        }
-    };
+    skip_if_no_node_primary!(node => {
+        // Two separate spawnSync calls fork two different child PIDs, so dedup
+        // should NOT collapse them — we expect 2 ex:echo events.
+        let output = cmd(&format!(
+            "x -c echo -- {} -e {}",
+            node.display(),
+            sq("require('child_process').spawnSync('echo', ['first']); require('child_process').spawnSync('echo', ['second'])")
+        )).timeout(secs(10)).run();
 
-    // Two separate spawnSync calls fork two different child PIDs, so dedup
-    // should NOT collapse them — we expect 2 ex:echo events.
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-c", "echo",
-            "--",
-            node.to_str().unwrap(),
-            "-e", "require('child_process').spawnSync('echo', ['first']); require('child_process').spawnSync('echo', ['second'])",
-        ],
-        std::time::Duration::from_secs(10),
-    );
+        let stdout = output.stdout();
+        let stderr = output.stderr();
+        println!("stdout: {}", stdout);
+        println!("stderr: {}", stderr);
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi_codes(&stdout_raw);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("stdout: {}", stdout);
-    println!("stderr: {}", stderr);
+        // Should have exactly 2 ex:echo events (one per spawnSync, different PIDs)
+        let exec_lines: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.contains("[malwi]") && l.contains("echo"))
+            .collect();
 
-    // Should have exactly 2 ex:echo events (one per spawnSync, different PIDs)
-    let exec_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| l.contains("[malwi]") && l.contains("echo"))
-        .collect();
-
-    assert_eq!(
-        exec_lines.len(),
-        2,
-        "Expected exactly 2 ex:echo lines (separate spawns). Got {}:\n{}",
-        exec_lines.len(),
-        exec_lines.join("\n")
-    );
+        assert_eq!(
+            exec_lines.len(),
+            2,
+            "Expected exactly 2 ex:echo lines (separate spawns). Got {}:\n{}",
+            exec_lines.len(),
+            exec_lines.join("\n")
+        );
+    });
 }
 
 // ============================================================================
@@ -706,31 +535,20 @@ fn test_exec_fork_event_suppressed_before_exec() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-c",
-                "*",
-                "--",
-                python.to_str().unwrap(),
-                "-c",
-                "import subprocess; subprocess.run(['echo', 'FORK_TEST'])",
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!(
+            "x -c * -- {} -c {}",
+            python.display(),
+            sq("import subprocess; subprocess.run(['echo', 'FORK_TEST'])")
+        )).timeout(secs(10)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 
         // The wildcard exec filter should capture the echo command
-        let has_echo = stdout
-            .lines()
-            .any(|l| l.contains("[malwi]") && l.contains("echo"));
         assert!(
-            has_echo,
+            output.has_traced("echo"),
             "Expected echo trace from subprocess. stdout: {}, stderr: {}",
             stdout, stderr
         );

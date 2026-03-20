@@ -3,9 +3,9 @@
 //! These are not micro-benchmarks (use `cargo bench` for those).
 //! These measure end-to-end tracing overhead against real executables.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::common::{build_fixtures, fixture, run_tracer_with_timeout, strip_ansi_codes};
+use crate::common::{build_fixtures, cmd, fixture, secs};
 
 #[test]
 fn test_perf_native_tracing_throughput() {
@@ -16,30 +16,25 @@ fn test_perf_native_tracing_throughput() {
         eprintln!("SKIPPED: multithread fixture not found");
         return;
     }
-    let multithread_str = multithread.to_string_lossy();
 
     // Run uninstrumented baseline
     let baseline_start = Instant::now();
-    let _ = run_tracer_with_timeout(&["--", &multithread_str], Duration::from_secs(10));
+    let _ = cmd(&format!("-- {}", multithread.display()))
+        .timeout(secs(10))
+        .run();
     let baseline_ms = baseline_start.elapsed().as_millis();
 
     // Run with tracing enabled — hook multithread_marker and malloc
     let traced_start = Instant::now();
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-s",
-            "multithread_marker",
-            "-s",
-            "malloc",
-            &multithread_str,
-        ],
-        Duration::from_secs(10),
-    );
+    let output = cmd(&format!(
+        "x -s multithread_marker -s malloc {}",
+        multithread.display()
+    ))
+    .timeout(secs(10))
+    .run();
     let traced_ms = traced_start.elapsed().as_millis();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let clean_stdout = strip_ansi_codes(&stdout);
+    let clean_stdout = output.stdout();
 
     // Count trace event lines (lines containing [malwi])
     let event_count = clean_stdout

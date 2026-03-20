@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Once;
 use std::time::Duration;
 
@@ -1074,4 +1074,435 @@ pub fn has_review_blocked(output: &str, function: &str) -> bool {
 /// Check if output contains review mode details section
 pub fn has_review_details(output: &str) -> bool {
     output.contains("--- Details ---") && output.contains("Args:")
+}
+
+// ---------------------------------------------------------------------------
+// TracerOutput wrapper
+// ---------------------------------------------------------------------------
+
+/// Wrapper around `std::process::Output` with convenience methods for test assertions.
+pub struct TracerOutput {
+    pub inner: Output,
+}
+
+impl TracerOutput {
+    pub fn new(output: Output) -> Self {
+        Self { inner: output }
+    }
+
+    /// Decoded stdout with ANSI escape codes stripped.
+    pub fn stdout(&self) -> String {
+        strip_ansi_codes(&String::from_utf8_lossy(&self.inner.stdout))
+    }
+
+    /// Decoded stdout without ANSI stripping (for JSON output).
+    pub fn stdout_raw(&self) -> String {
+        String::from_utf8_lossy(&self.inner.stdout).into_owned()
+    }
+
+    /// Decoded stderr.
+    pub fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.inner.stderr).into_owned()
+    }
+
+    /// Whether the process exited successfully.
+    pub fn success(&self) -> bool {
+        self.inner.status.success()
+    }
+
+    /// Parse NDJSON lines from raw stdout into a vec of JSON values.
+    pub fn json_events(&self) -> Vec<serde_json::Value> {
+        parse_json_events(&self.stdout_raw())
+    }
+
+    /// Panic with stdout+stderr context if the process failed.
+    pub fn assert_success(&self, context: &str) {
+        assert!(
+            self.success(),
+            "{}: process failed\nstdout:\n{}\nstderr:\n{}",
+            context,
+            self.stdout(),
+            self.stderr()
+        );
+    }
+
+    /// Panic with context if stdout (ANSI-stripped) doesn't contain `pattern`.
+    pub fn assert_stdout_contains(&self, pattern: &str, context: &str) {
+        let stdout = self.stdout();
+        assert!(
+            stdout.contains(pattern),
+            "{}: stdout does not contain '{}'\nstdout:\n{}\nstderr:\n{}",
+            context,
+            pattern,
+            stdout,
+            self.stderr()
+        );
+    }
+
+    /// True if any `[malwi]` line contains `func` and is a plain trace (not denied/warning).
+    pub fn has_traced(&self, func: &str) -> bool {
+        has_traced_line(&self.stdout(), func)
+    }
+
+    /// True if any `[malwi] denied:` line contains `func`.
+    pub fn has_denied(&self, func: &str) -> bool {
+        has_denied_line(&self.stdout(), func)
+    }
+
+    /// True if any `[malwi] warning:` line contains `func`.
+    pub fn has_warning(&self, func: &str) -> bool {
+        has_warning_line(&self.stdout(), func)
+    }
+}
+
+/// True if any `[malwi]` line contains `func` as a plain trace (not denied/warning).
+pub fn has_traced_line(stdout: &str, func: &str) -> bool {
+    stdout.lines().any(|l| {
+        l.contains("[malwi]")
+            && l.contains(func)
+            && !l.contains("denied:")
+            && !l.contains("warning:")
+    })
+}
+
+/// True if any `[malwi] denied:` line contains `func`.
+pub fn has_denied_line(stdout: &str, func: &str) -> bool {
+    stdout
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("denied:") && l.contains(func))
+}
+
+/// True if any `[malwi] warning:` line contains `func`.
+pub fn has_warning_line(stdout: &str, func: &str) -> bool {
+    stdout
+        .lines()
+        .any(|l| l.contains("[malwi]") && l.contains("warning:") && l.contains(func))
+}
+
+/// Split a command string into args, respecting single/double quotes.
+///
+/// ```ignore
+/// shell_split("x -p file -- node -e 'console.log(1)'")
+/// // => ["x", "-p", "file", "--", "node", "-e", "console.log(1)"]
+/// ```
+pub fn shell_split(cmd: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                // Single quotes: no escaping, everything is literal until closing '
+                while let Some(inner) = chars.next() {
+                    if inner == '\'' {
+                        break;
+                    }
+                    current.push(inner);
+                }
+            }
+            '"' => {
+                // Double quotes: backslash escapes \" and \\
+                while let Some(inner) = chars.next() {
+                    if inner == '"' {
+                        break;
+                    }
+                    if inner == '\\' {
+                        if let Some(&next) = chars.peek() {
+                            if next == '"' || next == '\\' {
+                                current.push(next);
+                                chars.next();
+                                continue;
+                            }
+                        }
+                    }
+                    current.push(inner);
+                }
+            }
+            c if c.is_ascii_whitespace() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+// ---------------------------------------------------------------------------
+// cmd() — run a terminal-style command string
+// ---------------------------------------------------------------------------
+
+/// Trace command with execution options.
+///
+/// The command is a single string — exactly what you'd type in a terminal.
+/// Dynamic values are interpolated with `format!`. Execution options
+/// (timeout, stdin, env, dir) are chained before `.run()`.
+///
+/// ```ignore
+/// // Simple:
+/// cmd("x -s connect -- ./simple_target").run();
+///
+/// // With dynamic path and code (use format! + sq() for quoting):
+/// cmd(&format!("x --py func -- {} -c {}", python.display(), sq(script))).run();
+///
+/// // With timeout:
+/// cmd(&format!("x -p {} -- {} -e {}", p.display(), n.display(), sq(code)))
+///     .timeout(secs(10)).run();
+///
+/// // With stdin:
+/// cmd("x -r -s marker -- ./target").stdin("y\n").run();
+///
+/// // Non-interactive (stdin closed):
+/// cmd(&format!("x -p {} -- {} {}", p.display(), b.display(), s.display()))
+///     .noninteractive().timeout(secs(10)).run();
+/// ```
+pub struct Cmd {
+    args: Vec<String>,
+    timeout: Option<Duration>,
+    stdin_input: Option<String>,
+    noninteractive: bool,
+    env_vars: Vec<(String, String)>,
+    dir: Option<PathBuf>,
+}
+
+impl Cmd {
+    pub fn timeout(mut self, dur: Duration) -> Self {
+        self.timeout = Some(dur);
+        self
+    }
+
+    pub fn stdin(mut self, input: &str) -> Self {
+        self.stdin_input = Some(input.to_string());
+        self
+    }
+
+    pub fn noninteractive(mut self) -> Self {
+        self.noninteractive = true;
+        self
+    }
+
+    pub fn env(mut self, key: &str, val: &str) -> Self {
+        self.env_vars.push((key.to_string(), val.to_string()));
+        self
+    }
+
+    pub fn dir(mut self, dir: &Path) -> Self {
+        self.dir = Some(dir.to_path_buf());
+        self
+    }
+
+    /// Execute the command and return a `TracerOutput`.
+    pub fn run(self) -> TracerOutput {
+        let refs: Vec<&str> = self.args.iter().map(|s| s.as_str()).collect();
+        let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
+
+        if !self.env_vars.is_empty() {
+            let env: Vec<(&str, &str)> = self
+                .env_vars
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            return trace_with_env(&refs, &env, timeout);
+        }
+
+        if let Some(input) = &self.stdin_input {
+            if self.timeout.is_some() {
+                return trace_with_stdin_timeout(&refs, input, timeout);
+            }
+            return trace_with_stdin(&refs, input);
+        }
+
+        if self.noninteractive {
+            return trace_with_timeout_noninteractive(&refs, timeout);
+        }
+
+        if let Some(dir) = &self.dir {
+            return trace_with_timeout_in_dir(&refs, timeout, dir);
+        }
+
+        if self.timeout.is_some() {
+            return trace_with_timeout(&refs, timeout);
+        }
+
+        trace(&refs)
+    }
+}
+
+/// Start a trace command from a terminal-style string.
+pub fn cmd(command: &str) -> Cmd {
+    Cmd {
+        args: shell_split(command),
+        timeout: None,
+        stdin_input: None,
+        noninteractive: false,
+        env_vars: Vec::new(),
+        dir: None,
+    }
+}
+
+/// Shell-quote a string for safe interpolation into a `cmd()` format string.
+/// Uses single quotes (falls back to double quotes if the value contains `'`).
+pub fn sq(s: impl AsRef<str>) -> String {
+    let s = s.as_ref();
+    if !s.contains('\'') {
+        format!("'{}'", s)
+    } else if !s.contains('"') {
+        format!("\"{}\"", s)
+    } else {
+        // Both quote types present — escape single quotes within single-quoted string
+        format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
+}
+
+/// Shorthand for `Duration::from_secs(n)`.
+pub fn secs(n: u64) -> Duration {
+    Duration::from_secs(n)
+}
+
+/// Run malwi and return a `TracerOutput`.
+pub fn trace(args: &[&str]) -> TracerOutput {
+    TracerOutput::new(run_tracer(args))
+}
+
+/// Run malwi with timeout and return a `TracerOutput`.
+pub fn trace_with_timeout(args: &[&str], timeout: Duration) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_timeout(args, timeout))
+}
+
+/// Run malwi with timeout in a specific directory and return a `TracerOutput`.
+pub fn trace_with_timeout_in_dir(args: &[&str], timeout: Duration, dir: &Path) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_timeout_in_dir(args, timeout, dir))
+}
+
+/// Run malwi with timeout in non-interactive mode and return a `TracerOutput`.
+pub fn trace_with_timeout_noninteractive(args: &[&str], timeout: Duration) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_timeout_noninteractive(args, timeout))
+}
+
+/// Run malwi with stdin input and return a `TracerOutput`.
+pub fn trace_with_stdin(args: &[&str], stdin_input: &str) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_stdin(args, stdin_input))
+}
+
+/// Run malwi with stdin input + timeout and return a `TracerOutput`.
+pub fn trace_with_stdin_timeout(
+    args: &[&str],
+    stdin_input: &str,
+    timeout: Duration,
+) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_stdin_timeout(args, stdin_input, timeout))
+}
+
+// ---------------------------------------------------------------------------
+// write_temp_policy
+// ---------------------------------------------------------------------------
+
+static POLICY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Write a temporary policy YAML file and return its path.
+/// Uses a unique name per call to avoid conflicts when tests run in parallel.
+pub fn write_temp_policy(content: &str) -> (PathBuf, std::fs::File) {
+    write_temp_policy_with_prefix("malwi-test-policy", content)
+}
+
+/// Write a temporary policy YAML file with a custom filename prefix.
+pub fn write_temp_policy_with_prefix(prefix: &str, content: &str) -> (PathBuf, std::fs::File) {
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let id = POLICY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!("{}-{}-{}.yaml", prefix, std::process::id(), id));
+    let mut f = std::fs::File::create(&path).expect("failed to create temp policy file");
+    f.write_all(content.as_bytes())
+        .expect("failed to write policy");
+    f.flush().expect("failed to flush policy");
+    (path, f)
+}
+
+// ---------------------------------------------------------------------------
+// run_tracer_with_env
+// ---------------------------------------------------------------------------
+
+/// Run malwi with extra environment variables passed to the child process.
+pub fn run_tracer_with_env(args: &[&str], env_vars: &[(&str, &str)], timeout: Duration) -> Output {
+    use std::thread;
+
+    let mut cmd = Command::new(tracer_binary());
+    cmd.args(args)
+        .current_dir(fixtures_dir())
+        .env("MALWI_AGENT_LIB", agent_library())
+        .env("MALWI_AGENT_DEBUG", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    for &(key, val) in env_vars {
+        cmd.env(key, val);
+    }
+
+    configure_child_process_group(&mut cmd);
+
+    let mut child = cmd.spawn().expect("failed to spawn tracer");
+
+    let stdout_pipe = child.stdout.take().unwrap();
+    let stderr_pipe = child.stderr.take().unwrap();
+
+    let stdout_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::BufReader::new(stdout_pipe), &mut buf).ok();
+        buf
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::BufReader::new(stderr_pipe), &mut buf).ok();
+        buf
+    });
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let status = terminate_child_with_timeout(&mut child);
+                    let stdout = stdout_thread.join().unwrap_or_default();
+                    let stderr = stderr_thread.join().unwrap_or_default();
+                    return Output {
+                        status,
+                        stdout,
+                        stderr,
+                    };
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("Error waiting for tracer: {}", e),
+        }
+    }
+}
+
+/// Run malwi with extra env vars and return a `TracerOutput`.
+pub fn trace_with_env(args: &[&str], env_vars: &[(&str, &str)], timeout: Duration) -> TracerOutput {
+    TracerOutput::new(run_tracer_with_env(args, env_vars, timeout))
+}
+
+// ---------------------------------------------------------------------------
+// parse_json_events
+// ---------------------------------------------------------------------------
+
+/// Parse NDJSON lines from stdout into a vec of JSON values.
+pub fn parse_json_events(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }

@@ -32,20 +32,14 @@ fn test_cross_runtime_traces_python_nodejs_and_native_calls() {
 
     skip_if_no_python!(python => {
         // Trace Python functions, JS built-in APIs, and Python's open() calls
-        let output = run_tracer(&[
-            "x",
-            "--py", "traced_python_entry",   // Python entry function
-            "--py", "nested_python_call",    // Nested Python function
-            "--py", "open",                  // Python's open() call
-            "--js", "fs.*",                  // JS fs module calls
-            "--",
-            python.to_str().unwrap(),
-            fixture("test_cross_runtime.py").to_str().unwrap(),
-        ]);
+        let output = cmd(&format!(
+            "x --py traced_python_entry --py nested_python_call --py open --js fs.* -- {} {}",
+            python.display(),
+            fixture("test_cross_runtime.py").display()
+        )).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         let combined = format!("{}\n{}", stdout, stderr);
 
         eprintln!("=== Cross-Runtime Test Output ===");
@@ -54,7 +48,7 @@ fn test_cross_runtime_traces_python_nodejs_and_native_calls() {
 
         // Test should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "Cross-runtime test failed to complete. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -62,7 +56,7 @@ fn test_cross_runtime_traces_python_nodejs_and_native_calls() {
         // Verify Python traces are present
         let has_python_entry = combined.contains("traced_python_entry");
         let has_python_nested = combined.contains("nested_python_call");
-        let has_python_open = combined.lines().any(|l| l.contains("[malwi]") && l.contains("open"));
+        let has_python_open = has_traced_line(&combined, "open");
 
         eprintln!("Python traces found:");
         eprintln!("  traced_python_entry: {}", has_python_entry);

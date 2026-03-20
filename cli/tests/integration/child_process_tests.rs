@@ -16,15 +16,14 @@ fn setup() {
 fn test_fork_syscall_detected_in_child_process() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "fork"]);
+    let output = cmd("x -s spawner_marker -- ./spawner fork").run();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully
     assert!(
-        output.status.success(),
+        output.success(),
         "Fork test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -43,15 +42,15 @@ fn test_fork_syscall_detected_in_child_process() {
 fn test_exec_syscall_detected_when_process_replaced() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "exec"]);
+    let output = cmd("x -s spawner_marker -- ./spawner exec").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     // Should complete (exec replaces the process image)
     // The test passes if we don't crash — this is a crash-safety test
     assert!(
-        output.status.success(),
+        output.success(),
         "Exec test should complete without crashing. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -62,14 +61,14 @@ fn test_exec_syscall_detected_when_process_replaced() {
 fn test_posix_spawn_detected_in_spawned_process() {
     setup();
 
-    let output = run_tracer(&["x", "-s", "spawner_marker", "--", "./spawner", "spawn"]);
+    let output = cmd("x -s spawner_marker -- ./spawner spawn").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     // Should complete successfully
     assert!(
-        output.status.success(),
+        output.success(),
         "Spawn test failed. stdout: {}, stderr: {}",
         stdout,
         stderr

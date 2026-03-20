@@ -5,6 +5,7 @@
 use crate::common::*;
 use crate::skip_if_no_bash_primary;
 use crate::skip_if_no_node_primary;
+use crate::skip_if_no_python_primary;
 use std::path::PathBuf;
 
 fn setup() {
@@ -31,25 +32,16 @@ fn test_review_mode_approve_allows_native_execution() {
     setup();
 
     // Test review mode with approve (Y) - function should execute
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "Y\nY\n", // Approve all calls
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("Y\nY\n")
+        .run(); // Approve all calls
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully
     assert!(
-        output.status.success(),
+        output.success(),
         "Review mode approve test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -75,21 +67,12 @@ fn test_review_mode_deny_blocks_native_execution() {
     setup();
 
     // Test review mode with deny (n) - function should be blocked
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "n\nn\n", // Deny all calls
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("n\nn\n")
+        .run(); // Deny all calls
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should show review prompt
     assert!(
@@ -112,25 +95,16 @@ fn test_review_mode_inspect_shows_details_then_reprompts() {
     setup();
 
     // Test review mode with inspect (i) then approve - should show details
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "i\nY\ni\nY\n", // Inspect then approve for each call
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("i\nY\ni\nY\n")
+        .run(); // Inspect then approve for each call
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully (approved after inspect)
     assert!(
-        output.status.success(),
+        output.success(),
         "Review mode inspect test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -159,78 +133,54 @@ fn test_review_mode_inspect_shows_details_then_reprompts() {
 fn test_review_mode_approve_allows_python_execution() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Python review test: python3 not found");
-            return;
-        }
-    };
-
-    // Create test script
-    let test_script = r#"
+    skip_if_no_python_primary!(python => {
+        // Create test script
+        let test_script = r#"
 def target_func(x):
     return x * 2
 
 result = target_func(21)
 print(f"Result: {result}")
 "#;
-    std::fs::write("/tmp/test_review_py.py", test_script).unwrap();
+        std::fs::write("/tmp/test_review_py.py", test_script).unwrap();
 
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "--py",
-            "target_func",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_review_py.py",
-        ],
-        "Y\n", // Approve
-    );
+        let output = cmd(&format!("x -r --py target_func -- {} /tmp/test_review_py.py", python.display()))
+            .stdin("Y\n").run(); // Approve
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    // Should complete successfully
-    assert!(
-        output.status.success(),
-        "Python review approve test failed. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should complete successfully
+        assert!(
+            output.success(),
+            "Python review approve test failed. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    // Should show review prompt with Python function
-    assert!(
-        stdout.contains("target_func"),
-        "Expected target_func in review prompt. stdout: {}",
-        stdout
-    );
+        // Should show review prompt with Python function
+        assert!(
+            stdout.contains("target_func"),
+            "Expected target_func in review prompt. stdout: {}",
+            stdout
+        );
 
-    // Function should have executed (result printed)
-    assert!(
-        stdout.contains("Result: 42"),
-        "Expected function to execute and print result. stdout: {}",
-        stdout
-    );
+        // Function should have executed (result printed)
+        assert!(
+            stdout.contains("Result: 42"),
+            "Expected function to execute and print result. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
 fn test_review_mode_deny_raises_python_permission_error() {
     setup();
 
-    let python = match find_python() {
-        Some(p) => p,
-        None => {
-            println!("SKIPPED: Python review test: python3 not found");
-            return;
-        }
-    };
-
-    // Create test script that catches the PermissionError
-    let test_script = r#"
+    skip_if_no_python_primary!(python => {
+        // Create test script that catches the PermissionError
+        let test_script = r#"
 def target_func(x):
     return x * 2
 
@@ -240,49 +190,39 @@ try:
 except PermissionError as e:
     print(f"Blocked: {e}")
 "#;
-    std::fs::write("/tmp/test_review_py_deny.py", test_script).unwrap();
+        std::fs::write("/tmp/test_review_py_deny.py", test_script).unwrap();
 
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "--py",
-            "target_func",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_review_py_deny.py",
-        ],
-        "n\n", // Deny
-    );
+        let output = cmd(&format!("x -r --py target_func -- {} /tmp/test_review_py_deny.py", python.display()))
+            .stdin("n\n").run(); // Deny
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
-    // Should show BLOCKED message
-    assert!(
-        has_review_blocked(&stdout, "target_func"),
-        "Expected BLOCKED message for target_func. stdout: {}, stderr: {}",
-        stdout,
-        stderr
-    );
+        // Should show BLOCKED message
+        assert!(
+            has_review_blocked(&stdout, "target_func"),
+            "Expected BLOCKED message for target_func. stdout: {}, stderr: {}",
+            stdout,
+            stderr
+        );
 
-    // Function should have been blocked (PermissionError caught or uncaught)
-    let was_blocked = stdout.contains("Blocked:")
-        || stdout.contains("PermissionError")
-        || stderr.contains("PermissionError");
-    assert!(
-        was_blocked,
-        "Expected PermissionError when function blocked. stdout: {}, stderr: {}",
-        stdout, stderr
-    );
+        // Function should have been blocked (PermissionError caught or uncaught)
+        let was_blocked = stdout.contains("Blocked:")
+            || stdout.contains("PermissionError")
+            || stderr.contains("PermissionError");
+        assert!(
+            was_blocked,
+            "Expected PermissionError when function blocked. stdout: {}, stderr: {}",
+            stdout, stderr
+        );
 
-    // Should NOT have the successful result
-    assert!(
-        !stdout.contains("Result: 42"),
-        "Function should not have executed. stdout: {}",
-        stdout
-    );
+        // Should NOT have the successful result
+        assert!(
+            !stdout.contains("Result: 42"),
+            "Function should not have executed. stdout: {}",
+            stdout
+        );
+    });
 }
 
 #[test]
@@ -306,22 +246,15 @@ print(greet("World", "Hi"))
 "#;
     std::fs::write("/tmp/test_review_py_inspect.py", test_script).unwrap();
 
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "--py",
-            "greet",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_review_py_inspect.py",
-        ],
-        "i\nY\n", // Inspect then approve
-    );
+    let output = cmd(&format!(
+        "x -r --py greet -- {} /tmp/test_review_py_inspect.py",
+        python.display()
+    ))
+    .stdin("i\nY\n")
+    .run(); // Inspect then approve
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should show details section with argument values
     assert!(
@@ -349,24 +282,16 @@ fn test_review_mode_approve_allows_v8_execution() {
     setup();
 
     skip_if_no_node_primary!(node => {
-        let output = run_tracer_with_stdin(
-            &[
-                "x", "-r",
-                "--js", "targetFunc",
-                "--",
-                node.to_str().unwrap(),
-                "--eval", "function targetFunc() { return 42; } console.log('Result:', targetFunc());",
-            ],
-            "Y\n",  // Approve
-        );
+        let code = "function targetFunc() { return 42; } console.log('Result:', targetFunc());";
+        let output = cmd(&format!("x -r --js targetFunc -- {} --eval {}", node.display(), sq(code)))
+            .stdin("Y\n").run(); // Approve
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 review approve test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -397,23 +322,15 @@ fn test_review_mode_deny_blocks_v8_execution() {
     setup();
 
     skip_if_no_node_primary!(node => {
-        let output = run_tracer_with_stdin(
-            &[
-                "x", "-r",
-                "--js", "eval",
-                "--",
-                node.to_str().unwrap(),
-                "--eval", "let executed = false; try { eval(\"executed = true\"); } catch (e) { console.log('EVAL_BLOCKED', e.name); } console.log('EXECUTED', executed);",
-            ],
-            "n\n",  // Deny eval/codegen
-        );
+        let code = "let executed = false; try { eval(\"executed = true\"); } catch (e) { console.log('EVAL_BLOCKED', e.name); } console.log('EXECUTED', executed);";
+        let output = cmd(&format!("x -r --js eval -- {} --eval {}", node.display(), sq(code)))
+            .stdin("n\n").run(); // Deny eval/codegen
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "V8 review deny test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -443,25 +360,16 @@ fn test_review_mode_empty_input_defaults_to_approve() {
     setup();
 
     // Empty input (just Enter) should default to approve (Y)
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "\n\n", // Just Enter = approve
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("\n\n")
+        .run(); // Just Enter = approve
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully (empty = approve)
     assert!(
-        output.status.success(),
+        output.success(),
         "Review mode empty input test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -481,25 +389,16 @@ fn test_review_mode_prompts_for_each_call() {
 
     // Test review mode with multiple calls of the same function
     // simple_target calls simple_target_marker twice
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "Y\nY\n", // Approve both calls
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("Y\nY\n")
+        .run(); // Approve both calls
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully
     assert!(
-        output.status.success(),
+        output.success(),
         "Review mode multiple calls test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -520,25 +419,16 @@ fn test_review_mode_approve_is_case_insensitive() {
     setup();
 
     // Test that 'y' (lowercase) also approves
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "y\ny\n", // lowercase y
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("y\ny\n")
+        .run(); // lowercase y
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Should complete successfully
     assert!(
-        output.status.success(),
+        output.success(),
         "Review mode lowercase 'y' test failed. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -557,20 +447,11 @@ fn test_review_mode_enabled_with_short_flag() {
     setup();
 
     // Test -r short flag works
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "Y\nY\n",
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("Y\nY\n")
+        .run();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
 
     assert!(
         has_review_prompt(&stdout),
@@ -584,20 +465,11 @@ fn test_review_mode_enabled_with_long_flag() {
     setup();
 
     // Test --review long flag works
-    let output = run_tracer_with_stdin(
-        &[
-            "x",
-            "--review",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "Y\nY\n",
-    );
+    let output = cmd("x --review -s simple_target_marker -- ./simple_target")
+        .stdin("Y\nY\n")
+        .run();
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
 
     assert!(
         has_review_prompt(&stdout),
@@ -623,27 +495,18 @@ fn test_review_mode_deny_caches_block_decision() {
     // simple_target calls simple_target_marker twice. Denying the first call
     // should cache the block; the second call should be blocked instantly.
     // The process must complete within the timeout (no hang).
-    let output = run_tracer_with_stdin_timeout(
-        &[
-            "x",
-            "-r",
-            "-s",
-            "simple_target_marker",
-            "--",
-            "./simple_target",
-        ],
-        "n\n", // Deny the first call; second should be cached
-        std::time::Duration::from_secs(10),
-    );
+    let output = cmd("x -r -s simple_target_marker -- ./simple_target")
+        .stdin("n\n")
+        .timeout(secs(10))
+        .run(); // Deny the first call; second should be cached
 
-    let stdout_raw = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = strip_ansi_codes(&stdout_raw);
+    let stdout = output.stdout();
+    let stderr = output.stderr();
 
     // Process must have completed (not killed by timeout)
     // On timeout kill, exit status is non-zero from signal
     assert!(
-        output.status.success() || output.status.code().is_some(),
+        output.success() || output.inner.status.code().is_some(),
         "Process should complete, not hang. stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -687,22 +550,13 @@ fn test_review_mode_deny_blocks_exec_in_shell_script() {
 
         // Run with review mode (-r) and exec filter (-c cat)
         // Deny the cat execution
-        let output = run_tracer_with_stdin(
-            &[
-                "x", "-r",
-                "-c", "cat",
-                "--",
-                bash.to_str().unwrap(),
-                script_path.to_str().unwrap(),
-            ],
-            "n\n",  // Deny the cat call
-        );
+        let output = cmd(&format!("x -r -c cat -- {} {}", bash.display(), script_path.display()))
+            .stdin("n\n").run(); // Deny the cat call
 
         let _ = std::fs::remove_file(&script_path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         println!("stdout: {}", stdout);
         println!("stderr: {}", stderr);
 

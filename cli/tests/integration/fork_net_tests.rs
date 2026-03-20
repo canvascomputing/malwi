@@ -14,40 +14,27 @@ fn setup() {
     build_fixtures();
 }
 
-/// Build args for tracing network symbols + marker function.
-pub(crate) fn net_trace_args(mode: &str) -> Vec<&str> {
-    vec![
-        "x",
-        "-s",
-        "getaddrinfo",
-        "-s",
-        "socket",
-        "-s",
-        "connect",
-        "-s",
-        "daemon_net_marker",
-        "--",
-        "./daemon_net",
-        mode,
-    ]
+/// Build a trace command for tracing network symbols + marker function.
+pub(crate) fn net_trace_cmd(mode: &str) -> Cmd {
+    cmd(&format!(
+        "x -s getaddrinfo -s socket -s connect -s daemon_net_marker -- ./daemon_net {}",
+        mode
+    ))
 }
 
 /// Check that network-related symbols appear in trace output.
 pub(crate) fn assert_has_network_traces(output: &str, context: &str) {
     let clean = strip_ansi_codes(output);
-    let has_marker = clean
-        .lines()
-        .any(|l| l.contains("[malwi]") && l.contains("daemon_net_marker"));
+    let has_marker = has_traced_line(&clean, "daemon_net_marker");
     assert!(
         has_marker,
         "Expected daemon_net_marker trace event. {context}\nOutput:\n{output}"
     );
 
     // At least one network symbol should appear (getaddrinfo, socket, or connect)
-    let has_net = clean.lines().any(|l| {
-        l.contains("[malwi]")
-            && (l.contains("getaddrinfo") || l.contains("socket") || l.contains("connect"))
-    });
+    let has_net = has_traced_line(&clean, "getaddrinfo")
+        || has_traced_line(&clean, "socket")
+        || has_traced_line(&clean, "connect");
     assert!(
         has_net,
         "Expected network symbol trace event (getaddrinfo/socket/connect). {context}\nOutput:\n{output}"
@@ -59,14 +46,13 @@ pub(crate) fn assert_has_network_traces(output: &str, context: &str) {
 fn test_fork_connect_traces_network_symbols() {
     setup();
 
-    let args = net_trace_args("fork-connect");
-    let output = run_tracer(&args);
+    let output = net_trace_cmd("fork-connect").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "fork-connect failed. stdout: {stdout}, stderr: {stderr}"
     );
 
@@ -78,14 +64,13 @@ fn test_fork_connect_traces_network_symbols() {
 fn test_fork_thread_connect_traces_network_from_thread() {
     setup();
 
-    let args = net_trace_args("fork-thread-connect");
-    let output = run_tracer(&args);
+    let output = net_trace_cmd("fork-thread-connect").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "fork-thread-connect failed. stdout: {stdout}, stderr: {stderr}"
     );
 
@@ -97,14 +82,13 @@ fn test_fork_thread_connect_traces_network_from_thread() {
 fn test_fork_multi_connect_traces_all_children() {
     setup();
 
-    let args = net_trace_args("fork-multi-connect");
-    let output = run_tracer(&args);
+    let output = net_trace_cmd("fork-multi-connect").run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert!(
-        output.status.success(),
+        output.success(),
         "fork-multi-connect failed. stdout: {stdout}, stderr: {stderr}"
     );
 

@@ -7,7 +7,7 @@
 //! allowing its trace events to be received even after the original parent exits.
 
 use crate::common::*;
-use crate::fork_net_tests::{assert_has_network_traces, net_trace_args};
+use crate::fork_net_tests::{assert_has_network_traces, net_trace_cmd};
 
 fn setup() {
     build_fixtures();
@@ -18,11 +18,10 @@ fn setup() {
 fn test_daemon_connect_traces_network_from_daemon() {
     setup();
 
-    let args = net_trace_args("daemon-connect");
-    let output = run_tracer_with_timeout(&args, std::time::Duration::from_secs(10));
+    let output = net_trace_cmd("daemon-connect").timeout(secs(10)).run();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = output.stdout_raw();
+    let stderr = output.stderr();
 
     assert_has_network_traces(&stdout, &format!("mode=daemon-connect\nstderr: {stderr}"));
 }
