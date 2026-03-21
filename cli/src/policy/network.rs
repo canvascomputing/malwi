@@ -22,26 +22,32 @@ impl ActivePolicy {
         event: &TraceEvent,
         mut disp: EventDisposition,
     ) -> EventDisposition {
-        // Prefer structured NetworkInfo when available (populated agent-side).
-        // Falls back to text-based extraction for events without it.
+        // Prefer structured NetworkInfo when available (populated agent-side for
+        // native hooks like connect()). Bash/Exec events may lack NetworkInfo
+        // when the child runs without agent injection (macOS arm64e/SIP) — fall
+        // back to command argument parsing and text-based URL extraction.
         if let Some(ref net) = event.network_info {
             if let Some(net_disp) = self.evaluate_network_info(net) {
                 disp = pick_stricter(disp, net_disp);
             }
-        } else if matches!(event.hook_type, HookType::Bash | HookType::Exec) {
-            // Command-aware extraction for known network tools (curl, nc, ssh, etc.)
-            // Handles bare domains (e.g., `curl evil.com`) that lack a scheme.
+        } else {
             let args: Vec<&str> = event
                 .arguments
                 .iter()
                 .filter_map(|a| a.display.as_deref())
                 .collect();
-            if let Some(net) = extract_network_target_from_command(&event.function, &args) {
-                if let Some(net_disp) = self.evaluate_network_info(&net) {
-                    disp = pick_stricter(disp, net_disp);
+
+            // Command-aware extraction for known network tools (curl, nc, ssh, etc.)
+            // Handles bare domains (e.g., `curl evil.com`) that lack a scheme.
+            if matches!(event.hook_type, HookType::Bash | HookType::Exec) {
+                if let Some(net) = extract_network_target_from_command(&event.function, &args) {
+                    if let Some(net_disp) = self.evaluate_network_info(&net) {
+                        disp = pick_stricter(disp, net_disp);
+                    }
                 }
             }
-            // Still fall through to text-based URL extraction for URLs with schemes
+
+            // Text-based URL extraction (both command and non-command paths)
             if !disp.is_blocked() {
                 if let Some(http_disp) = self.evaluate_http_from_args(&args) {
                     disp = pick_stricter(disp, http_disp);
@@ -51,22 +57,6 @@ impl ActivePolicy {
                 if let Some(net_disp) = self.evaluate_networking_from_args(&args) {
                     disp = pick_stricter(disp, net_disp);
                 }
-            }
-        } else {
-            // Fallback: text-based extraction from argument display strings
-            let args: Vec<&str> = event
-                .arguments
-                .iter()
-                .filter_map(|a| a.display.as_deref())
-                .collect();
-            if let Some(http_disp) = self.evaluate_http_from_args(&args) {
-                disp = pick_stricter(disp, http_disp);
-                if disp.is_blocked() {
-                    return disp;
-                }
-            }
-            if let Some(net_disp) = self.evaluate_networking_from_args(&args) {
-                disp = pick_stricter(disp, net_disp);
             }
         }
 
@@ -281,14 +271,17 @@ impl ParsedUrl {
 
 /// Extract a network target from a known network command's arguments.
 ///
-/// Recognizes bare hostnames and host:port patterns for commands like
-/// curl, wget, nc, ssh, dig, ping, telnet, etc. Returns structured
-/// NetworkInfo for evaluation against network policy rules.
+/// **Why this exists**: On macOS, child processes may run without the agent
+/// (arm64e binaries, SIP-protected paths) so native connect() hooks don't
+/// fire and there is no structured NetworkInfo. On Linux, LD_PRELOAD
+/// propagates naturally and native hooks produce NetworkInfo — these
+/// extractors serve as a fallback for the macOS gap.
 ///
-/// Returns None for:
-/// - Unknown commands (not in the recognized list)
-/// - Arguments that contain `://` (handled by the existing URL extractor)
-/// - Commands with no parseable host argument
+/// Bash expansion resolves variables, command substitution, and encoding
+/// before shell_execve() fires, so the args contain final expanded values.
+///
+/// Returns None for unknown commands, arguments with `://` (handled by the
+/// URL extractor), or commands with no parseable host argument.
 fn extract_network_target_from_command(function: &str, args: &[&str]) -> Option<NetworkInfo> {
     match function {
         "curl" | "wget" | "aria2c" => extract_curl_wget_target(args),
@@ -299,6 +292,26 @@ fn extract_network_target_from_command(function: &str, args: &[&str]) -> Option<
         "telnet" | "ftp" => extract_host_port_target(args),
         _ => None,
     }
+}
+
+/// Collect positional (non-flag) arguments, skipping flags and their values.
+fn positional_args<'a>(args: &[&'a str], value_flags: &[&str]) -> Vec<&'a str> {
+    let mut result = Vec::new();
+    let mut skip_next = false;
+    for &arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg.starts_with('-') {
+            if value_flags.contains(&arg) {
+                skip_next = true;
+            }
+            continue;
+        }
+        result.push(arg);
+    }
+    result
 }
 
 /// Check if a string looks like a hostname or domain (not a flag, not a path).
@@ -313,9 +326,7 @@ fn looks_like_host(s: &str) -> bool {
 
 /// Extract target from curl/wget/aria2c: first non-flag arg that looks like a host.
 fn extract_curl_wget_target(args: &[&str]) -> Option<NetworkInfo> {
-    // Skip argv[0] (command name)
     let args = args.get(1..)?;
-    // Flags that take a value argument (skip next arg too)
     const VALUE_FLAGS: &[&str] = &[
         "-o",
         "-O",
@@ -353,18 +364,7 @@ fn extract_curl_wget_target(args: &[&str]) -> Option<NetworkInfo> {
         "--cacert",
         "--capath",
     ];
-    let mut skip_next = false;
-    for &arg in args {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if arg.starts_with('-') {
-            if VALUE_FLAGS.contains(&arg) {
-                skip_next = true;
-            }
-            continue;
-        }
+    for arg in positional_args(args, VALUE_FLAGS) {
         // Skip args with :// — handled by the URL extractor
         if arg.contains("://") {
             return None;
@@ -385,21 +385,7 @@ fn extract_curl_wget_target(args: &[&str]) -> Option<NetworkInfo> {
 fn extract_nc_target(args: &[&str]) -> Option<NetworkInfo> {
     let args = args.get(1..)?;
     const VALUE_FLAGS: &[&str] = &["-w", "-p", "-s", "-I", "-O", "-q", "-X"];
-    let mut positional = Vec::new();
-    let mut skip_next = false;
-    for &arg in args {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if arg.starts_with('-') {
-            if VALUE_FLAGS.contains(&arg) {
-                skip_next = true;
-            }
-            continue;
-        }
-        positional.push(arg);
-    }
+    let positional = positional_args(args, VALUE_FLAGS);
     let host = positional.first()?;
     if !looks_like_host(host) {
         return None;
@@ -501,38 +487,19 @@ fn extract_host_target(args: &[&str]) -> Option<NetworkInfo> {
     const VALUE_FLAGS: &[&str] = &[
         "-c", "-i", "-s", "-t", "-W", "-w", "-I", "-m", "-Q", "-S", "-T", "-p", "-q", "-f",
     ];
-    let mut skip_next = false;
-    for &arg in args {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if arg.starts_with('-') {
-            if VALUE_FLAGS.contains(&arg) {
-                skip_next = true;
-            }
-            continue;
-        }
-        if looks_like_host(arg) {
-            return Some(NetworkInfo {
-                domain: Some(arg.to_string()),
-                ..Default::default()
-            });
-        }
-    }
-    None
+    let host = positional_args(args, VALUE_FLAGS)
+        .into_iter()
+        .find(|arg| looks_like_host(arg))?;
+    Some(NetworkInfo {
+        domain: Some(host.to_string()),
+        ..Default::default()
+    })
 }
 
 /// Extract target from telnet/ftp: `telnet host [port]`
 fn extract_host_port_target(args: &[&str]) -> Option<NetworkInfo> {
     let args = args.get(1..)?;
-    let mut positional = Vec::new();
-    for &arg in args {
-        if arg.starts_with('-') {
-            continue;
-        }
-        positional.push(arg);
-    }
+    let positional = positional_args(args, &[]);
     let host = positional.first()?;
     if !looks_like_host(host) {
         return None;

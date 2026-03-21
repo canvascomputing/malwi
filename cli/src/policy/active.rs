@@ -17,6 +17,9 @@
 use crate::policy::{Category, EnforcementMode, PolicyDecision, PolicyEngine, Runtime, SectionKey};
 use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
+/// Maximum argument count for native function hooks (covers most libc signatures).
+const NATIVE_HOOK_ARG_COUNT: usize = 6;
+
 // ── Types ──────────────────────────────────────────────────────
 
 /// The disposition of a trace event after policy evaluation.
@@ -218,7 +221,11 @@ fn emit_function_hook(
         HookConfig {
             hook_type,
             symbol: symbol.to_string(),
-            arg_count: if is_native { Some(6) } else { None },
+            arg_count: if is_native {
+                Some(NATIVE_HOOK_ARG_COUNT)
+            } else {
+                None
+            },
             capture_return: true,
             capture_stack,
         },

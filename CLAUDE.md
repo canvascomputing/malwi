@@ -121,7 +121,64 @@ skip_if_no_node!(node => { /* runs against ALL discovered Node.js versions */ })
 skip_if_no_bash!(bash => { /* runs against ALL discovered Bash versions */ });
 ```
 
+For tests that only need **one** binary (policy, cross-runtime, etc.), use `_primary` macros:
+
+```rust
+skip_if_no_node_primary!(node => { /* first available Node.js only */ });
+skip_if_no_python_primary!(python => { /* first available Python only */ });
+skip_if_no_bash_primary!(bash => { /* first available Bash only */ });
+```
+
 Test binaries auto-discovered from `binaries/` at project root (or `MALWI_TEST_BINARIES` env var).
+
+### Test Utilities (`common/mod.rs`)
+
+**`cmd()` builder** — run malwi with a terminal-style command string:
+```rust
+let output = cmd(&format!("x --py urllib.request.urlopen -- {} -c {}", python.display(), sq(script)))
+    .timeout(secs(10)).run();
+```
+- `cmd(command)` — parse command string, returns `Cmd` builder
+- `.timeout(dur)` / `.stdin(input)` / `.noninteractive()` / `.env(k, v)` / `.dir(path)` — chain options
+- `.run()` — execute, returns `TracerOutput`
+- `sq(s)` — shell-quote a string for safe interpolation into `cmd()` format strings
+- `secs(n)` — shorthand for `Duration::from_secs(n)`
+
+**`TracerOutput`** — wrapper around `std::process::Output`:
+- `output.stdout()` — decoded + ANSI-stripped
+- `output.stdout_raw()` — decoded, no stripping (for JSON)
+- `output.stderr()` — decoded
+- `output.success()` — bool
+- `output.json_events()` — parse NDJSON lines into `Vec<serde_json::Value>`
+- `output.has_traced(func)` — true if any `[malwi]` line traces `func` (not denied/warning)
+- `output.has_denied(func)` — true if any `[malwi] denied:` line contains `func`
+- `output.has_warning(func)` — true if any `[malwi] warning:` line contains `func`
+- `output.assert_success(context)` / `output.assert_stdout_contains(pattern, context)`
+
+**Free functions** (for raw string checks):
+- `has_traced_line(stdout, func)` / `has_denied_line(stdout, func)` / `has_warning_line(stdout, func)`
+- `write_temp_policy(yaml)` / `write_temp_policy_with_prefix(prefix, yaml)` — unique temp files
+- `parse_json_events(stdout)` — NDJSON parsing
+
+### Preferred Test Style
+
+```rust
+#[test]
+fn test_python_urllib_shows_url_argument() {
+    setup();
+    skip_if_no_python_primary!(python => {
+        let output = cmd(&format!("x --py urllib.request.urlopen -- {} -c {}",
+            python.display(), sq(SCRIPT))).run();
+        assert!(output.has_traced("urllib.request.urlopen"), "stdout: {}", output.stdout());
+    });
+}
+```
+
+- Use `cmd(&format!(...)).run()` — command reads like a terminal invocation
+- Use `output.has_traced()` / `has_denied()` / `has_warning()` for precise event checks
+- Use `skip_if_no_*_primary!` for single-binary tests, `skip_if_no_*!` for multi-version
+- Use `output.json_events()` for `-f json` assertions
+- Use `write_temp_policy()` from common — never define it per-file
 
 ## Naming and Organization
 
@@ -161,7 +218,7 @@ Integration tests: `cli/tests/integration/<runtime>_tests.rs` — one file per r
 Test function pattern: `test_<runtime>_<scenario>_<expected_outcome>`
 - Name after **behavior**, not internals
 - Policy tests include policy name: `test_air_gap_blocks_curl`
-- Use JSON output (`-f json`) + `serde_json::Value` for assertions in new tests
+- Use JSON output (`-f json`) + `output.json_events()` for structured assertions in new tests
 
 ### TraceEvent Function Names
 

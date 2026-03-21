@@ -653,3 +653,56 @@ fn test_bash_trap_exit_commands_traced() {
         }
     });
 }
+
+// ============================================================================
+// Linux-Specific: LD_PRELOAD Propagation to Child Processes
+// ============================================================================
+
+/// On Linux, LD_PRELOAD propagates to child processes. When bash runs
+/// `curl`, the child curl process should get the agent injected and
+/// native connect() hooks should fire — producing structured NetworkInfo.
+/// On macOS, curl is SIP-protected so this test is Linux-only.
+#[test]
+#[cfg(target_os = "linux")]
+fn test_bash_child_curl_native_hooks_fire_on_linux() {
+    setup();
+
+    // Skip if curl not available
+    if std::process::Command::new("curl")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        println!("SKIPPED: curl not found in PATH");
+        return;
+    }
+
+    skip_if_no_bash!(bash => {
+        let output = cmd(&format!(
+            "x -s connect -f json -c * -- {} -c {}",
+            bash.display(),
+            sq("curl http://127.0.0.1:1 2>/dev/null || true")
+        ))
+        .timeout(secs(15))
+        .run();
+
+        let events = output.json_events();
+
+        // Bash/Exec event for the curl command
+        assert!(
+            events.iter().any(|e| e["name"] == "curl"),
+            "Expected curl command event. events: {:?}",
+            events
+        );
+
+        // Native connect() from the child curl process (proves LD_PRELOAD propagated)
+        assert!(
+            events
+                .iter()
+                .any(|e| e["source"] == "native" && e["name"] == "connect"),
+            "Expected native connect() from child curl process (LD_PRELOAD propagation). \
+             events: {:?}",
+            events
+        );
+    });
+}
