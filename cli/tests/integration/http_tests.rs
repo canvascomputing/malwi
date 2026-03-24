@@ -494,17 +494,14 @@ python:
 "#);
 
         // socket.connect to port 6379 — should be denied via endpoint policy
-        let script = r#"
-import socket
-import time
+        let script = format!(r#"import socket
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(('127.0.0.1', 6379))
 except Exception:
-    pass
-time.sleep(0.5)
-"#;
-        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(script)))
+    pass{PY_FLUSH}
+"#);
+        let output = cmd(&format!("x -p {} -- {} -c {}", policy_path.display(), python.display(), sq(&script)))
             .timeout(secs(10)).run();
 
         let _ = std::fs::remove_file(&policy_path);

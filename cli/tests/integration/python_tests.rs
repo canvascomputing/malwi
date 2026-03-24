@@ -1042,10 +1042,10 @@ fn test_python_envvar_monitoring_allows_subprocess_run() {
 fn test_python_c_function_module_self_not_in_args() {
     setup();
 
-    skip_if_no_python!(python => {
-        let py_code = "import socket\ntry:\n socket.getaddrinfo('test.example.com', 443)\nexcept: pass";
+    skip_if_no_python_primary!(python => {
+        let py_code = format!("import socket\ntry:\n socket.getaddrinfo('localhost', 443)\nexcept: pass{PY_FLUSH}");
         let output = cmd(&format!("x -f json --py *.getaddrinfo -- {} -c {}",
-            python.display(), sq(py_code)))
+            python.display(), sq(&py_code)))
             .run();
 
         let stdout = output.stdout_raw();
@@ -1058,16 +1058,46 @@ fn test_python_c_function_module_self_not_in_args() {
             })
             .collect();
 
-        assert!(!gai_events.is_empty(), "Expected getaddrinfo event. stdout: {}", stdout);
+        assert!(!gai_events.is_empty(), "Expected getaddrinfo event. stdout: {}\nstderr: {}", stdout, output.stderr());
 
         // Every getaddrinfo event must have the hostname as args[0], not a module repr
         for event in &gai_events {
             let args = event["args"].as_array().expect("args should be array");
             let first_arg = args[0].as_str().unwrap_or("");
             assert!(
-                first_arg.contains("test.example.com"),
-                "First arg should contain hostname, not module self. args: {:?}",
-                args
+                first_arg.contains("localhost"),
+                "First arg should contain hostname, not module self. args: {:?}\nstderr: {}",
+                args, output.stderr()
+            );
+        }
+    });
+}
+
+/// Stress test for glob-pattern event delivery.
+///
+/// Runs 10 iterations to amplify detection of intermittent delivery failures.
+/// Each iteration spawns a fresh process with a glob-pattern filter, exercising
+/// the lazy hook installation path (PYTRACE_C_CALL). If a regression reintroduces
+/// a 5% per-run failure rate, this test has ~40% chance of catching it per CI run.
+#[test]
+fn test_python_glob_pattern_event_delivery_stress() {
+    setup();
+    skip_if_no_python_primary!(python => {
+        for i in 0..10 {
+            let script = format!(
+                "import socket\ntry:\n socket.getaddrinfo('localhost', 443)\nexcept: pass{PY_FLUSH}"
+            );
+            let output = cmd(&format!(
+                "x -f json --py *.getaddrinfo -- {} -c {}",
+                python.display(), sq(&script)
+            )).run();
+            let events = output.json_events();
+            let has_gai = events.iter()
+                .any(|e| e["name"].as_str().map_or(false, |n| n.ends_with("getaddrinfo")));
+            assert!(
+                has_gai,
+                "Iteration {i}/10: no getaddrinfo event.\nstdout: {}\nstderr: {}",
+                output.stdout_raw(), output.stderr()
             );
         }
     });
