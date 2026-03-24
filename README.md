@@ -185,37 +185,31 @@ $ curl -fsSL canvascomputing.org/install-demo.sh | malwi x bash
 
 ## How It Works
 
-An agent library is injected into the target process via `DYLD_INSERT_LIBRARIES` (macOS) or `LD_PRELOAD` (Linux). It hooks Node.js, Python, Bash, and native function calls and streams them to the CLI over TCP. The CLI evaluates each call against the policy. Network allowlists auto-hook HTTP functions and enforce URL matching. Tracing propagates to child processes. No source changes required.
+`malwi` injects an agent library (`DYLD_INSERT_LIBRARIES` / `LD_PRELOAD`) into the target process. The agent hooks function calls across all runtimes and streams them to the CLI over TCP. The CLI evaluates each call against the policy and blocks, warns, or allows it. Tracing propagates to child processes.
 
 ```
-┌─────────────────────────────────────┐
-│ malwi CLI                           │
-│  Policy Engine → allow/deny/warn    │
-└────┬────────────────────▲───────────┘
-     │ inject             │ TCP (trace events)
-     ▼                    │
-┌────────────────────────────────────┐
-│ Target Process                     │
-│  Agent: Node.js · Python · Bash ·  │
-│         Native symbol hooks        │
-└────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ malwi CLI                            │
+│  receive events → policy → verdict   │
+└────┬─────────────────────▲───────────┘
+     │ inject              │ TCP
+     ▼                     │
+┌──────────────────────────────────────┐
+│ Target Process                       │
+│  Agent hooks:                        │
+│    Python · Node.js · Bash · Native  │
+└──────────────────────────────────────┘
 ```
-
-| ⚠️ Limitations | Mitigation |
-|:--|:--|
-| Inline `SVC`/`SYSCALL` bypasses libc hooks | `in planning` |
-| [SIP-protected](#macos-system-integrity-protection-sip) child processes run untraced on macOS | `in planning` |
 
 ## macOS System Integrity Protection (SIP)
 
 macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries under certain paths.
+Security researchers may disable SIP at their own risk.
 
 | SIP | Paths |
 |--|-------|
 | ✅ `malwi` works here | `/usr/local`, `/opt`, `~` |
 | **⚠️ SIP-protected** | `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications` |
-
-> Security researchers may disable SIP at their own risk.
 
 ## Security
 
