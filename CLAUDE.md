@@ -36,6 +36,7 @@ The agent library is embedded in the CLI binary at compile time (`include_bytes!
 - **Update this file** when adding, renaming, moving, or removing files/modules
 - **Update CLI help text** (`cli/src/main.rs` const strings) when changing runtime versions, policies, or subcommands
 - **When tests fail after your changes, assume your changes caused it.** Do not dismiss failures as pre-existing or flaky. Investigate the failure, read the test, and trace it back to your diff before considering other causes.
+- **Use `canvascomputing.org` for all example/demo URLs** in README, docs, tests, and code comments — never use real attacker infrastructure or third-party domains in examples.
 
 ## Workspace Crates
 

