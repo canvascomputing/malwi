@@ -4,26 +4,55 @@
 //! replacements. The replacement receives actual C arguments, enabling
 //! argument extraction on every call and true blocking for denied calls.
 //!
-//! When the profile hook sees a matching C function via PYTRACE_C_CALL,
-//! it installs the replacement. Since PYTRACE_C_CALL fires BEFORE CPython
-//! calls the C function, the replacement handles the current call too.
+//! Hook installation uses two eager mechanisms:
+//! 1. **sys.modules scan** — at registration time, iterate all loaded modules
+//!    and pre-install interceptors for matching C functions.
+//! 2. **Import hook** — replace `PyImport_ImportModuleLevelObject` so every
+//!    newly-imported module gets scanned immediately when import returns.
+//!
+//! Exact (non-glob) patterns like "os.getpid" are resolved via pending hooks
+//! that import the module and look up the function. Glob patterns like
+//! "*.getaddrinfo" are resolved by scanning module dicts.
 //!
 //! This also closes the C→C call tracing gap: e.g., pickle.loads internally
 //! calling os.getpid via PyObject_Call is invisible to the profile hook,
 //! but the replacement catches it.
+//!
+//! # Design Constraints
+//!
+//! **frida-gum callback restriction**: `Interceptor::replace` and `Mutex` locks
+//! must never be called from inside an `Interceptor::attach` on-enter/on-leave
+//! callback. Doing so corrupts frida-gum internal state and silently breaks
+//! event delivery. This is why the import hook and all C function hooks use
+//! `Interceptor::replace` instead of `Interceptor::attach`.
+//!
+//! **Filter immutability invariant**: Filters are set once during agent
+//! configuration (before `register_profile_hook`). The `SCANNED_MODULE_DICTS`
+//! dedup set means modules scanned during registration are never re-scanned.
+//! If filters were added at runtime, already-loaded modules would miss the new
+//! patterns — there is no mechanism to retroactively scan them.
+//!
+//! **`SCANNED_MODULE_DICTS` growth**: Bounded by the number of unique Python
+//! modules imported during process lifetime (typically 200–500, bounded by
+//! `sys.modules` size). Not a memory concern.
+//!
+//! **Trampoline TOCTOU pattern**: All `Interceptor::replace` calls store the
+//! trampoline *before* `end_transaction()`. The replacement cannot be called
+//! until after `end_transaction()`, guaranteeing the trampoline is non-null
+//! on first invocation.
 
 use std::collections::HashSet;
-use std::ffi::{c_void, CString};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ffi::{c_int, c_void, CString};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use crate::Interceptor;
 use log::debug;
 
 use crate::native;
-use crate::tracing::filter::Filter;
+use crate::tracing::filter::{check_filter, Filter};
 
-use super::ffi::{Py_IsInitializedFn, PYTHON_API};
+use super::ffi::{PyObjectHead, Py_IsInitializedFn, PYTHON_API};
 
 // =============================================================================
 // STATE
@@ -165,7 +194,13 @@ pub unsafe fn try_resolve_pending() {
         // Try to import the module
         let c_module = match CString::new(hook.module.as_str()) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(_) => {
+                debug!(
+                    "Skipping pending hook '{}': module name contains null byte",
+                    hook.display_name
+                );
+                continue;
+            }
         };
         let module_obj = import_module(c_module.as_ptr());
         if module_obj.is_null() {
@@ -188,6 +223,10 @@ pub unsafe fn try_resolve_pending() {
         let c_func_name = match CString::new(hook.function.as_str()) {
             Ok(s) => s,
             Err(_) => {
+                debug!(
+                    "Skipping pending hook '{}': function name contains null byte",
+                    hook.display_name
+                );
                 (api.py_decref)(module_obj);
                 continue;
             }
@@ -378,52 +417,408 @@ unsafe fn check_is_module_function(func_obj: *mut c_void, api: &super::ffi::Pyth
     ob_type == api.module_type
 }
 
-/// Ensure a C function (from PYTRACE_C_CALL arg) has a tracing replacement installed.
+// =============================================================================
+// EAGER GLOB RESOLUTION
+// =============================================================================
+
+/// Scan a single module's __dict__ for C functions matching glob filters.
 ///
-/// If the function is already replaced, this is a no-op. Otherwise, installs
-/// the replacement via `Interceptor::replace`.
+/// Iterates the module dict via PyDict_Next. For each PyCFunction entry,
+/// builds a qualified name and checks against filters. On match, installs
+/// an interceptor replacement.
+///
+/// Returns the number of hooks installed.
 ///
 /// # Safety
-/// Must be called with GIL held. `arg` must be a valid PyCFunctionObject pointer.
-pub unsafe fn ensure_replaced(arg: *mut c_void, display_name: &str, capture_stack: bool) {
+/// Must be called with GIL held. `module_dict` must be a valid Python dict pointer.
+unsafe fn scan_single_module(
+    mod_name: &str,
+    module_dict: *mut c_void,
+    api: &super::ffi::PythonApi,
+    filters: &[Filter],
+) -> u32 {
+    let dict_next = match api.dict_next {
+        Some(f) => f,
+        None => return 0,
+    };
+    let get_function = match api.pycfunction_get_function {
+        Some(f) => f,
+        None => return 0,
+    };
+
+    let pycfunction_type = api.pycfunction_type;
+    if pycfunction_type.is_null() || module_dict.is_null() {
+        return 0;
+    }
+
+    let mut count = 0u32;
+    let mut pos: isize = 0;
+    let mut key: *mut c_void = std::ptr::null_mut();
+    let mut value: *mut c_void = std::ptr::null_mut();
+
+    while dict_next(module_dict, &mut pos, &mut key, &mut value) != 0 {
+        if value.is_null() {
+            continue;
+        }
+
+        // Type check: ob_type == PyCFunction_Type
+        let ob_type = (*(value as *const PyObjectHead)).ob_type;
+        if ob_type != pycfunction_type {
+            continue;
+        }
+
+        // Get the C function pointer — also validates this is a real PyCFunction
+        let c_func_ptr = get_function(value);
+        if c_func_ptr.is_null() {
+            if let Some(err_clear) = api.err_clear {
+                err_clear();
+            }
+            continue;
+        }
+
+        // Get function __name__ for qualified name building
+        let name_obj = (api.get_attr_string)(value, c"__name__".as_ptr());
+        if name_obj.is_null() {
+            if let Some(err_clear) = api.err_clear {
+                err_clear();
+            }
+            continue;
+        }
+        let func_name = super::helpers::cstr_to_string((api.unicode_as_utf8)(name_obj));
+        (api.py_decref)(name_obj);
+        let func_name = match func_name {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Build qualified name: "mod_name.func_name"
+        let internal_name = format!("{}.{}", mod_name, func_name);
+
+        // Check filter with internal name (e.g., "_socket.getaddrinfo")
+        let (internal_match, capture_stack) = check_filter(filters, &internal_name);
+
+        let (capture_stack, display_name) = if internal_match {
+            // Matched internal name; prefer alias for display (e.g., "socket.getaddrinfo")
+            let display = super::helpers::c_module_alias(mod_name)
+                .map(|alias| format!("{}.{}", alias, func_name))
+                .unwrap_or_else(|| internal_name.clone());
+            (capture_stack, display)
+        } else if let Some(alias) = super::helpers::c_module_alias(mod_name) {
+            // Try aliased name (e.g., "socket.getaddrinfo" for internal "_socket")
+            let aliased = format!("{}.{}", alias, func_name);
+            let (m, cs) = check_filter(filters, &aliased);
+            if m {
+                (cs, aliased)
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        let method_flags = match api.pycfunction_get_flags {
+            Some(get_flags) => get_flags(value),
+            None => 0,
+        };
+
+        let is_module_function = check_is_module_function(value, api);
+
+        let addr = c_func_ptr as usize;
+        replace_interceptor(
+            addr,
+            &display_name,
+            capture_stack,
+            method_flags,
+            is_module_function,
+        );
+        count += 1;
+    }
+
+    count
+}
+
+/// Scan all loaded modules (sys.modules) for C functions matching glob filters.
+///
+/// Called once at profile hook registration time to pre-install interceptors
+/// for any glob-pattern filters that match already-loaded modules.
+/// Also called from the profile hook when the import hook signals new modules.
+///
+/// Uses SCANNED_MODULE_DICTS to skip modules already scanned.
+///
+/// # Safety
+/// Must be called with GIL held and Python fully initialized.
+pub unsafe fn scan_modules_for_glob_hooks(filters: &[Filter]) {
+    // Bail if no glob patterns in filters
+    let has_globs = filters.iter().any(|f| f.pattern.contains('*'));
+    if !has_globs {
+        return;
+    }
+
     let api = match PYTHON_API.get() {
         Some(api) => api,
         None => return,
     };
 
-    let get_function = match api.pycfunction_get_function {
-        Some(f) => f,
+    let (get_module_dict_fn, dict_next, module_get_dict) = match (
+        api.import_get_module_dict,
+        api.dict_next,
+        api.module_get_dict,
+    ) {
+        (Some(gmd), Some(dn), Some(mgd)) => (gmd, dn, mgd),
+        _ => {
+            debug!("Module dict iteration APIs not available, skipping eager glob scan");
+            return;
+        }
+    };
+
+    if api.pycfunction_type.is_null() || api.module_type.is_null() {
+        debug!("PyCFunction_Type or PyModule_Type not available, skipping eager glob scan");
+        return;
+    }
+
+    // Get sys.modules dict (borrowed reference)
+    let modules_dict = get_module_dict_fn();
+    if modules_dict.is_null() {
+        return;
+    }
+
+    let mut total_hooks = 0u32;
+    let mut pos: isize = 0;
+    let mut key: *mut c_void = std::ptr::null_mut();
+    let mut value: *mut c_void = std::ptr::null_mut();
+
+    while dict_next(modules_dict, &mut pos, &mut key, &mut value) != 0 {
+        if value.is_null() {
+            continue;
+        }
+
+        // Skip non-module entries (ob_type != module_type)
+        let ob_type = (*(value as *const PyObjectHead)).ob_type;
+        if ob_type != api.module_type {
+            continue;
+        }
+
+        // Get module __dict__ (borrowed reference)
+        let mod_dict = module_get_dict(value);
+        if mod_dict.is_null() {
+            continue;
+        }
+
+        // Skip already-scanned modules
+        let dict_addr = mod_dict as usize;
+        {
+            let mut scanned = SCANNED_MODULE_DICTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !scanned.insert(dict_addr) {
+                continue;
+            }
+        }
+
+        // Get module name from key via PyUnicode_AsUTF8
+        if key.is_null() {
+            continue;
+        }
+        let mod_name = match super::helpers::cstr_to_string((api.unicode_as_utf8)(key)) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        total_hooks += scan_single_module(&mod_name, mod_dict, api, filters);
+    }
+
+    if total_hooks > 0 {
+        debug!(
+            "Eager glob scan: installed {} hooks from loaded modules",
+            total_hooks
+        );
+    }
+}
+
+/// Whether the import hook has been installed
+static IMPORT_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// Trampoline for the original PyImport_ImportModuleLevelObject function.
+/// Set by `Interceptor::replace` when the import hook is installed.
+static IMPORT_TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
+
+/// Set of module dict addresses already scanned.
+/// Avoids re-scanning cached modules on repeated imports.
+static SCANNED_MODULE_DICTS: LazyLock<Mutex<HashSet<usize>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Install a hook on PyImport_ImportModuleLevelObject to detect new imports.
+///
+/// Uses `Interceptor::replace` (not `attach`) to fully replace the import function.
+/// This is critical: calling `Interceptor::replace` on C functions from inside an
+/// `Interceptor::attach` callback corrupts frida-gum state. With `replace`, our
+/// import replacement runs as regular code after the original returns, making it
+/// safe to call `scan_single_module` → `replace_interceptor` inline.
+///
+/// Returns true if the hook was installed (or already installed).
+pub fn install_import_hook() -> bool {
+    if IMPORT_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+
+    let addr = match native::find_export(None, "PyImport_ImportModuleLevelObject") {
+        Ok(addr) => addr,
+        Err(e) => {
+            debug!("PyImport_ImportModuleLevelObject not found: {}", e);
+            IMPORT_HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            return false;
+        }
+    };
+
+    debug!(
+        "Installing import hook on PyImport_ImportModuleLevelObject at {:#x}",
+        addr
+    );
+
+    let interceptor = Interceptor::obtain();
+    let mut trampoline: *const c_void = std::ptr::null();
+
+    interceptor.begin_transaction();
+    let result = interceptor.replace(
+        addr as *mut c_void,
+        import_replacement as *const c_void,
+        std::ptr::null_mut(),
+        &mut trampoline as *mut *const c_void,
+    );
+    if result.is_ok() {
+        // Write trampoline BEFORE end_transaction makes the replacement live,
+        // preventing a TOCTOU race where the replacement runs with a null trampoline.
+        IMPORT_TRAMPOLINE.store(trampoline as usize, Ordering::Release);
+    }
+    interceptor.end_transaction();
+
+    match result {
+        Ok(()) => {
+            debug!("Import hook installed successfully");
+            true
+        }
+        Err(e) => {
+            debug!("Failed to install import hook: {:?}", e);
+            IMPORT_HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            false
+        }
+    }
+}
+
+/// Replacement for PyImport_ImportModuleLevelObject.
+///
+/// Calls the original import function via trampoline, then scans the returned
+/// module for C functions matching glob filters. Runs as regular code (not inside
+/// a frida-gum callback), so `Interceptor::replace` calls are safe.
+///
+/// # Safety
+/// Called by frida-gum as a replacement. GIL is held by the caller.
+unsafe extern "C" fn import_replacement(
+    name: *mut c_void,
+    globals: *mut c_void,
+    locals: *mut c_void,
+    fromlist: *mut c_void,
+    level: c_int,
+) -> *mut c_void {
+    let trampoline_addr = IMPORT_TRAMPOLINE.load(Ordering::Acquire);
+    if trampoline_addr == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let original: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        c_int,
+    ) -> *mut c_void = std::mem::transmute(trampoline_addr);
+
+    let result = original(name, globals, locals, fromlist, level);
+
+    if !result.is_null() {
+        scan_imported_module(result);
+    }
+
+    result
+}
+
+/// Scan a freshly-imported module for C functions matching glob filters.
+///
+/// Only processes modules whose dict has not been scanned before (tracked via
+/// SCANNED_MODULE_DICTS). Handles nested imports safely since `Interceptor::replace`
+/// is idempotent (checks HOOKED_C_FUNCTIONS set).
+///
+/// Relies on the filter immutability invariant: filters must be stable by the
+/// time the import hook is active, because once a module's dict is added to
+/// SCANNED_MODULE_DICTS, it is never re-scanned even if new patterns are added.
+///
+/// # Safety
+/// `module_obj` must be a valid Python object. GIL must be held.
+unsafe fn scan_imported_module(module_obj: *mut c_void) {
+    let api = match PYTHON_API.get() {
+        Some(api) => api,
         None => return,
     };
 
-    let c_func_ptr = get_function(arg);
-    if c_func_ptr.is_null() {
+    // Type check: must be a module
+    if api.module_type.is_null() {
+        return;
+    }
+    let ob_type = (*(module_obj as *const PyObjectHead)).ob_type;
+    if ob_type != api.module_type {
+        return;
+    }
+
+    // Get module __dict__ (borrowed reference)
+    let module_get_dict = match api.module_get_dict {
+        Some(f) => f,
+        None => return,
+    };
+    let mod_dict = module_get_dict(module_obj);
+    if mod_dict.is_null() {
+        return;
+    }
+
+    // Skip already-scanned modules
+    let dict_addr = mod_dict as usize;
+    {
+        let mut scanned = SCANNED_MODULE_DICTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !scanned.insert(dict_addr) {
+            return;
+        }
+    }
+
+    // Get module __name__
+    let name_obj = (api.get_attr_string)(module_obj, c"__name__".as_ptr());
+    if name_obj.is_null() {
         if let Some(err_clear) = api.err_clear {
             err_clear();
         }
         return;
     }
-
-    let addr = c_func_ptr as usize;
-
-    // Get method flags for argument extraction in the interceptor
-    let method_flags = match api.pycfunction_get_flags {
-        Some(get_flags) => get_flags(arg),
-        None => 0,
+    let mod_name = super::helpers::cstr_to_string((api.unicode_as_utf8)(name_obj));
+    (api.py_decref)(name_obj);
+    let mod_name = match mod_name {
+        Some(n) => n,
+        None => return,
     };
 
-    // Detect module function: check __self__.__class__ == PyModule_Type.
-    // Safe here: we're in profile hook context, not a frida-gum replacement.
-    let is_module_function = check_is_module_function(arg, api);
+    // Get filters and check if there are any globs
+    let filters = super::filters::PYTHON_FILTERS.get_all();
+    let has_globs = filters.iter().any(|f| f.pattern.contains('*'));
+    if !has_globs {
+        return;
+    }
 
-    // Single-lock: check + replace in one call
-    replace_interceptor(
-        addr,
-        display_name,
-        capture_stack,
-        method_flags,
-        is_module_function,
-    );
+    let count = scan_single_module(&mod_name, mod_dict, api, &filters);
+    if count > 0 {
+        debug!(
+            "Import hook: installed {} hooks from module '{}'",
+            count, mod_name
+        );
+    }
 }
 
 // =============================================================================
@@ -701,6 +1096,7 @@ unsafe fn extract_args_from_params(
             let nargs = third_arg as isize;
             let mut args = vec![pyobj_to_argument(self_obj, api)];
             if !args_array.is_null() && nargs > 0 {
+                // Cap at 8 to bound repr() calls per event — enough for tracing context
                 for i in 0..nargs.min(8) {
                     let item = *args_array.add(i as usize);
                     args.push(pyobj_to_argument(item, api));

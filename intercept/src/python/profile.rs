@@ -15,12 +15,12 @@ use log::{debug, error};
 
 use super::ffi::{
     init_python_api, PyEval_SetProfileAllThreadsFn, PyEval_SetProfileFn, PyGILState_EnsureFn,
-    PyGILState_ReleaseFn, Py_IsInitializedFn, PYTHON_API, PYTRACE_CALL, PYTRACE_C_CALL,
+    PyGILState_ReleaseFn, Py_IsInitializedFn, PYTHON_API, PYTRACE_CALL,
 };
 use super::filters::matches_filter;
 use super::helpers::{
-    extract_caller_location, extract_function_arguments, get_c_function_qualified_name,
-    get_qualified_function_name, maybe_capture_stack, raise_permission_error,
+    extract_caller_location, extract_function_arguments, get_qualified_function_name,
+    maybe_capture_stack, raise_permission_error,
 };
 
 // Dedup set for Python envvar names — reports each variable once per thread.
@@ -177,7 +177,7 @@ unsafe extern "C" fn profile_hook(
     _obj: *mut c_void,
     frame: *mut c_void,
     what: c_int,
-    arg: *mut c_void,
+    _arg: *mut c_void,
 ) -> c_int {
     // After thread creation, propagate profile hook to new threads.
     // The THREAD_CREATED flag is set by:
@@ -197,27 +197,10 @@ unsafe extern "C" fn profile_hook(
         super::hooks::try_resolve_pending();
     }
 
-    // Handle both Python calls and C extension calls
-    let is_c_call = what == PYTRACE_C_CALL;
-    if what != PYTRACE_CALL && !is_c_call {
+    // Only handle Python function calls — C function tracing is handled
+    // eagerly via scan_modules_for_glob_hooks() + install_import_hook().
+    if what != PYTRACE_CALL {
         return 0;
-    }
-
-    if is_c_call {
-        // C function call — extract name from the function object (arg parameter).
-        // IMPORTANT: Always clear pending exceptions after c_call handling.
-        // During early bootstrap (e.g. _PyImport_InitCore on Python 3.13+),
-        // get_attr_string calls may leave exceptions set. Returning 0 with a
-        // pending exception causes SystemError and crashes import.
-        let result = handle_c_call(frame, arg);
-        if result == 0 {
-            if let Some(api) = PYTHON_API.get() {
-                if let Some(err_clear) = api.err_clear {
-                    err_clear();
-                }
-            }
-        }
-        return result;
     }
 
     // Python function call — extract name from frame's code object
@@ -278,52 +261,6 @@ unsafe extern "C" fn profile_hook(
     }
 
     result
-}
-
-/// Handle a PYTRACE_C_CALL event — trace C built-in function calls.
-///
-/// For c_call events, `arg` is the C function object being called and `frame`
-/// is the *caller's* frame (the Python frame that invoked the C function).
-///
-/// # Safety
-/// Called from profile_hook with GIL held. `frame` and `arg` are valid Python objects.
-unsafe fn handle_c_call(_frame: *mut c_void, arg: *mut c_void) -> c_int {
-    let (internal_name, aliased_name) = match get_c_function_qualified_name(arg) {
-        Some(names) => names,
-        None => return 0,
-    };
-
-    // Try filter with internal name first (e.g. "posix.getpid"), then aliased (e.g. "os.getpid")
-    let (matches, capture_stack) = matches_filter(&internal_name);
-    let (matches, capture_stack, display_name) = if matches {
-        // Use aliased name for display if available, otherwise internal
-        let name = aliased_name.as_deref().unwrap_or(&internal_name);
-        (true, capture_stack, name.to_string())
-    } else if let Some(ref aliased) = aliased_name {
-        let (m, cs) = matches_filter(aliased);
-        if m {
-            (true, cs, aliased.clone())
-        } else {
-            return 0;
-        }
-    } else {
-        return 0;
-    };
-
-    if !matches {
-        return 0;
-    }
-
-    // Install replacement for this C function via Interceptor::replace.
-    // Returns true if already replaced — the replacement handles tracing + policy.
-    // Returns false if just replaced — this call will ALSO go through the replacement
-    // because PYTRACE_C_CALL fires BEFORE CPython calls the function.
-    //
-    // Either way, we return 0 to let CPython proceed to call the (replaced) function.
-    // The replacement handles argument extraction, event sending, and denial.
-    super::hooks::ensure_replaced(arg, &display_name, capture_stack);
-
-    0
 }
 
 /// Handle envvar access from Python's _Environ.__getitem__(self, key).
@@ -511,6 +448,13 @@ pub fn register_profile_hook() -> bool {
     // These will be resolved on the first profile event when modules are available.
     let filters = super::filters::PYTHON_FILTERS.get_all();
     super::hooks::register_pending_hooks(&filters);
+
+    // Eagerly scan all loaded modules for C functions matching glob patterns
+    // and install an import hook to catch future imports.
+    unsafe {
+        super::hooks::scan_modules_for_glob_hooks(&filters);
+        super::hooks::install_import_hook();
+    }
 
     // For Python < 3.12, install thread creation hook to detect new threads
     // Python 3.12+ has _thread.start_new_thread audit events and PyEval_SetProfileAllThreads

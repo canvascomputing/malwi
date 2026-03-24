@@ -141,6 +141,20 @@ pub type PyCFunction_GetFlagsFn = unsafe extern "C" fn(op: *mut c_void) -> c_int
 /// PyImport_ImportModule - import a module by name (returns new reference)
 pub type PyImport_ImportModuleFn = unsafe extern "C" fn(name: *const c_char) -> *mut c_void;
 
+/// PyImport_GetModuleDict - get sys.modules dict (borrowed reference, no decref!)
+pub type PyImport_GetModuleDictFn = unsafe extern "C" fn() -> *mut c_void;
+
+/// PyDict_Next - iterate over dict entries (returns 0 when exhausted)
+pub type PyDict_NextFn = unsafe extern "C" fn(
+    dict: *mut c_void,
+    ppos: *mut isize,
+    pkey: *mut *mut c_void,
+    pvalue: *mut *mut c_void,
+) -> c_int;
+
+/// PyModule_GetDict - get module's __dict__ (borrowed reference, no decref!)
+pub type PyModule_GetDictFn = unsafe extern "C" fn(module: *mut c_void) -> *mut c_void;
+
 /// PyInterpreterState_ThreadHead - get first thread in interpreter
 pub type PyInterpreterState_ThreadHeadFn = unsafe extern "C" fn(interp: *mut c_void) -> *mut c_void;
 
@@ -155,7 +169,6 @@ pub type PyThreadState_UncheckedGetFn = unsafe extern "C" fn() -> *mut c_void;
 
 // PyTrace event types
 pub const PYTRACE_CALL: c_int = 0;
-pub const PYTRACE_C_CALL: c_int = 4;
 
 // CPython method calling convention flags (methodobject.h, stable since Python 2.0)
 pub(crate) const METH_VARARGS: i32 = 0x0001;
@@ -205,6 +218,13 @@ pub struct PythonApi {
     /// Used to distinguish module-level C functions from instance methods.
     /// Unlike PyExc_PermissionError (pointer-to-pointer), this IS the type object directly.
     pub module_type: *const c_void,
+    /// PyCFunction_Type — the type object for built-in C function instances.
+    /// Used for type checking when scanning module dicts for C functions.
+    pub pycfunction_type: *const c_void,
+    // Module dict iteration APIs (for eager glob resolution)
+    pub import_get_module_dict: Option<PyImport_GetModuleDictFn>,
+    pub dict_next: Option<PyDict_NextFn>,
+    pub module_get_dict: Option<PyModule_GetDictFn>,
 }
 
 // Safety: PythonApi function pointers and exc_permission_error are
@@ -346,6 +366,26 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         .map(|addr| addr as *const c_void)
         .unwrap_or(std::ptr::null());
 
+    // PyCFunction_Type — same pattern as module_type (symbol IS the type object, no deref)
+    let pycfunction_type: *const c_void = native::find_export(None, "PyCFunction_Type")
+        .ok()
+        .map(|addr| addr as *const c_void)
+        .unwrap_or(std::ptr::null());
+
+    // Module dict iteration APIs (for eager glob resolution of Python C functions)
+    let import_get_module_dict: Option<PyImport_GetModuleDictFn> =
+        native::find_export(None, "PyImport_GetModuleDict")
+            .ok()
+            .map(|addr| unsafe { std::mem::transmute(addr) });
+
+    let dict_next: Option<PyDict_NextFn> = native::find_export(None, "PyDict_Next")
+        .ok()
+        .map(|addr| unsafe { std::mem::transmute(addr) });
+
+    let module_get_dict: Option<PyModule_GetDictFn> = native::find_export(None, "PyModule_GetDict")
+        .ok()
+        .map(|addr| unsafe { std::mem::transmute(addr) });
+
     Some(PythonApi {
         frame_get_code,
         unicode_as_utf8,
@@ -373,6 +413,10 @@ pub fn resolve_python_api() -> Option<PythonApi> {
         tstate_get_interp,
         tstate_unchecked_get,
         module_type,
+        pycfunction_type,
+        import_get_module_dict,
+        dict_next,
+        module_get_dict,
     })
 }
 

@@ -1104,6 +1104,93 @@ fn test_python_glob_pattern_event_delivery_stress() {
 }
 
 // ============================================================================
+// C Function Hooking Edge Cases
+// ============================================================================
+
+/// Verify argument extraction for METH_VARARGS calling convention.
+/// struct.pack uses METH_VARARGS on all Python versions.
+#[test]
+fn test_python_c_function_varargs_argument_extraction() {
+    setup();
+    skip_if_no_python_primary!(python => {
+        let script = format!(
+            "import struct\nresult = struct.pack('>I', 42)\nprint(len(result)){PY_FLUSH}"
+        );
+        let output = cmd(&format!("x -f json --py struct.pack -- {} -c {}",
+            python.display(), sq(&script)))
+            .run();
+
+        let events = output.json_events();
+        let pack_events: Vec<_> = events.iter()
+            .filter(|e| e["source"] == "python"
+                && e["name"].as_str().map_or(false, |n| n.contains("pack")))
+            .collect();
+
+        assert!(!pack_events.is_empty(),
+            "Expected struct.pack event. stdout: {}\nstderr: {}",
+            output.stdout_raw(), output.stderr());
+
+        // Verify arguments were extracted (not empty)
+        let args = pack_events[0]["args"].as_array()
+            .expect("args should be an array");
+        assert!(!args.is_empty(),
+            "Expected struct.pack to have extracted arguments. args: {:?}\nstderr: {}",
+            args, output.stderr());
+    });
+}
+
+/// Verify glob patterns catch C functions in modules imported AFTER
+/// the initial sys.modules scan. This exercises install_import_hook +
+/// scan_imported_module.
+#[test]
+fn test_python_glob_catches_late_imported_module() {
+    setup();
+    skip_if_no_python_primary!(python => {
+        // unicodedata is a C extension not in the default import set.
+        // unicodedata.lookup is METH_O and known to work with the interceptor.
+        let script = format!(
+            "import unicodedata\nunicodedata.lookup('SNOWMAN'){PY_FLUSH}"
+        );
+        let output = cmd(&format!("x -f json --py *.lookup -- {} -c {}",
+            python.display(), sq(&script)))
+            .run();
+
+        let events = output.json_events();
+        let has_lookup = events.iter()
+            .any(|e| e["name"].as_str().map_or(false, |n| n.contains("lookup")));
+
+        assert!(has_lookup,
+            "Expected unicodedata.lookup via import hook glob scan. \
+             This module should NOT be in sys.modules at scan time. \
+             stdout: {}\nstderr: {}",
+            output.stdout_raw(), output.stderr());
+    });
+}
+
+/// Verify that hooking multiple C functions in the same module where one
+/// may call another doesn't cause infinite loops or crashes.
+/// The reentrancy guard (IN_PY_C_HOOK) should prevent recursive tracing.
+#[test]
+fn test_python_c_function_reentrancy_no_crash() {
+    setup();
+    skip_if_no_python_primary!(python => {
+        // Hook all json.* C functions — json.loads internally calls other C functions
+        let script = format!(
+            "import json\njson.loads('{{\"key\": \"value\"}}')\nprint('done'){PY_FLUSH}"
+        );
+        let output = cmd(&format!("x --py json.* -- {} -c {}",
+            python.display(), sq(&script)))
+            .timeout(secs(10)).run();
+
+        assert!(output.success(),
+            "Reentrancy guard should prevent crashes when multiple json.* \
+             C functions are hooked. stderr: {}", output.stderr());
+        assert!(output.has_traced("json.loads"),
+            "Expected json.loads trace. stdout: {}", output.stdout());
+    });
+}
+
+// ============================================================================
 // uv auto-detection: pypi-install policy
 // ============================================================================
 
