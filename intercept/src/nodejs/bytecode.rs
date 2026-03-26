@@ -441,10 +441,9 @@ unsafe extern "C" fn replacement_trace_enter(
     };
 
     // Get caller source location via direct frame reading (GC-safe).
-    // We avoid v8::StackTrace::CurrentStackTrace here because it allocates
-    // heap objects that can trigger GC scavenge. The GC stack walker then
-    // encounters an ExitFrame whose PC points into frida-gum's trampoline,
-    // which can't be resolved → CHECK(maybe_code.has_value()) crash.
+    // These V8 APIs (GetScriptOrigin, GetScriptLineNumber) read existing heap
+    // data without allocating new V8 heap objects, unlike the parameter parsing
+    // path which uses String::NewFromUtf8Literal (allocates → triggers GC).
     let (caller_file, caller_line, caller_column) =
         unsafe { stack::get_caller_source_location(isolate) };
 

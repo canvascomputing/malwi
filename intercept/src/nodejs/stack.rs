@@ -688,10 +688,14 @@ pub unsafe fn parse_parameters_from_isolate(isolate: *mut c_void) -> Option<Fram
     // Get JS frame pointer from isolate's ThreadLocalTop
     let js_fp = get_js_frame_from_isolate(isolate)?;
 
-    // Parse parameters using the with_isolate variant for better string extraction
+    // Use the non-isolate variant (raw memory reads only, no V8 API calls).
+    // This is critical for GC safety: this function is called from the bytecode
+    // hook replacement (replacement_trace_enter), which runs with a frida-gum
+    // trampoline frame on the stack. V8 API calls can allocate → trigger GC →
+    // GC stack walker encounters the trampoline frame → CHECK failure crash.
     let ffi = STACK_PARSER_FFI.get()?;
     unsafe {
-        let result = (ffi.parse_frame_parameters_with_isolate)(js_fp, isolate);
+        let result = (ffi.parse_frame_parameters)(js_fp);
         if result.is_null() {
             return None;
         }

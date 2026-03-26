@@ -642,9 +642,6 @@ char* malwi_get_current_function_name(void* isolate_ptr) {
         return nullptr;
     }
 
-    // Create a scope for V8 handles
-    v8::HandleScope handle_scope(isolate);
-
     // Read the function name directly from the V8 JS frame instead of using
     // v8::StackTrace::CurrentStackTrace. CurrentStackTrace walks ALL frames
     // including TurboFan-optimized ones, and crashes with "Missing deoptimization
@@ -668,6 +665,9 @@ char* malwi_get_current_function_name(void* isolate_ptr) {
     if (!IsHeapObject(func_tagged)) {
         return nullptr;
     }
+
+    // Create a scope for V8 handles
+    v8::HandleScope handle_scope(isolate);
 
     // Create a v8::Local pointing to the frame's function slot.
     // v8::Local<T> stores a T** (pointer to a handle slot). The stack slot
