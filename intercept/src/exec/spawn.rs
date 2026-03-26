@@ -241,7 +241,7 @@ pub struct SpawnMonitor {
     execve_listener: Option<CallListener>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     posix_spawn_listener: Option<CallListener>,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     posix_spawnp_listener: Option<CallListener>,
     /// Bash hook listeners (shell_execve, execute_command_internal, eval, source)
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -277,7 +277,7 @@ impl SpawnMonitor {
                 execve_listener: None,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 posix_spawn_listener: None,
-                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                #[cfg(target_os = "macos")]
                 posix_spawnp_listener: None,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 bash_listeners: Default::default(),
@@ -317,32 +317,29 @@ impl SpawnMonitor {
         self.setup_execve_hook(handler);
     }
 
+    /// On Linux, hook posix_spawn + execve but NOT posix_spawnp.
+    ///
+    /// glibc's `__spawni` (used by `posix_spawnp`) passes an internal
+    /// `execvpe` entry point to its `CLONE_VFORK | CLONE_VM` child. When
+    /// the child calls `execvpe` → `execve` (hooked), frida-gum's invocation
+    /// tracking for the `posix_spawnp` attach trampoline conflicts with the
+    /// `execve` trampoline through the shared TLS, corrupting the parent's
+    /// return-address bookkeeping and causing `__stack_chk_fail`.
+    ///
+    /// This doesn't affect `posix_spawn` because its `__spawni` path passes
+    /// `execve` directly — same function, one trampoline, no TLS conflict.
+    /// Programs using `posix_spawnp` (e.g. `uv`) have their children
+    /// detected via LD_PRELOAD re-injection.
     #[cfg(target_os = "linux")]
     unsafe fn setup_linux_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
-        self.setup_posix_spawn_hooks(handler);
+        self.attach_posix_spawn(handler);
         self.setup_execve_hook(handler);
     }
 
-    /// Hook posix_spawn/posix_spawnp via GumInterceptor attach.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    /// Hook posix_spawn + posix_spawnp via GumInterceptor attach.
+    #[cfg(target_os = "macos")]
     unsafe fn setup_posix_spawn_hooks<H: SpawnHandler + 'static>(&mut self, handler: &H) {
-        if let Ok(addr) = crate::module::find_global_export_by_name("posix_spawn") {
-            let listener = CallListener {
-                on_enter: Some(on_posix_spawn_enter),
-                on_leave: Some(on_posix_spawn_leave),
-                user_data: handler as *const _ as *mut c_void,
-            };
-            if self
-                .interceptor
-                .attach(addr as *mut c_void, listener)
-                .is_ok()
-            {
-                self.posix_spawn_listener = Some(listener);
-                info!("Attached spawn monitor to posix_spawn() at {:#x}", addr);
-            } else {
-                warn!("Failed to attach to posix_spawn");
-            }
-        }
+        self.attach_posix_spawn(handler);
 
         if let Ok(addr) = crate::module::find_global_export_by_name("posix_spawnp") {
             let listener = CallListener {
@@ -359,6 +356,28 @@ impl SpawnMonitor {
                 info!("Attached spawn monitor to posix_spawnp() at {:#x}", addr);
             } else {
                 warn!("Failed to attach to posix_spawnp");
+            }
+        }
+    }
+
+    /// Attach listener to `posix_spawn` (shared by macOS and Linux).
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    unsafe fn attach_posix_spawn<H: SpawnHandler + 'static>(&mut self, handler: &H) {
+        if let Ok(addr) = crate::module::find_global_export_by_name("posix_spawn") {
+            let listener = CallListener {
+                on_enter: Some(on_posix_spawn_enter),
+                on_leave: Some(on_posix_spawn_leave),
+                user_data: handler as *const _ as *mut c_void,
+            };
+            if self
+                .interceptor
+                .attach(addr as *mut c_void, listener)
+                .is_ok()
+            {
+                self.posix_spawn_listener = Some(listener);
+                info!("Attached spawn monitor to posix_spawn() at {:#x}", addr);
+            } else {
+                warn!("Failed to attach to posix_spawn");
             }
         }
     }
@@ -452,17 +471,12 @@ impl SpawnMonitor {
 
     /// Check if the monitor is active.
     pub fn is_active(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            self.posix_spawn_listener.is_some()
-                || self.posix_spawnp_listener.is_some()
-                || self.execve_listener.is_some()
-        }
-        #[cfg(target_os = "linux")]
-        {
-            self.posix_spawn_listener.is_some()
-                || self.posix_spawnp_listener.is_some()
-                || self.execve_listener.is_some()
+            let active = self.posix_spawn_listener.is_some() || self.execve_listener.is_some();
+            #[cfg(target_os = "macos")]
+            let active = active || self.posix_spawnp_listener.is_some();
+            active
         }
         #[cfg(target_os = "windows")]
         {
@@ -478,11 +492,10 @@ impl Drop for SpawnMonitor {
             if let Some(l) = &self.execve_listener {
                 self.interceptor.detach(l);
             }
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
             if let Some(l) = &self.posix_spawn_listener {
                 self.interceptor.detach(l);
             }
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            #[cfg(target_os = "macos")]
             if let Some(l) = &self.posix_spawnp_listener {
                 self.interceptor.detach(l);
             }
