@@ -554,8 +554,8 @@ unsafe extern "C" fn on_posix_spawn_enter(
 
     debug!("posix_spawn() enter: path={:?}, argv={:?}", path, argv);
 
-    // Check review mode BEFORE the spawn completes
-    if !check_exec_review(&path, &argv, None, None) {
+    // Check policy BEFORE the spawn completes
+    if !check_exec_policy(&path, &argv, None, None) {
         // User denied - make posix_spawn fail by replacing path with invalid one
         // Use a static string to ensure it lives long enough
         static BLOCKED_PATH: &[u8] = b"/usr/bin/false\0";
@@ -655,13 +655,13 @@ unsafe extern "C" fn on_posix_spawn_leave(
 }
 
 // ============================================================================
-// Review Mode Support for Exec
+// Policy Enforcement for Exec
 // ============================================================================
 
-/// Check review mode for exec and wait for user decision.
+/// Check exec policy and block if denied.
 /// Returns true if allowed, false if denied.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) fn check_exec_review(
+pub(crate) fn check_exec_policy(
     path: &Option<String>,
     argv: &Option<Vec<String>>,
     source_file: Option<&str>,
@@ -670,10 +670,6 @@ pub(crate) fn check_exec_review(
     let Some(agent) = crate::Agent::get() else {
         return true; // Allow if no agent
     };
-
-    if !agent.is_review_mode() {
-        return true;
-    }
 
     // Extract effective command: unwrap shell wrappers like sh -c "curl ..."
     let cmd = if let Some(args) = argv.as_ref() {
@@ -701,8 +697,21 @@ pub(crate) fn check_exec_review(
         .source_location(source_file.map(|s| s.to_string()), source_line, None)
         .build();
 
-    // Wait for user decision
-    agent.await_review_decision(event).is_allowed()
+    // Agent-side policy: evaluate locally
+    if let Some(decision) = agent.evaluate_policy(&event) {
+        return match decision {
+            malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                // Send event so CLI shows "denied:" line
+                let _ = agent.send_event(event);
+                false
+            }
+            malwi_protocol::agent_policy::AgentDecision::Hide => false,
+            malwi_protocol::agent_policy::AgentDecision::Suppress => true,
+            _ => true,
+        };
+    }
+
+    true
 }
 
 /// Extract the basename from a path.
@@ -744,8 +753,8 @@ unsafe extern "C" fn on_execve_enter(context: *mut InvocationContext, _user_data
 
     debug!("execve() enter: path={:?}, argv={:?}", path, argv);
 
-    // Check review mode BEFORE the exec completes
-    if !check_exec_review(&path, &argv, None, None) {
+    // Check policy BEFORE the exec completes
+    if !check_exec_policy(&path, &argv, None, None) {
         // User denied - make execve fail by replacing path with invalid one
         // Use a static string to ensure it lives long enough
         static BLOCKED_PATH: &[u8] = b"/usr/bin/false\0";

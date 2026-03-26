@@ -449,13 +449,10 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
 
     // Send to CLI
     if let Some(agent) = crate::Agent::get() {
-        if agent.is_review_mode() {
-            // Review mode: send event and wait for user decision
-            // Event is already shown to user via AwaitingDecision, no need to send again
-            let decision = agent.await_review_decision(event.clone());
+        if let Some(decision) = agent.evaluate_policy(&event) {
+            // Agent-side policy: evaluate locally, enforce immediately
             match decision {
-                malwi_protocol::ReviewDecision::Block => {
-                    // User denied - skip function by returning -1 and setting errno.
+                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
                     crate::invocation::replace_return_value(
                         context,
                         (-1isize) as usize as *mut c_void,
@@ -463,15 +460,12 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
                     set_errno(libc::EACCES);
                     info!("BLOCKED: {}", event.function);
                 }
-                malwi_protocol::ReviewDecision::Hide => {
-                    // Hide: make target silently non-existent.
+                malwi_protocol::agent_policy::AgentDecision::Hide => {
                     match function.as_str() {
                         "getenv" | "secure_getenv" => {
-                            // Return NULL — variable appears unset
                             crate::invocation::replace_return_value(context, std::ptr::null_mut());
                         }
                         _ => {
-                            // stat/lstat/access/open — return -1 with ENOENT
                             crate::invocation::replace_return_value(
                                 context,
                                 (-1isize) as usize as *mut c_void,
@@ -480,13 +474,17 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
                         }
                     }
                     info!("HIDDEN: {}", event.function);
+                    return; // Hidden events are not sent to CLI
+                }
+                malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                    return; // Suppressed events are not sent to CLI
                 }
                 _ => {
-                    // Allow, Warn, Suppress — proceed normally
+                    // Trace, Warn — proceed to send_event (which attaches disposition)
                 }
             }
+            let _ = agent.send_event(event);
         } else {
-            // Normal mode: send event
             let _ = agent.send_event(event);
         }
     }

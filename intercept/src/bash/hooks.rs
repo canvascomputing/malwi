@@ -76,11 +76,11 @@ pub(crate) unsafe extern "C" fn on_shell_execve_enter(
 
     debug!("shell_execve() enter: path={:?}, argv={:?}", path, argv);
 
-    // Capture source location BEFORE review check so denied events also have it
+    // Capture source location BEFORE policy check so denied events also have it
     let (source_file, source_line) = get_bash_source_location();
 
-    // Check review mode / policy BEFORE the exec completes
-    if !crate::exec::spawn::check_exec_review(&path, &argv, source_file.as_deref(), source_line) {
+    // Check policy BEFORE the exec completes
+    if !crate::exec::spawn::check_exec_policy(&path, &argv, source_file.as_deref(), source_line) {
         // Block by replacing path with an invalid one
         static BLOCKED_PATH: &[u8] = b"/usr/bin/false\0";
         crate::invocation::replace_nth_argument(context, 0, BLOCKED_PATH.as_ptr() as *mut c_void);
@@ -190,11 +190,11 @@ pub(crate) unsafe extern "C" fn on_execute_command_internal_enter(
     let path = Some(first_word.clone());
     let argv = Some(words);
 
-    // Capture source location BEFORE review check so denied events also have it
+    // Capture source location BEFORE policy check so denied events also have it
     let (source_file, source_line) = get_bash_command_source_location(cmd_ptr);
 
-    // Check review mode / policy
-    if !crate::exec::spawn::check_exec_review(&path, &argv, source_file.as_deref(), source_line) {
+    // Check policy
+    if !crate::exec::spawn::check_exec_policy(&path, &argv, source_file.as_deref(), source_line) {
         // Block by replacing the COMMAND pointer with null.
         // execute_command_internal handles null by returning early.
         crate::invocation::replace_nth_argument(context, 0, ptr::null_mut());
@@ -249,11 +249,11 @@ pub(crate) unsafe extern "C" fn on_eval_builtin_enter(
     let path = Some("eval".to_string());
     let argv = Some(argv_vec);
 
-    // Capture source location BEFORE review check so denied events also have it
+    // Capture source location BEFORE policy check so denied events also have it
     let (source_file, source_line) = get_bash_source_location();
 
-    // Check review mode / policy
-    if !crate::exec::spawn::check_exec_review(&path, &argv, source_file.as_deref(), source_line) {
+    // Check policy
+    if !crate::exec::spawn::check_exec_policy(&path, &argv, source_file.as_deref(), source_line) {
         // Replace list arg with null — eval_builtin returns immediately for null list
         crate::invocation::replace_nth_argument(context, 0, ptr::null_mut());
         info!("BLOCKED bash eval: {}", eval_code);
@@ -298,11 +298,11 @@ pub(crate) unsafe extern "C" fn on_source_builtin_enter(
     let path = Some("source".to_string());
     let argv = Some(vec!["source".to_string(), filename.clone()]);
 
-    // Capture source location BEFORE review check so denied events also have it
+    // Capture source location BEFORE policy check so denied events also have it
     let (source_file, source_line) = get_bash_source_location();
 
-    // Check review mode / policy
-    if !crate::exec::spawn::check_exec_review(&path, &argv, source_file.as_deref(), source_line) {
+    // Check policy
+    if !crate::exec::spawn::check_exec_policy(&path, &argv, source_file.as_deref(), source_line) {
         // Replace list arg with null — source_builtin returns EX_USAGE for null list
         crate::invocation::replace_nth_argument(context, 0, ptr::null_mut());
         info!("BLOCKED bash source: {}", filename);

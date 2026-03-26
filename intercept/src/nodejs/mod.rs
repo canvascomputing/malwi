@@ -21,7 +21,7 @@
 //!
 //! 2. **codegen** (ModifyCodeGenerationFromStrings hook):
 //!    - Catches `eval()` / `Function()` / string-based code generation
-//!    - Runs synchronously before compilation, so review mode can block
+//!    - Runs synchronously before compilation, so policy can block
 //!
 //! 3. **addon** (N-API function wrapping):
 //!    - Catches native module functions (fs.*, crypto.*, etc.)
@@ -99,7 +99,7 @@ pub use state::{AddonPhase, BytecodePhase};
 ///
 /// 2. **codegen** (ModifyCodeGenerationFromStrings hook):
 ///    - Catches eval/function-constructor code generation
-///    - Synchronous path that can block in review mode
+///    - Synchronous path that can block via policy
 ///
 /// 3. **addon** (N-API function wrapping):
 ///    - Catches native module functions (fs.*, crypto.*, etc.)
@@ -117,7 +117,7 @@ pub use state::{AddonPhase, BytecodePhase};
 /// - false if V8 tracing could not be enabled
 pub fn init_tracing() -> bool {
     // Step 1: Install synchronous eval/codegen gate hook.
-    // This enables blocking decisions for eval()/Function() in review mode.
+    // This enables blocking decisions for eval()/Function() via policy.
     let codegen_ok = codegen::initialize();
 
     // Step 2: Initialize bytecode-level tracing.

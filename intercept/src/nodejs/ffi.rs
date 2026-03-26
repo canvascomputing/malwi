@@ -173,7 +173,7 @@ pub struct NodejsTraceEventData {
 
 /// Callback type for trace events from the addon.
 /// The callback receives a pointer to a NodejsTraceEventData struct (no JSON).
-/// Returns 1 to allow execution, 0 to block (review mode).
+/// Returns 1 to allow execution, 0 to block (policy enforcement).
 /// Uses i32 instead of bool for reliable C ABI compatibility.
 pub type TraceCallback = extern "C" fn(*const NodejsTraceEventData) -> i32;
 

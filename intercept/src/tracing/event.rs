@@ -146,7 +146,7 @@ pub fn envvar_enter(var_name: &str) -> EventBuilder {
 
 /// Create an Enter trace event for an executed command.
 ///
-/// Builds an event for review mode when a child process is about to be spawned/exec'd.
+/// Builds an event when a child process is about to be spawned/exec'd.
 /// The command name should be the basename of the executable.
 ///
 /// Arguments include the full argv (argv[0] is the program name).

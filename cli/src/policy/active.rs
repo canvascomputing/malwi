@@ -24,7 +24,6 @@ const NATIVE_HOOK_ARG_COUNT: usize = 6;
 
 /// The disposition of a trace event after policy evaluation.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum EventDisposition {
     /// Matched a deny rule with Log mode — display the event.
     Display,
@@ -32,24 +31,16 @@ pub enum EventDisposition {
     Warn { rule: String, section: String },
     /// Matched a deny rule with Block mode.
     Block { rule: String, section: String },
-    /// Matched a deny rule with Review mode.
-    Review { rule: String, section: String },
     /// No deny match (allowed by policy) — nothing to show.
     Suppress,
     /// Matched a hide rule — silently non-existent, no display, no event.
     Hide,
 }
 
-#[allow(dead_code)]
 impl EventDisposition {
     /// Whether this event should be shown to the user.
     pub fn should_display(&self) -> bool {
         !matches!(self, EventDisposition::Suppress | EventDisposition::Hide)
-    }
-
-    /// Whether this event requires review mode interaction.
-    pub fn requires_review(&self) -> bool {
-        matches!(self, EventDisposition::Review { .. })
     }
 
     /// Whether this event should be blocked.
@@ -175,13 +166,104 @@ fn compute_has_commands_allow(engine: &PolicyEngine) -> bool {
 // ── Public Queries ─────────────────────────────────────────────
 
 impl ActivePolicy {
-    /// Check if the policy has any sections with review or block mode.
-    /// Used to determine if review mode should be enabled in the agent.
-    pub fn has_blocking_sections(&self) -> bool {
-        self.engine
-            .policy()
-            .iter_sections()
-            .any(|(_, section)| section.mode.is_blocking())
+    /// Convert this policy to an `AgentConfig` for file-based delivery.
+    ///
+    /// Extracts hooks (via `derive_hook_configs`) and flattens compiled policy
+    /// sections into glob pattern lists that the agent can evaluate locally.
+    pub fn to_agent_config(
+        &self,
+        capture_stack: bool,
+    ) -> malwi_intercept::agent_config::AgentConfig {
+        let hooks = self.derive_hook_configs(capture_stack);
+        let policy = self.extract_policy_sections();
+
+        malwi_intercept::agent_config::AgentConfig { hooks, policy }
+    }
+
+    /// Extract policy sections as flat glob pattern lists for agent-side evaluation.
+    fn extract_policy_sections(&self) -> malwi_intercept::agent_config::AgentPolicySections {
+        let mut sections = malwi_intercept::agent_config::AgentPolicySections::default();
+
+        for (key, section) in self.engine.policy().iter_sections() {
+            if section.mode == EnforcementMode::Noop {
+                continue;
+            }
+
+            match key.category {
+                Category::Network => {
+                    // Network rules use CompiledNetworkRule — extract original patterns
+                    for rule in &section.network_allow_rules {
+                        sections
+                            .network
+                            .allow
+                            .push(rule.domain_pattern.original().to_string());
+                    }
+                    for rule in &section.network_deny_rules {
+                        match rule.mode {
+                            EnforcementMode::Warn => {
+                                sections
+                                    .network
+                                    .warn
+                                    .push(rule.domain_pattern.original().to_string());
+                            }
+                            EnforcementMode::Hide => {
+                                sections
+                                    .network
+                                    .hide
+                                    .push(rule.domain_pattern.original().to_string());
+                            }
+                            _ => {
+                                sections
+                                    .network
+                                    .deny
+                                    .push(rule.domain_pattern.original().to_string());
+                            }
+                        }
+                    }
+                }
+                Category::Execution => {
+                    extract_section_patterns(section, &mut sections.commands);
+                }
+                Category::Files => {
+                    extract_section_patterns(section, &mut sections.files);
+                }
+                Category::EnvVars => {
+                    extract_section_patterns(section, &mut sections.envvars);
+                }
+                Category::Functions => {
+                    extract_section_patterns(section, &mut sections.functions);
+                }
+                _ => {}
+            }
+        }
+
+        sections
+    }
+}
+
+/// Extract patterns from a CompiledSection into a PolicySection.
+fn extract_section_patterns(
+    compiled: &super::compiled::CompiledSection,
+    out: &mut malwi_intercept::agent_config::PolicySection,
+) {
+    for rule in &compiled.allow_rules {
+        out.allow.push(rule.pattern.original().to_string());
+    }
+    for rule in &compiled.deny_rules {
+        match rule.mode {
+            EnforcementMode::Warn => {
+                out.warn.push(rule.pattern.original().to_string());
+            }
+            EnforcementMode::Hide => {
+                out.hide.push(rule.pattern.original().to_string());
+            }
+            _ => {
+                out.deny.push(rule.pattern.original().to_string());
+            }
+        }
+    }
+    for rule in &compiled.hide_rules {
+        out.hide.push(rule.pattern.original().to_string());
     }
 }
 
@@ -353,7 +435,7 @@ impl ActivePolicy {
                         &mut configs,
                         &mut seen,
                     );
-                    // Hide rules → native stat/lstat/access hooks for review mode
+                    // Hide rules → native stat/lstat/access hooks for agent-side hide enforcement
                     if section.has_hide_rules() {
                         let mut hide_syms = vec!["stat", "lstat", "access"];
                         #[cfg(target_os = "macos")]
@@ -379,7 +461,7 @@ impl ActivePolicy {
                         let symbol = format!("!{}", rule.pattern.original());
                         emit_envvar_hook(&symbol, &mut configs, &mut seen);
                     }
-                    // Hide rules → native getenv hooks for review mode
+                    // Hide rules → native getenv hooks for agent-side hide enforcement
                     if section.has_hide_rules() {
                         emit_function_hook(None, "getenv", capture_stack, &mut configs, &mut seen);
                         #[cfg(target_os = "linux")]
@@ -606,7 +688,7 @@ pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposit
 
     match decision.mode {
         EnforcementMode::Block => EventDisposition::Block { rule, section },
-        EnforcementMode::Review => EventDisposition::Review { rule, section },
+        EnforcementMode::Review => EventDisposition::Warn { rule, section },
         EnforcementMode::Warn => EventDisposition::Warn { rule, section },
         EnforcementMode::Log => EventDisposition::Display,
         EnforcementMode::Noop => EventDisposition::Suppress,
@@ -620,7 +702,6 @@ pub(super) fn disposition_severity(d: &EventDisposition) -> u8 {
         EventDisposition::Suppress => 0,
         EventDisposition::Display => 1,
         EventDisposition::Warn { .. } => 2,
-        EventDisposition::Review { .. } => 3,
         EventDisposition::Block { .. } => 4,
         EventDisposition::Hide => 5,
     }

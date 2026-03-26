@@ -18,9 +18,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use log::{debug, warn};
 use malwi_intercept::glob::{matches_glob, matches_glob_ci};
-use malwi_intercept::{
-    ConfigureResponse, HookConfig, HookType, NetworkInfo, ReviewDecision, RuntimeStack, TraceEvent,
-};
+use malwi_intercept::{HookConfig, HookType, NetworkInfo, RuntimeStack, TraceEvent};
 use serde::Serialize;
 
 use std::path::Path;
@@ -216,17 +214,6 @@ enum Commands {
         )]
         policy: Option<PathBuf>,
 
-        /// Enable review mode (prompt on each call with Y/n/i options)
-        #[arg(
-            short,
-            long,
-            help_heading = "Policy",
-            long_help = "Prompt interactively before each traced call.\n\
-                         Y = allow, n = block, i = inspect (show args + stack).\n\
-                         Auto-enabled when the policy has blocking sections."
-        )]
-        review: bool,
-
         /// Capture stack traces for each function call
         #[arg(long = "st", visible_alias = "stack-trace", help_heading = "Output")]
         stack_trace: bool,
@@ -291,7 +278,6 @@ async fn main() -> Result<()> {
             javascript,
             exec,
             policy,
-            review,
             stack_trace,
             output,
             monitor,
@@ -305,7 +291,6 @@ async fn main() -> Result<()> {
                 javascript,
                 exec,
                 policy_file: policy,
-                review,
                 stack_trace,
                 output,
                 use_monitor: monitor,
@@ -593,7 +578,6 @@ struct TraceConfig {
     javascript: Vec<String>,
     exec: Vec<String>,
     policy_file: Option<PathBuf>,
-    review: bool,
     stack_trace: bool,
     output: Option<PathBuf>,
     use_monitor: bool,
@@ -842,8 +826,8 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         // stdout, as it can break other policy tests and pipelines.)
         let enable_xtrace = !config.exec.is_empty();
 
-        // If policy blocks eval/source, shadow those builtins in bash even if
-        // command tracing wasn't requested.
+        // If policy blocks eval/source, shadow those builtins in bash as
+        // defense-in-depth even if command tracing wasn't requested.
         let mut block_eval = false;
         let mut block_source = false;
         if let Some(ref policy) = active_policy {
@@ -894,40 +878,42 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
         }
     }
 
-    // Determine if review mode should be auto-enabled by policy
-    let effective_review = config.review
-        || active_policy
-            .as_ref()
-            .is_some_and(|p| p.has_blocking_sections());
-
     // Bounded channel for events from TCP wire server tasks to main loop.
-    // Bounded channel provides backpressure: when the main task can't keep up
-    // (e.g., stdout pipe is full), server tasks block on send, which delays
-    // the TCP wire response, which naturally throttles the agent.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(1024);
 
     // Create TCP wire server for agent communication
     let requested_hooks = hook_configs.clone();
 
-    // Shared state between tracker and server — created before either, since
-    // the server starts before we know root_pid.
     let active_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let reconnected_pids = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<u32>::new()));
 
-    let agent_config = ConfigureResponse {
-        hooks: hook_configs,
-        review_mode: effective_review,
+    // Write agent config file for the agent to read at init.
+    // Contains hooks + policy sections — the agent evaluates policy locally.
+    let file_config = if let Some(ref policy) = active_policy {
+        policy.to_agent_config(config.stack_trace)
+    } else {
+        malwi_intercept::agent_config::AgentConfig {
+            hooks: hook_configs.clone(),
+            ..Default::default()
+        }
     };
+    let yaml = file_config.to_yaml();
+    let config_file_path =
+        std::env::temp_dir().join(format!("malwi-config-{}.yaml", std::process::id()));
+    std::fs::write(&config_file_path, &yaml)
+        .map_err(|e| anyhow::anyhow!("Failed to write agent config: {}", e))?;
+    debug!("Wrote agent config to {}", config_file_path.display());
 
     let tracking = agent_server::AgentTracking {
         active_count: active_count.clone(),
-        reconnected_pids: reconnected_pids.clone(),
     };
 
-    let server = AgentServer::new(agent_config, event_tx, tracking)?;
+    let server = AgentServer::new(event_tx, tracking)?;
 
     let server_url = server.url().to_string();
     debug!("Agent server listening on {}", server_url);
+
+    // Set MALWI_CONFIG env var so it's inherited by the spawned process
+    std::env::set_var("MALWI_CONFIG", config_file_path.as_os_str());
 
     // Spawn the target process with the agent injected (sync, one-shot posix_spawn)
     let needs_js = requested_hooks
@@ -1008,6 +994,9 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     if let Some(path) = temp_bash_env {
         let _ = std::fs::remove_file(path);
     }
+
+    // Clean up agent config file
+    let _ = std::fs::remove_file(&config_file_path);
 
     Ok(())
 }
@@ -1243,6 +1232,8 @@ fn process_event(
             let name = display_runtime_name(&runtime);
             eprintln!("{}[malwi] Detected {} {}{}", DIM, name, version, RESET);
         }
+        // Legacy fallback: when agent sends raw TraceEvents (no MALWI_CONFIG),
+        // CLI evaluates policy. Primary path is DisplayEvents with agent-side disposition.
         AgentEvent::Trace(trace_event) => {
             debug!(
                 "Processing trace event: {} (hook={:?})",
@@ -1293,7 +1284,7 @@ fn process_event(
                             return Ok(());
                         }
                     }
-                    policy::EventDisposition::Display | policy::EventDisposition::Review { .. } => {
+                    policy::EventDisposition::Display => {
                         // Show the event normally
                     }
                 }
@@ -1326,56 +1317,78 @@ fn process_event(
                 )?;
             }
         }
+        AgentEvent::DisplayTrace(display_event) => {
+            let trace_event = display_event.trace;
+            debug!(
+                "Processing display event: {} (disposition={:?})",
+                trace_event.function, display_event.disposition
+            );
+
+            match display_event.disposition {
+                malwi_intercept::Disposition::Blocked {
+                    ref rule,
+                    ref section,
+                } => {
+                    emit_blocked(
+                        &trace_event,
+                        rule,
+                        section,
+                        config.monitor_client,
+                        state.output_writer.as_deref_mut(),
+                        config.format,
+                    );
+                    return Ok(());
+                }
+                malwi_intercept::Disposition::Warning {
+                    rule: _,
+                    section: _,
+                } => {
+                    emit_warning(
+                        &trace_event,
+                        config.monitor_client,
+                        state.output_writer.as_deref_mut(),
+                        config.format,
+                    );
+                    // For exec/bash/envvar events, the warning line already contains full info
+                    if trace_event.hook_type == HookType::Exec
+                        || trace_event.hook_type == HookType::Bash
+                        || trace_event.hook_type == HookType::EnvVar
+                    {
+                        return Ok(());
+                    }
+                }
+                malwi_intercept::Disposition::Traced => {
+                    // Normal display — fall through to render
+                }
+            }
+
+            // Resolve native stack symbols before display
+            let resolved_frames = if !trace_event.native_stack.is_empty() {
+                state
+                    .symbol_resolver
+                    .resolve_addresses(&trace_event.native_stack)
+            } else {
+                vec![]
+            };
+
+            // Send to monitor if available, otherwise print locally
+            if let Some(client) = config.monitor_client {
+                let _ = client.send_event(&trace_event);
+            } else if let Some(ref mut out) = state.output_writer {
+                print_trace_event(
+                    &trace_event,
+                    &resolved_frames,
+                    out,
+                    config.stack_trace_enabled,
+                    config.format,
+                )?;
+            }
+        }
         AgentEvent::Disconnected { pid } => {
             debug!("Agent {} disconnected", pid);
             // Note: active_count decrement happens in run_main_event_loop,
             // not here, to ensure FIFO ordering.
             state.symbol_resolver.remove_pid(pid);
-        }
-        AgentEvent::ReviewRequest { event, response_tx } => {
-            let decision = if !is_manual_function(&event.function, config.manual_functions) {
-                if let Some(pol) = config.active_policy {
-                    match pol.evaluate_trace(&event) {
-                        policy::EventDisposition::Block { rule, section } => {
-                            emit_blocked(
-                                &event,
-                                &rule,
-                                &section,
-                                config.monitor_client,
-                                state.output_writer.as_deref_mut(),
-                                config.format,
-                            );
-                            ReviewDecision::Block
-                        }
-                        policy::EventDisposition::Suppress => ReviewDecision::Suppress,
-                        policy::EventDisposition::Hide => ReviewDecision::Hide,
-                        policy::EventDisposition::Warn { .. } => {
-                            emit_warning(
-                                &event,
-                                config.monitor_client,
-                                state.output_writer.as_deref_mut(),
-                                config.format,
-                            );
-                            ReviewDecision::Warn
-                        }
-                        policy::EventDisposition::Display => ReviewDecision::Allow,
-                        policy::EventDisposition::Review { .. } => {
-                            tokio::task::block_in_place(|| {
-                                prompt_review_decision(&event, state.output_writer.as_deref_mut())
-                            })
-                        }
-                    }
-                } else {
-                    tokio::task::block_in_place(|| {
-                        prompt_review_decision(&event, state.output_writer.as_deref_mut())
-                    })
-                }
-            } else {
-                tokio::task::block_in_place(|| {
-                    prompt_review_decision(&event, state.output_writer.as_deref_mut())
-                })
-            };
-            let _ = response_tx.send(decision);
         }
     }
     Ok(())
@@ -1439,46 +1452,6 @@ fn emit_warning(
         let _ = client.send_event(event);
     } else if let Some(out) = out {
         let _ = writeln!(out, "{}[malwi] warning:{} {}{}", YELLOW, RESET, full, src);
-    }
-}
-
-/// Prompt the user interactively for a review decision.
-/// Used when no policy short-circuits the decision (i.e., Review disposition or no policy).
-fn prompt_review_decision(
-    event: &TraceEvent,
-    out: Option<&mut (dyn Write + '_)>,
-) -> ReviewDecision {
-    print_review_summary(event);
-    loop {
-        print!("Approve? [Y/n/i]: ");
-        let _ = std::io::stdout().flush();
-
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_err() {
-            return ReviewDecision::Allow;
-        }
-
-        match input.trim().to_lowercase().as_str() {
-            "n" => {
-                let full = format_event_display_name(event);
-                let src = format_source_location(
-                    &event.source_file,
-                    event.source_line,
-                    event.source_column,
-                );
-                if let Some(out) = out {
-                    let _ = writeln!(out, "{}[malwi] denied:{} {}{}", RED, RESET, full, src);
-                }
-                return ReviewDecision::Block;
-            }
-            "i" => {
-                print_review_details(event);
-                continue;
-            }
-            _ => {
-                return ReviewDecision::Allow;
-            }
-        }
     }
 }
 
@@ -1765,113 +1738,6 @@ fn format_event_display_name(event: &TraceEvent) -> String {
     } else {
         event.function.clone()
     }
-}
-
-/// Print a brief summary for review mode prompt
-fn print_review_summary(event: &TraceEvent) {
-    let name = display_name(&event.function);
-
-    // Format arguments (truncated for summary)
-    let args: Vec<String> = event
-        .arguments
-        .iter()
-        .take(3) // Limit to first 3 args for summary
-        .map(|a| {
-            let val = a
-                .display
-                .clone()
-                .unwrap_or_else(|| format!("{:#x}", a.raw_value));
-            if val.len() > 40 {
-                format!("{}...", &val[..37])
-            } else {
-                val
-            }
-        })
-        .collect();
-    let args_str = if event.arguments.len() > 3 {
-        format!("{}, ...", args.join(", "))
-    } else {
-        args.join(", ")
-    };
-
-    let src = format_source_location(&event.source_file, event.source_line, event.source_column);
-
-    if args_str.is_empty() {
-        println!("{}[malwi]{} {}{}", YELLOW, RESET, name, src);
-    } else {
-        println!(
-            "{}[malwi]{} {}{}({}){}{}",
-            YELLOW, RESET, name, DIM, args_str, RESET, src
-        );
-    }
-}
-
-/// Print detailed info for review mode 'i' option
-fn print_review_details(event: &TraceEvent) {
-    println!("{}--- Details ---{}", DIM, RESET);
-
-    // Print file and line from first runtime stack frame if available
-    match &event.runtime_stack {
-        Some(RuntimeStack::Python(frames)) if !frames.is_empty() => {
-            let f = &frames[0];
-            println!("  {}File:{} {}:{}", DIM, RESET, f.filename, f.line);
-        }
-        Some(RuntimeStack::Nodejs(frames)) if !frames.is_empty() => {
-            let f = &frames[0];
-            println!(
-                "  {}File:{} {}:{}:{}",
-                DIM, RESET, f.script, f.line, f.column
-            );
-        }
-        _ => {
-            if !event.native_stack.is_empty() {
-                println!("  {}At:{} {:#x}", DIM, RESET, event.native_stack[0]);
-            }
-        }
-    }
-
-    // Print full arguments
-    println!("  {}Args:{}", DIM, RESET);
-    for (i, arg) in event.arguments.iter().enumerate() {
-        let val = arg
-            .display
-            .clone()
-            .unwrap_or_else(|| format!("{:#x}", arg.raw_value));
-        println!("    [{}] = {}", i, val);
-    }
-
-    // Print full stack trace
-    if !event.native_stack.is_empty() || event.runtime_stack.is_some() {
-        println!("  {}Stack:{}", DIM, RESET);
-
-        // Runtime stack first
-        match &event.runtime_stack {
-            Some(RuntimeStack::Python(frames)) => {
-                for frame in frames {
-                    println!(
-                        "    {}:{} in {}()",
-                        frame.filename, frame.line, frame.function
-                    );
-                }
-            }
-            Some(RuntimeStack::Nodejs(frames)) => {
-                for frame in frames {
-                    println!(
-                        "    {}:{}:{} in {}()",
-                        frame.script, frame.line, frame.column, frame.function
-                    );
-                }
-            }
-            None => {}
-        }
-
-        // Native stack
-        for &addr in &event.native_stack {
-            println!("    {:#x}", addr);
-        }
-    }
-
-    println!("{}---------------{}", DIM, RESET);
 }
 
 /// Format a native stack frame for display.

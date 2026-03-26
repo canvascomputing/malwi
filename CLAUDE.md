@@ -20,14 +20,29 @@ Cross-runtime: **exec monitoring** (`--cm`) hooks fork/exec/spawn to trace child
 ```
 CLI (cli/)                          Agent (injected into target process)
 ──────────                          ────────────────────────────────────
-1. Starts TCP server                2. Agent loads via DYLD/LD_PRELOAD
-3. Sends HookConfig (filters)  ──►  4. Installs hooks per runtime
-                                    5. Hooks fire → build TraceEvent
-6. Receives TraceEvents        ◄──  5. Send over TCP (binary wire)
-7. Policy evaluation + display
+1. Compile policy → AgentConfig     2. Agent loads via DYLD/LD_PRELOAD
+   Write config to temp file
+   Start TCP listener (recv-only)
+   Spawn target with MALWI_CONFIG   3. Read config from MALWI_CONFIG
+                                    4. Compile policy locally (glob)
+                                    5. Install hooks from config
+                                    6. Connect to MALWI_EVENTS (TCP)
+                                    7. Send Ready{pid, hooks, versions}
+
+                                    Hook fires:
+                                      → policy.evaluate(event) locally
+                                      → Block: return -1/EACCES + send
+                                      → Warn: allow + send DisplayEvent
+                                      → Trace: send DisplayEvent
+8. Receive DisplayEvents       ◄──  9. Fire-and-forget batched events
+9. Render to terminal/JSON
+10. waitpid() for exit code         10. atexit → flush → Shutdown → close
+11. Clean up temp file, exit
 ```
 
-The agent library is embedded in the CLI binary at compile time (`include_bytes!`). At runtime, the CLI extracts it to a temp file and sets the preload env var before spawning the target.
+Communication is **unidirectional** (agent→CLI only). The agent is a self-contained enforcement engine + event emitter. The CLI is a display renderer.
+
+The agent library is embedded in the CLI binary at compile time (`include_bytes!`). At runtime, the CLI extracts it to a temp file and sets the preload env var before spawning the target. Policy is delivered via a config file (`MALWI_CONFIG` env var) written before spawn — no TCP handshake needed.
 
 ## Rules
 
@@ -65,8 +80,8 @@ cli/src/
 │       └── *.yaml          # Pattern groups (credential_files, networking_symbols, etc.)
 
 intercept/src/
-├── agent/                  # Agent lifecycle (init → configure → ready → tracing)
-├── native/                 # Native symbol hooks (frida-gum), review-mode hide enforcement
+├── agent/                  # Agent lifecycle (init → config file → ready → tracing)
+├── native/                 # Native symbol hooks (frida-gum), hide enforcement
 ├── python/                 # Python tracing (sys.setprofile, audit hooks, CPython FFI)
 ├── nodejs/                 # Node.js tracing (V8 bytecode, codegen gate, N-API addon)
 │   └── addon/              # Addon loading: --require preload, embed/extract per Node version
@@ -76,8 +91,15 @@ intercept/src/
 
 protocol/src/
 ├── event.rs                # TraceEvent, EventType, Argument, NetworkInfo, RuntimeStack
-├── protocol.rs             # HookType, FilterSpec, HookConfig
-└── wire.rs                 # Length-prefixed binary codec
+├── protocol.rs             # ModuleInfo, ReadyRequest, RuntimeInfoRequest, ShutdownRequest
+├── message.rs              # AgentMessage enum, DisplayEvent, Disposition
+├── agent_config.rs         # AgentConfig: hook list + policy sections (YAML serializable)
+├── agent_policy.rs         # AgentPolicy: agent-side glob-based policy evaluation
+├── yaml.rs                 # Minimal YAML parser/writer (zero deps, shared CLI+agent)
+├── wire.rs                 # Length-prefixed binary codec (agent→CLI only)
+├── glob.rs                 # Glob pattern matching
+├── exec.rs                 # Exec/spawn platform types
+└── platform.rs             # Platform-specific constants
 ```
 
 Each runtime module (`python/`, `nodejs/`, `bash/`) follows a standard pattern: `mod.rs` (facade), `detect.rs` (is_loaded, version), `hooks.rs` (callbacks), `format.rs` (arg formatting + NetworkInfo), `filters.rs` (filter management).
@@ -86,11 +108,15 @@ Each runtime module (`python/`, `nodejs/`, `bash/`) follows a standard pattern: 
 
 Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn`/`hide` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
 
-**Hide enforcement** uses the review-mode mechanism: hide specs in the policy generate native hooks (getenv for envvar hide, stat/lstat/access for file hide). The agent sends review requests to the CLI, which evaluates the target against the policy and returns `ReviewDecision::Hide`. The agent then returns fake values (NULL for getenv, -1/ENOENT for stat/access).
+**Agent-side policy evaluation**: The CLI compiles the policy into an `AgentConfig` (hooks + per-section glob lists), writes it to a temp YAML file, and passes its path via `MALWI_CONFIG`. The agent reads the config at init, compiles glob patterns into an `AgentPolicy`, and evaluates events locally — no TCP round-trip needed. Evaluation order: allow → hide → deny → warn → trace (default).
 
-**Envvar allow patterns** are encoded in `HookConfig` with a `!` prefix (e.g., `HookConfig { EnvVar, "!HF_HUB_*" }`). The agent strips the prefix and registers allow patterns for agent-side filtering.
+**Hide enforcement**: Hide patterns in the policy config cause the agent to return fake values from hooks (NULL for getenv, -1/ENOENT for stat/access). Evaluated agent-side via `AgentPolicy`.
 
-**ConfigureResponse** contains only `hooks: Vec<HookConfig>` and `review_mode: bool` — all patterns are encoded in the hooks themselves or handled via review mode.
+**Block enforcement**: Deny patterns cause the agent to block the function call synchronously (return -1/EACCES for native, raise PermissionError for Python, return 0 for Node.js). The blocked call never reaches the OS.
+
+**Implicit deny**: When a section has `allow` patterns but no `deny` patterns, anything not matching allow is implicitly denied.
+
+**Network deferral**: Native networking symbols (socket, connect, etc.) skip the functions deny phase and are evaluated only by the network phase, matching CLI-side behavior.
 
 **Policy presets** are defined in `cli/src/policy/templates/mod.rs` using a `rules!` macro. Pattern groups are flat YAML lists (`credential_files.yaml`, `networking_symbols.yaml`, etc.) parsed via `parse_yaml_list()` into `OnceLock<Vec<String>>` statics, accessed via `macro_rules!` macros (e.g., `credential_files!()`).
 
@@ -257,30 +283,41 @@ TraceEvent {
 }
 ```
 
-## Review Mode Decisions
+## Agent-Side Policy Decisions
 
 ```rust
-// protocol/src/protocol.rs
-enum ReviewDecision {
-    Allow,    // Proceed normally
-    Block,    // Denied — return -1/EACCES
-    Warn,     // Allowed but flagged
-    Suppress, // Auto-allowed, nothing to show
-    Hide,     // Make target non-existent (NULL/ENOENT)
+// protocol/src/agent_policy.rs — evaluated locally in the agent
+enum AgentDecision {
+    Trace,                              // Display normally
+    Block { rule: String, section: String },  // Return error from hook + display "denied"
+    Warn { rule: String, section: String },   // Allow but display "warning"
+    Hide,                               // Fake return value (NULL/ENOENT), don't display
+    Suppress,                           // Don't display, don't block
+}
+```
+
+```rust
+// protocol/src/message.rs — sent over wire to CLI
+enum Disposition {
+    Traced,
+    Blocked { rule: String, section: String },
+    Warning { rule: String, section: String },
 }
 ```
 
 ## AgentServer
 
-`AgentServer::new()` takes three parameters:
-- `agent_config: ConfigureResponse` — hooks + review_mode, cloned to each agent on configure
+`AgentServer::new()` takes two parameters:
 - `event_tx` — channel for agent events to main loop
-- `tracking: AgentTracking` — shared `active_count` + `reconnected_pids`
+- `tracking: AgentTracking` — shared `active_count`
+
+The server is receive-only (unidirectional). No CLI→Agent messages exist.
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `MALWI_URL` | TCP server URL for agent↔CLI communication |
+| `MALWI_URL` | TCP server URL for agent→CLI event stream |
+| `MALWI_CONFIG` | Path to agent config YAML file (hooks + policy) |
 | `MALWI_TEST_BINARIES` | Path to multi-version test binaries |
 | `RUST_LOG=debug` | Enable debug logging |

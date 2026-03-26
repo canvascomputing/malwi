@@ -239,7 +239,7 @@ unsafe extern "C" fn profile_hook(
             .source_location(caller_file, caller_line, None)
             .build();
 
-        // Send to CLI (handles review mode internally)
+        // Send to CLI (handles policy enforcement internally)
         if super::helpers::send_trace_event(event).is_err() {
             // User denied - raise PermissionError to abort the call
             raise_permission_error();
@@ -367,13 +367,24 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     let event = crate::tracing::event::envvar_enter(&key).build();
 
     if let Some(agent) = crate::Agent::get() {
-        if agent.is_review_mode() {
-            let decision = agent.await_review_decision(event);
-            if !decision.is_allowed() {
-                raise_permission_error();
-                return -1;
+        if let Some(decision) = agent.evaluate_policy(&event) {
+            match decision {
+                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                    let _ = agent.send_event(event);
+                    raise_permission_error();
+                    return -1;
+                }
+                malwi_protocol::agent_policy::AgentDecision::Hide => {
+                    return -1; // Hidden, not sent
+                }
+                malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                    return 0; // Suppressed, not sent
+                }
+                _ => {
+                    let _ = agent.send_event(event);
+                    return 0;
+                }
             }
-            return 0;
         }
 
         let _ = agent.send_event(event);

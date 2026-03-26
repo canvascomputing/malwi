@@ -4,13 +4,13 @@
 
 pub mod lifecycle;
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use lifecycle::AgentPhase;
+use malwi_protocol::message::DisplayEvent;
 
 /// Whether agent debug output is enabled (from MALWI_AGENT_DEBUG env var at init).
 static AGENT_DEBUG: AtomicBool = AtomicBool::new(false);
@@ -64,14 +64,11 @@ pub struct Agent {
     client: Client,
     /// Channel sender for batched event delivery.
     event_tx: SyncSender<malwi_protocol::TraceEvent>,
-    review_mode: AtomicBool,
     /// True in forked child processes — bypass the dead batching channel.
     forked: AtomicBool,
-    /// Cache of review decisions — skip wire round-trip on retry.
-    /// Key: (HookType, cache_key). For hide-relevant functions (getenv, stat, etc.),
-    /// the cache key includes arg0 (e.g. "getenv:MALWI_URL"). For other functions,
-    /// the key is just the function name (e.g. "connect").
-    review_cache: Mutex<HashMap<(HookType, String), malwi_protocol::ReviewDecision>>,
+    /// Agent-side policy evaluator (loaded from config file).
+    /// When present, the agent evaluates policy locally instead of sending raw events.
+    agent_policy: Option<malwi_protocol::agent_policy::AgentPolicy>,
     #[cfg(unix)]
     fork_monitor: Mutex<Option<ForkMonitor>>,
     spawn_monitor: Mutex<Option<SpawnMonitor>>,
@@ -97,75 +94,22 @@ impl Agent {
             hook_manager,
             client,
             event_tx,
-            review_mode: AtomicBool::new(false),
             forked: AtomicBool::new(false),
-            review_cache: Mutex::new(HashMap::new()),
+            agent_policy: None,
             #[cfg(unix)]
             fork_monitor: Mutex::new(None),
             spawn_monitor: Mutex::new(None),
         })
     }
 
-    /// Run the agent's main loop.
-    /// Polls for shutdown commands from the CLI.
-    pub fn run(&self) -> Result<()> {
-        info!("Agent started, polling for commands...");
-
-        let mut consecutive_errors: u32 = 0;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 5;
-        let mut nodejs_version_pending = crate::nodejs::is_loaded();
-
-        loop {
-            // Check if shutdown was requested (e.g., by atexit handler)
-            if AgentPhase::is_shutting_down() {
-                // Wait for flush thread to drain pending events before sending
-                // /shutdown, otherwise the CLI may exit before displaying them.
-                wait_for_flush_complete();
-                if AgentPhase::advance(AgentPhase::Flushed, AgentPhase::ShutdownSent) {
-                    info!("Shutdown requested, notifying CLI");
-                    let _ = self.client.shutdown(std::process::id());
-                }
-                break;
-            }
-
-            // Check if CLI is still connected (TCP connection alive)
-            if !self.client.is_connected() {
-                // Server unreachable — if we're shutting down, that's expected
-                if AgentPhase::is_shutting_down() {
-                    info!("Server unreachable during shutdown (expected)");
-                    break;
-                }
-                consecutive_errors += 1;
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    info!(
-                        "Server unreachable after {} attempts, shutting down",
-                        consecutive_errors
-                    );
-                    break;
-                }
-                debug!("CLI connection lost (attempt {})", consecutive_errors);
-            } else {
-                consecutive_errors = 0;
-            }
-
-            // Send Node.js version to CLI once it becomes available.
-            // detected_version() is a single OnceLock read — negligible overhead.
-            if nodejs_version_pending {
-                if let Some(v) = crate::nodejs::detected_version() {
-                    let _ = self.client.send_runtime_info(
-                        std::process::id(),
-                        "nodejs",
-                        &format!("v{}", v),
-                    );
-                    nodejs_version_pending = false;
-                }
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(50));
+    /// Send late Node.js version info to the CLI if detected.
+    /// Called once from the flush thread when version becomes available.
+    fn send_late_nodejs_version(&self) {
+        if let Some(v) = crate::nodejs::detected_version() {
+            let _ = self
+                .client
+                .send_runtime_info(std::process::id(), "nodejs", &format!("v{}", v));
         }
-
-        info!("Agent shutting down");
-        Ok(())
     }
 
     /// Install a hook locally (no wire call needed — agent manages hooks directly).
@@ -244,14 +188,46 @@ impl Agent {
 
     /// Send a trace event to the CLI.
     ///
+    /// When agent-side policy is active, evaluates the event and sends a
+    /// DisplayEvent with pre-computed disposition. Otherwise sends raw TraceEvent.
+    ///
     /// Pushes to the batch channel for efficient delivery. Falls back to
     /// direct send if the channel is full (backpressure) or after fork
     /// (channel receiver thread is dead).
     pub fn send_event(&self, event: malwi_protocol::TraceEvent) -> Result<()> {
+        // Check forked FIRST — after fork, heap allocations in agent_policy's
+        // glob patterns may be corrupted. Send raw events directly via TCP.
         if self.forked.load(Ordering::Acquire) {
-            // Channel receiver is dead after fork — send directly.
             return self.client.send_event(&event);
         }
+
+        // Agent-side policy: evaluate locally and send DisplayEvent directly.
+        // The batch channel stays as TraceEvent for simplicity — policy events
+        // bypass it and go directly via client.send_display_events().
+        if let Some(ref policy) = self.agent_policy {
+            let decision = policy.evaluate(&event);
+            let disposition = match decision {
+                malwi_protocol::agent_policy::AgentDecision::Trace => {
+                    malwi_protocol::Disposition::Traced
+                }
+                malwi_protocol::agent_policy::AgentDecision::Block { rule, section } => {
+                    malwi_protocol::Disposition::Blocked { rule, section }
+                }
+                malwi_protocol::agent_policy::AgentDecision::Warn { rule, section } => {
+                    malwi_protocol::Disposition::Warning { rule, section }
+                }
+                malwi_protocol::agent_policy::AgentDecision::Suppress
+                | malwi_protocol::agent_policy::AgentDecision::Hide => {
+                    // Suppress and Hide events are not sent to CLI
+                    return Ok(());
+                }
+            };
+            return self.client.send_display_events(vec![DisplayEvent {
+                trace: event,
+                disposition,
+            }]);
+        }
+
         match self.event_tx.try_send(event) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(event)) => self.client.send_event(&event),
@@ -259,47 +235,39 @@ impl Agent {
         }
     }
 
-    /// Check if review mode is enabled.
-    pub fn is_review_mode(&self) -> bool {
-        self.review_mode.load(Ordering::SeqCst)
+    /// Evaluate an event against the agent-side policy (if loaded).
+    /// Also returns None in forked children — heap allocations in the policy's
+    /// glob patterns may be corrupted if the parent was allocating at fork time.
+    pub fn evaluate_policy(
+        &self,
+        event: &malwi_protocol::TraceEvent,
+    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+        if self.forked.load(Ordering::Acquire) {
+            return None;
+        }
+        self.agent_policy.as_ref().map(|p| p.evaluate(event))
     }
 
-    /// Wait for user decision in review mode.
-    /// Blocks on wire response — no condvar needed.
-    /// Returns the `ReviewDecision` from the CLI.
-    pub fn await_review_decision(
+    /// Evaluate just the envvar section of agent-side policy.
+    pub fn evaluate_envvar_policy(
         &self,
-        event: malwi_protocol::TraceEvent,
-    ) -> malwi_protocol::ReviewDecision {
-        // Build cache key. For hide-relevant functions (getenv, stat, etc.),
-        // include arg0 so different targets get separate decisions.
-        let cache_key = make_review_cache_key(&event);
-        {
-            let cache = self.review_cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cached) = cache.get(&cache_key) {
-                return cached.clone();
-            }
+        name: &str,
+    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+        if self.forked.load(Ordering::Acquire) {
+            return None;
         }
+        self.agent_policy.as_ref().map(|p| p.evaluate_envvar(name))
+    }
 
-        match self.client.review(&event) {
-            Ok(decision) => {
-                // Cache Block and Hide decisions to avoid repeated wire round-trips
-                if matches!(
-                    decision,
-                    malwi_protocol::ReviewDecision::Block | malwi_protocol::ReviewDecision::Hide
-                ) {
-                    self.review_cache
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(cache_key, decision.clone());
-                }
-                decision
-            }
-            Err(e) => {
-                warn!("Review request failed: {}", e);
-                malwi_protocol::ReviewDecision::Block
-            }
+    /// Evaluate just the file section of agent-side policy.
+    pub fn evaluate_file_policy(
+        &self,
+        path: &str,
+    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+        if self.forked.load(Ordering::Acquire) {
+            return None;
         }
+        self.agent_policy.as_ref().map(|p| p.evaluate_file(path))
     }
 
     /// Get a reference to the global agent.
@@ -309,10 +277,27 @@ impl Agent {
 
     /// Wait for hook configuration to complete.
     ///
-    /// Makes a single wire call to get configuration, installs hooks
-    /// locally, then notifies the CLI via a ready message.
-    pub fn wait_for_configuration(&self) -> Result<()> {
-        info!("Requesting configuration from CLI...");
+    /// Reads configuration from the MALWI_CONFIG file (written by CLI before spawn).
+    /// Installs hooks locally, then notifies the CLI via a ready message.
+    pub fn wait_for_configuration(&mut self) -> Result<()> {
+        let agent_config = Self::try_load_config_file()
+            .ok_or_else(|| anyhow::anyhow!("MALWI_CONFIG not set or config file unreadable"))?;
+
+        info!("Loaded configuration from file");
+
+        // Install hooks from config file
+        for hook_config in &agent_config.hooks {
+            if let Err(e) = self.add_hook_local(hook_config.clone()) {
+                warn!("Failed to install hook {}: {}", hook_config.symbol, e);
+            }
+        }
+
+        // Set up agent-side policy evaluator
+        let policy = malwi_protocol::agent_policy::AgentPolicy::new(&agent_config.policy);
+        self.agent_policy = Some(policy);
+
+        // Enable child gating unconditionally
+        self.enable_child_gating_internal();
 
         let pid = std::process::id();
         let nodejs_version = if crate::nodejs::is_loaded() {
@@ -320,22 +305,6 @@ impl Agent {
         } else {
             None
         };
-
-        // Single wire call to get all configuration
-        let config = self.client.configure(pid, nodejs_version)?;
-
-        // Install hooks locally
-        for hook_config in &config.hooks {
-            if let Err(e) = self.add_hook_local(hook_config.clone()) {
-                warn!("Failed to install hook {}: {}", hook_config.symbol, e);
-            }
-        }
-
-        // Set review mode
-        self.review_mode.store(config.review_mode, Ordering::SeqCst);
-
-        // Enable child gating unconditionally
-        self.enable_child_gating_internal();
 
         // Enumerate loaded modules for CLI-side symbol resolution
         let modules: Vec<malwi_protocol::ModuleInfo> = crate::native::enumerate_modules()
@@ -357,15 +326,15 @@ impl Agent {
         let bash_version = crate::bash::detected_version().map(|s| s.to_string());
 
         // Report ready
-        let hooks = self.hook_manager.list_hooks();
+        let hook_list = self.hook_manager.list_hooks();
         info!(
             "Configuration complete, sending ready with {} hooks and {} modules",
-            hooks.len(),
+            hook_list.len(),
             modules.len()
         );
         self.client.ready(
             pid,
-            hooks,
+            hook_list,
             nodejs_version,
             python_version,
             bash_version,
@@ -373,6 +342,22 @@ impl Agent {
         )?;
 
         Ok(())
+    }
+
+    /// Try to load configuration from a file (MALWI_CONFIG env var).
+    fn try_load_config_file() -> Option<malwi_protocol::agent_config::AgentConfig> {
+        let config_path = std::env::var("MALWI_CONFIG").ok()?;
+        let yaml = std::fs::read_to_string(&config_path).ok()?;
+        match malwi_protocol::agent_config::AgentConfig::from_yaml(&yaml) {
+            Ok(config) => {
+                info!("Loaded agent config from {}", config_path);
+                Some(config)
+            }
+            Err(e) => {
+                warn!("Failed to parse agent config from {}: {}", config_path, e);
+                None
+            }
+        }
     }
 
     /// Internal: install monitors.
@@ -519,24 +504,6 @@ impl Agent {
     }
 }
 
-/// Build a cache key for review decisions.
-/// For hide-relevant functions (getenv, stat, lstat, access), includes arg0
-/// so that different targets (e.g. getenv("PATH") vs getenv("MALWI_URL")) get
-/// separate cached decisions. Other functions use just the function name.
-fn make_review_cache_key(event: &malwi_protocol::TraceEvent) -> (HookType, String) {
-    let func = event.function.as_str();
-    let needs_arg = matches!(
-        func,
-        "getenv" | "secure_getenv" | "stat" | "lstat" | "access" | "stat$INODE64" | "lstat$INODE64"
-    );
-    if needs_arg {
-        if let Some(arg0) = event.arguments.first().and_then(|a| a.display.as_deref()) {
-            return (event.hook_type.clone(), format!("{}:{}", func, arg0));
-        }
-    }
-    (event.hook_type.clone(), event.function.clone())
-}
-
 /// Flush loop for batched event delivery.
 ///
 /// Collects events from the channel and sends them in batches of up to 64.
@@ -645,11 +612,13 @@ impl ForkHandler for Agent {
         self.client.mark_forked_child();
         // Clear DNS cache — parent's associations are irrelevant in child
         crate::tracing::dns_tracker().mark_forked();
-        // Register with CLI so active_agents is incremented before the parent
-        // can exit and decrement it, preventing premature CLI shutdown.
+        // Register with CLI via Ready so active_agents is incremented.
+        // When exec() replaces this process, CLOEXEC closes the TCP socket,
+        // triggering EOF → Disconnected → decrement. The new agent sends
+        // its own Ready, keeping the count correct.
         let _ = self
             .client
-            .send_reconnect(unsafe { libc::getppid() } as u32, std::process::id());
+            .ready(std::process::id(), vec![], None, None, None, vec![]);
     }
 }
 
@@ -781,7 +750,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     AgentPhase::advance(AgentPhase::Uninitialized, AgentPhase::Configuring);
 
     match Agent::new(&url) {
-        Ok(agent) => {
+        Ok(mut agent) => {
             info!("Connected to CLI at {}, waiting for configuration...", url);
 
             // CRITICAL: Block synchronously until configuration is complete
@@ -828,15 +797,17 @@ pub extern "C" fn malwi_agent_init() -> i32 {
                 libc::atexit(shutdown_handler);
             }
 
-            // Spawn background thread for command polling
-            std::thread::spawn(|| {
-                crate::native::suppress_hooks_on_current_thread();
-                if let Some(agent) = Agent::get() {
-                    if let Err(e) = agent.run() {
-                        error!("Agent error: {}", e);
+            // Send late Node.js version if available after a short delay.
+            // Version is detected asynchronously via V8 codegen gate.
+            if crate::nodejs::is_loaded() {
+                std::thread::spawn(|| {
+                    crate::native::suppress_hooks_on_current_thread();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if let Some(agent) = Agent::get() {
+                        agent.send_late_nodejs_version();
                     }
-                }
-            });
+                });
+            }
 
             info!("Agent ready, main() can proceed with hooks active");
             0

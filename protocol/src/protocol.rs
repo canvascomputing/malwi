@@ -1,28 +1,10 @@
-//! HTTP protocol types between CLI and agent.
+//! Protocol types for agent → CLI communication.
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::{HookConfig, TraceEvent};
-
 // =============================================================================
-// HTTP REQUEST/RESPONSE TYPES
+// PROTOCOL TYPES
 // =============================================================================
-
-/// Agent → CLI: Initial configuration request (POST /configure).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ConfigureRequest {
-    pub pid: u32,
-    pub nodejs_version: Option<u32>,
-}
-
-/// CLI → Agent: Configuration response with hooks and settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ConfigureResponse {
-    #[serde(default)]
-    pub hooks: Vec<HookConfig>,
-    #[serde(default)]
-    pub review_mode: bool,
-}
 
 /// Information about a loaded module in the target process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,7 +15,7 @@ pub struct ModuleInfo {
     pub size: u64,
 }
 
-/// Agent → CLI: Agent ready notification (POST /ready).
+/// Agent → CLI: Agent ready notification.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadyRequest {
     pub pid: u32,
@@ -47,55 +29,7 @@ pub struct ReadyRequest {
     pub modules: Vec<ModuleInfo>,
 }
 
-/// Agent → CLI: Review decision request (POST /review).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReviewRequest {
-    pub event: TraceEvent,
-}
-
-/// Review mode decision — carries disposition context from CLI to agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ReviewDecision {
-    /// Proceed normally (was: Continue).
-    Allow,
-    /// Denied by policy or user (was: Abort).
-    Block,
-    /// Allowed but flagged — warning displayed CLI-side.
-    Warn,
-    /// Auto-allowed, nothing to show.
-    Suppress,
-    /// Hidden — make target silently non-existent.
-    /// getenv → NULL, stat/lstat/access → -1/ENOENT.
-    Hide,
-}
-
-impl ReviewDecision {
-    /// Returns true if the call should be allowed to proceed.
-    pub fn is_allowed(&self) -> bool {
-        matches!(self, Self::Allow | Self::Warn | Self::Suppress)
-    }
-}
-
-/// CLI → Agent: Review decision response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReviewResponse {
-    pub decision: ReviewDecision,
-}
-
-/// CLI → Agent: Pending command for agent polling (GET /command).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CommandResponse {
-    pub command: Option<String>,
-}
-
-/// Agent → CLI: Child process reconnection after fork (POST /child/reconnect).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChildReconnectRequest {
-    pub parent_pid: u32,
-    pub child_pid: u32,
-}
-
-/// Agent → CLI: Late runtime info notification (POST /runtime).
+/// Agent → CLI: Late runtime info notification.
 /// Sent when runtime details become available after ReadyRequest
 /// (e.g., Node.js version detected after main() runs).
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,7 +39,7 @@ pub struct RuntimeInfoRequest {
     pub version: String,
 }
 
-/// Agent → CLI: Agent shutdown notification (POST /shutdown).
+/// Agent → CLI: Agent shutdown notification.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ShutdownRequest {
     pub pid: u32,

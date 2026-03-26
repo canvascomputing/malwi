@@ -1071,23 +1071,6 @@ fn terminate_child_with_timeout(child: &mut std::process::Child) -> std::process
     }
 }
 
-/// Check if output contains review mode prompt
-pub fn has_review_prompt(output: &str) -> bool {
-    output.contains("Approve? [Y/n/i]:")
-}
-
-/// Check if output contains review mode block message
-pub fn has_review_blocked(output: &str, function: &str) -> bool {
-    output
-        .lines()
-        .any(|line| line.contains("[malwi]") && line.contains("denied:") && line.contains(function))
-}
-
-/// Check if output contains review mode details section
-pub fn has_review_details(output: &str) -> bool {
-    output.contains("--- Details ---") && output.contains("Args:")
-}
-
 // ---------------------------------------------------------------------------
 // TracerOutput wrapper
 // ---------------------------------------------------------------------------
@@ -1266,7 +1249,7 @@ pub fn shell_split(cmd: &str) -> Vec<String> {
 ///     .timeout(secs(10)).run();
 ///
 /// // With stdin:
-/// cmd("x -r -s marker -- ./target").stdin("y\n").run();
+/// cmd("x -c bash -- bash script.sh").stdin("echo hello\n").run();
 ///
 /// // Non-interactive (stdin closed):
 /// cmd(&format!("x -p {} -- {} {}", p.display(), b.display(), s.display()))

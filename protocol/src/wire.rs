@@ -11,14 +11,11 @@
 use std::io::{self, Read, Write};
 
 use crate::event::{
-    Argument, ChildOperation, EventType, HookConfig, HookType, HostChildInfo, NetworkInfo,
-    NodejsFrame, PythonFrame, RuntimeStack, TraceEvent,
+    Argument, ChildOperation, EventType, HookType, HostChildInfo, NetworkInfo, NodejsFrame,
+    PythonFrame, RuntimeStack, TraceEvent,
 };
-use crate::message::{AgentMessage, CliMessage};
-use crate::protocol::{
-    ChildReconnectRequest, ConfigureRequest, ConfigureResponse, ModuleInfo, ReadyRequest,
-    ReviewDecision, RuntimeInfoRequest, ShutdownRequest,
-};
+use crate::message::{AgentMessage, DisplayEvent, Disposition};
+use crate::protocol::{ModuleInfo, ReadyRequest, RuntimeInfoRequest, ShutdownRequest};
 
 // =============================================================================
 // Layer 1: Framing
@@ -59,13 +56,10 @@ pub fn read_frame(stream: &mut impl Read) -> io::Result<Vec<u8>> {
 
 /// Abstraction for message encoding/decoding.
 ///
-/// Allows swapping the encoding format (binary, protobuf, msgpack, etc.)
-/// without changing the transport layer.
+/// Communication is unidirectional: agent → CLI only.
 pub trait Codec {
     fn encode_agent_msg(&self, msg: &AgentMessage, buf: &mut Vec<u8>);
     fn decode_agent_msg(&self, data: &[u8]) -> io::Result<AgentMessage>;
-    fn encode_cli_msg(&self, msg: &CliMessage, buf: &mut Vec<u8>);
-    fn decode_cli_msg(&self, data: &[u8]) -> io::Result<CliMessage>;
 }
 
 // =============================================================================
@@ -75,29 +69,19 @@ pub trait Codec {
 /// Binary codec: zero-size, stateless.
 pub struct BinaryCodec;
 
-// -- Message type tags --
-const TAG_CONFIGURE: u8 = 0x01;
+// -- Message type tags (agent → CLI only) --
 const TAG_READY: u8 = 0x02;
 const TAG_RUNTIME: u8 = 0x03;
 const TAG_EVENT: u8 = 0x04;
 const TAG_EVENTS: u8 = 0x05;
 const TAG_CHILD: u8 = 0x06;
-const TAG_RECONNECT: u8 = 0x07;
-const TAG_REVIEW: u8 = 0x08;
 const TAG_SHUTDOWN: u8 = 0x09;
-
-const TAG_CONFIGURE_RESPONSE: u8 = 0x81;
-const TAG_REVIEW_RESPONSE: u8 = 0x82;
+const TAG_DISPLAY_EVENTS: u8 = 0x0A;
 
 impl Codec for BinaryCodec {
     fn encode_agent_msg(&self, msg: &AgentMessage, buf: &mut Vec<u8>) {
         let mut w = WireWriter(buf);
         match msg {
-            AgentMessage::Configure(req) => {
-                w.put_u8(TAG_CONFIGURE);
-                w.put_u32(req.pid);
-                w.put_opt_u32(req.nodejs_version);
-            }
             AgentMessage::Ready(req) => {
                 w.put_u8(TAG_READY);
                 w.put_u32(req.pid);
@@ -133,19 +117,17 @@ impl Codec for BinaryCodec {
                 w.put_u8(TAG_CHILD);
                 encode_child_info(&mut w, info);
             }
-            AgentMessage::Reconnect(req) => {
-                w.put_u8(TAG_RECONNECT);
-                w.put_u32(req.parent_pid);
-                w.put_u32(req.child_pid);
-            }
-            AgentMessage::Review { request_id, event } => {
-                w.put_u8(TAG_REVIEW);
-                w.put_u32(*request_id);
-                encode_trace_event(&mut w, event);
-            }
             AgentMessage::Shutdown(req) => {
                 w.put_u8(TAG_SHUTDOWN);
                 w.put_u32(req.pid);
+            }
+            AgentMessage::DisplayEvents(events) => {
+                w.put_u8(TAG_DISPLAY_EVENTS);
+                w.put_u32(events.len() as u32);
+                for de in events {
+                    encode_trace_event(&mut w, &de.trace);
+                    encode_disposition(&mut w, &de.disposition);
+                }
             }
         }
     }
@@ -154,14 +136,6 @@ impl Codec for BinaryCodec {
         let mut r = WireReader::new(data);
         let tag = r.get_u8()?;
         match tag {
-            TAG_CONFIGURE => {
-                let pid = r.get_u32()?;
-                let nodejs_version = r.get_opt_u32()?;
-                Ok(AgentMessage::Configure(ConfigureRequest {
-                    pid,
-                    nodejs_version,
-                }))
-            }
             TAG_READY => {
                 let pid = r.get_u32()?;
                 let hooks_installed = r.get_vec(|r| r.get_string())?;
@@ -215,91 +189,23 @@ impl Codec for BinaryCodec {
                 let info = decode_child_info(&mut r)?;
                 Ok(AgentMessage::Child(info))
             }
-            TAG_RECONNECT => {
-                let parent_pid = r.get_u32()?;
-                let child_pid = r.get_u32()?;
-                Ok(AgentMessage::Reconnect(ChildReconnectRequest {
-                    parent_pid,
-                    child_pid,
-                }))
-            }
-            TAG_REVIEW => {
-                let request_id = r.get_u32()?;
-                let event = decode_trace_event(&mut r)?;
-                Ok(AgentMessage::Review { request_id, event })
-            }
             TAG_SHUTDOWN => {
                 let pid = r.get_u32()?;
                 Ok(AgentMessage::Shutdown(ShutdownRequest { pid }))
             }
+            TAG_DISPLAY_EVENTS => {
+                let count = r.get_u32()?;
+                let mut events = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let trace = decode_trace_event(&mut r)?;
+                    let disposition = decode_disposition(&mut r)?;
+                    events.push(DisplayEvent { trace, disposition });
+                }
+                Ok(AgentMessage::DisplayEvents(events))
+            }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown agent message tag: 0x{:02x}", tag),
-            )),
-        }
-    }
-
-    fn encode_cli_msg(&self, msg: &CliMessage, buf: &mut Vec<u8>) {
-        let mut w = WireWriter(buf);
-        match msg {
-            CliMessage::ConfigureResponse(resp) => {
-                w.put_u8(TAG_CONFIGURE_RESPONSE);
-                w.put_vec(&resp.hooks, |w, h| {
-                    encode_hook_type(w, &h.hook_type);
-                    w.put_str(&h.symbol);
-                    w.put_opt_u64(h.arg_count.map(|n| n as u64));
-                    w.put_bool(h.capture_return);
-                    w.put_bool(h.capture_stack);
-                });
-                w.put_bool(resp.review_mode);
-            }
-            CliMessage::ReviewResponse {
-                request_id,
-                decision,
-            } => {
-                w.put_u8(TAG_REVIEW_RESPONSE);
-                w.put_u32(*request_id);
-                encode_review_decision(&mut w, decision);
-            }
-        }
-    }
-
-    fn decode_cli_msg(&self, data: &[u8]) -> io::Result<CliMessage> {
-        let mut r = WireReader::new(data);
-        let tag = r.get_u8()?;
-        match tag {
-            TAG_CONFIGURE_RESPONSE => {
-                let hooks = r.get_vec(|r| {
-                    let hook_type = decode_hook_type(r)?;
-                    let symbol = r.get_string()?;
-                    let arg_count = r.get_opt_u64()?.map(|n| n as usize);
-                    let capture_return = r.get_bool()?;
-                    let capture_stack = r.get_bool()?;
-                    Ok(HookConfig {
-                        hook_type,
-                        symbol,
-                        arg_count,
-                        capture_return,
-                        capture_stack,
-                    })
-                })?;
-                let review_mode = r.get_bool()?;
-                Ok(CliMessage::ConfigureResponse(ConfigureResponse {
-                    hooks,
-                    review_mode,
-                }))
-            }
-            TAG_REVIEW_RESPONSE => {
-                let request_id = r.get_u32()?;
-                let decision = decode_review_decision(&mut r)?;
-                Ok(CliMessage::ReviewResponse {
-                    request_id,
-                    decision,
-                })
-            }
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown CLI message tag: 0x{:02x}", tag),
             )),
         }
     }
@@ -328,7 +234,7 @@ fn encode_trace_event(w: &mut WireWriter, event: &TraceEvent) {
     w.put_opt_u32(event.source_line);
     w.put_opt_u32(event.source_column);
     w.put_u64(event.timestamp_ns);
-    // seq, source, category, disposition are CLI-only — not sent on wire
+    // seq, source are CLI-only — not sent on wire
 }
 
 fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
@@ -366,8 +272,6 @@ fn decode_trace_event(r: &mut WireReader) -> io::Result<TraceEvent> {
         // CLI-only fields default to zero/None
         seq: 0,
         source: None,
-        category: None,
-        disposition: None,
     })
 }
 
@@ -530,26 +434,42 @@ fn decode_child_operation(r: &mut WireReader) -> io::Result<ChildOperation> {
     }
 }
 
-fn encode_review_decision(w: &mut WireWriter, d: &ReviewDecision) {
-    w.put_u8(match d {
-        ReviewDecision::Allow => 0,
-        ReviewDecision::Block => 1,
-        ReviewDecision::Warn => 2,
-        ReviewDecision::Suppress => 3,
-        ReviewDecision::Hide => 4,
-    });
+// =============================================================================
+// Disposition encoding/decoding
+// =============================================================================
+
+fn encode_disposition(w: &mut WireWriter, d: &Disposition) {
+    match d {
+        Disposition::Traced => w.put_u8(0),
+        Disposition::Blocked { rule, section } => {
+            w.put_u8(1);
+            w.put_str(rule);
+            w.put_str(section);
+        }
+        Disposition::Warning { rule, section } => {
+            w.put_u8(2);
+            w.put_str(rule);
+            w.put_str(section);
+        }
+    }
 }
 
-fn decode_review_decision(r: &mut WireReader) -> io::Result<ReviewDecision> {
+fn decode_disposition(r: &mut WireReader) -> io::Result<Disposition> {
     match r.get_u8()? {
-        0 => Ok(ReviewDecision::Allow),
-        1 => Ok(ReviewDecision::Block),
-        2 => Ok(ReviewDecision::Warn),
-        3 => Ok(ReviewDecision::Suppress),
-        4 => Ok(ReviewDecision::Hide),
+        0 => Ok(Disposition::Traced),
+        1 => {
+            let rule = r.get_string()?;
+            let section = r.get_string()?;
+            Ok(Disposition::Blocked { rule, section })
+        }
+        2 => {
+            let rule = r.get_string()?;
+            let section = r.get_string()?;
+            Ok(Disposition::Warning { rule, section })
+        }
         t => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid ReviewDecision tag: {}", t),
+            format!("invalid Disposition tag: {}", t),
         )),
     }
 }
@@ -771,6 +691,7 @@ impl WireWriter<'_> {
         }
     }
 
+    #[allow(dead_code)]
     fn put_opt_u64(&mut self, v: Option<u64>) {
         match v {
             None => self.put_u8(0),
@@ -892,6 +813,7 @@ impl<'a> WireReader<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn get_opt_u64(&mut self) -> io::Result<Option<u64>> {
         match self.get_u8()? {
             0 => Ok(None),
@@ -944,13 +866,6 @@ mod tests {
         codec.decode_agent_msg(&buf).expect("decode_agent_msg")
     }
 
-    fn roundtrip_cli(msg: &CliMessage) -> CliMessage {
-        let codec = BinaryCodec;
-        let mut buf = Vec::new();
-        codec.encode_cli_msg(msg, &mut buf);
-        codec.decode_cli_msg(&buf).expect("decode_cli_msg")
-    }
-
     #[test]
     fn test_framing_roundtrip() {
         let payload = b"hello wire protocol";
@@ -975,38 +890,6 @@ mod tests {
         let buf = len.to_vec();
         let result = read_frame(&mut &buf[..]);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_configure_roundtrip() {
-        let msg = AgentMessage::Configure(ConfigureRequest {
-            pid: 42,
-            nodejs_version: Some(22),
-        });
-        let decoded = roundtrip_agent(&msg);
-        match decoded {
-            AgentMessage::Configure(req) => {
-                assert_eq!(req.pid, 42);
-                assert_eq!(req.nodejs_version, Some(22));
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_configure_no_nodejs() {
-        let msg = AgentMessage::Configure(ConfigureRequest {
-            pid: 1,
-            nodejs_version: None,
-        });
-        let decoded = roundtrip_agent(&msg);
-        match decoded {
-            AgentMessage::Configure(req) => {
-                assert_eq!(req.pid, 1);
-                assert_eq!(req.nodejs_version, None);
-            }
-            _ => panic!("wrong variant"),
-        }
     }
 
     #[test]
@@ -1195,115 +1078,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reconnect_roundtrip() {
-        let msg = AgentMessage::Reconnect(ChildReconnectRequest {
-            parent_pid: 10,
-            child_pid: 20,
-        });
-        let decoded = roundtrip_agent(&msg);
-        match decoded {
-            AgentMessage::Reconnect(req) => {
-                assert_eq!(req.parent_pid, 10);
-                assert_eq!(req.child_pid, 20);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_review_roundtrip() {
-        let msg = AgentMessage::Review {
-            request_id: 42,
-            event: TraceEvent {
-                function: "dangerous_call".to_string(),
-                ..Default::default()
-            },
-        };
-        let decoded = roundtrip_agent(&msg);
-        match decoded {
-            AgentMessage::Review { request_id, event } => {
-                assert_eq!(request_id, 42);
-                assert_eq!(event.function, "dangerous_call");
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_shutdown_roundtrip() {
         let msg = AgentMessage::Shutdown(ShutdownRequest { pid: 99 });
         let decoded = roundtrip_agent(&msg);
         match decoded {
             AgentMessage::Shutdown(req) => assert_eq!(req.pid, 99),
             _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_configure_response_roundtrip() {
-        let msg = CliMessage::ConfigureResponse(ConfigureResponse {
-            hooks: vec![
-                HookConfig {
-                    hook_type: HookType::Native,
-                    symbol: "malloc".to_string(),
-                    arg_count: Some(1),
-                    capture_return: true,
-                    capture_stack: false,
-                },
-                HookConfig {
-                    hook_type: HookType::Python,
-                    symbol: "open".to_string(),
-                    arg_count: None,
-                    capture_return: false,
-                    capture_stack: true,
-                },
-            ],
-            review_mode: true,
-        });
-        let decoded = roundtrip_cli(&msg);
-        match decoded {
-            CliMessage::ConfigureResponse(resp) => {
-                assert_eq!(resp.hooks.len(), 2);
-                assert!(matches!(resp.hooks[0].hook_type, HookType::Native));
-                assert_eq!(resp.hooks[0].symbol, "malloc");
-                assert_eq!(resp.hooks[0].arg_count, Some(1));
-                assert!(resp.hooks[0].capture_return);
-                assert!(!resp.hooks[0].capture_stack);
-                assert!(matches!(resp.hooks[1].hook_type, HookType::Python));
-                assert_eq!(resp.hooks[1].arg_count, None);
-                assert!(resp.review_mode);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_review_response_roundtrip() {
-        for decision in [
-            ReviewDecision::Allow,
-            ReviewDecision::Block,
-            ReviewDecision::Warn,
-            ReviewDecision::Suppress,
-            ReviewDecision::Hide,
-        ] {
-            let msg = CliMessage::ReviewResponse {
-                request_id: 7,
-                decision: decision.clone(),
-            };
-            let decoded = roundtrip_cli(&msg);
-            match decoded {
-                CliMessage::ReviewResponse {
-                    request_id,
-                    decision: d,
-                } => {
-                    assert_eq!(request_id, 7);
-                    assert_eq!(
-                        std::mem::discriminant(&d),
-                        std::mem::discriminant(&decision)
-                    );
-                }
-                _ => panic!("wrong variant"),
-            }
         }
     }
 
@@ -1438,19 +1218,85 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_cli_tag_error() {
+    fn test_truncated_data_error() {
         let codec = BinaryCodec;
-        let data = [0xFF];
-        let result = codec.decode_cli_msg(&data);
+        // Just a tag byte with no payload for Ready (needs pid)
+        let data = [TAG_READY];
+        let result = codec.decode_agent_msg(&data);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_truncated_data_error() {
-        let codec = BinaryCodec;
-        // Just a tag byte with no payload for Configure (needs pid)
-        let data = [TAG_CONFIGURE];
-        let result = codec.decode_agent_msg(&data);
-        assert!(result.is_err());
+    fn test_display_events_roundtrip() {
+        use crate::message::{DisplayEvent, Disposition};
+
+        let events = vec![
+            DisplayEvent {
+                trace: TraceEvent {
+                    hook_type: HookType::Native,
+                    event_type: EventType::Enter,
+                    function: "connect".to_string(),
+                    arguments: vec![Argument {
+                        raw_value: 3,
+                        display: Some("canvascomputing.org:443".to_string()),
+                    }],
+                    ..Default::default()
+                },
+                disposition: Disposition::Traced,
+            },
+            DisplayEvent {
+                trace: TraceEvent {
+                    hook_type: HookType::Python,
+                    event_type: EventType::Enter,
+                    function: "urllib.request.urlopen".to_string(),
+                    arguments: vec![],
+                    ..Default::default()
+                },
+                disposition: Disposition::Blocked {
+                    rule: "*.malicious.org".to_string(),
+                    section: "network".to_string(),
+                },
+            },
+            DisplayEvent {
+                trace: TraceEvent {
+                    hook_type: HookType::Exec,
+                    event_type: EventType::Enter,
+                    function: "curl".to_string(),
+                    arguments: vec![],
+                    ..Default::default()
+                },
+                disposition: Disposition::Warning {
+                    rule: "curl".to_string(),
+                    section: "commands".to_string(),
+                },
+            },
+        ];
+
+        let msg = AgentMessage::DisplayEvents(events);
+        let decoded = roundtrip_agent(&msg);
+        match decoded {
+            AgentMessage::DisplayEvents(des) => {
+                assert_eq!(des.len(), 3);
+                assert_eq!(des[0].trace.function, "connect");
+                assert_eq!(des[0].disposition, Disposition::Traced);
+                assert_eq!(des[1].trace.function, "urllib.request.urlopen");
+                assert_eq!(
+                    des[1].disposition,
+                    Disposition::Blocked {
+                        rule: "*.malicious.org".to_string(),
+                        section: "network".to_string(),
+                    }
+                );
+                assert_eq!(des[2].trace.function, "curl");
+                assert_eq!(
+                    des[2].disposition,
+                    Disposition::Warning {
+                        rule: "curl".to_string(),
+                        section: "commands".to_string(),
+                    }
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

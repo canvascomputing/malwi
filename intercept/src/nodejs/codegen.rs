@@ -2,7 +2,7 @@
 //!
 //! Hooks `node::ModifyCodeGenerationFromStrings`, which V8 calls before
 //! compiling code from strings. Unlike bytecode tracing, this path is
-//! synchronous and can block execution in review mode.
+//! synchronous and can block execution via policy.
 
 use std::ffi::c_void;
 use std::ptr;
@@ -147,7 +147,7 @@ unsafe extern "C" fn replacement_modify_codegen(
     }
 
     // Normalize this edge to a stable JS pseudo-function so normal js: filters
-    // and review mode can gate it.
+    // and policy can gate it.
     let (matches, capture_stack) = super::check_filter("eval");
     if !matches {
         return original(context, source, is_code_like);
@@ -185,11 +185,25 @@ unsafe extern "C" fn replacement_modify_codegen(
         .build();
 
     if let Some(agent) = crate::Agent::get() {
-        if agent.is_review_mode() && !agent.await_review_decision(event.clone()).is_allowed() {
-            info!("Blocked Node eval/codegen via review mode");
-            return deny_result();
+        // Agent-side policy: evaluate locally
+        if let Some(decision) = agent.evaluate_policy(&event) {
+            match decision {
+                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                    let _ = agent.send_event(event);
+                    info!("Blocked Node eval/codegen via agent policy");
+                    return deny_result();
+                }
+                malwi_protocol::agent_policy::AgentDecision::Hide
+                | malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                    // Don't send, allow execution
+                }
+                _ => {
+                    let _ = agent.send_event(event);
+                }
+            }
+        } else {
+            let _ = agent.send_event(event);
         }
-        let _ = agent.send_event(event);
     }
 
     original(context, source, is_code_like)

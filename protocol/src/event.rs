@@ -168,16 +168,6 @@ pub enum EventSource {
     Simulator,
 }
 
-/// Semantic category of a trace event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EventCategory {
-    FunctionCall,
-    NetworkAccess,
-    FileAccess,
-    CommandExec,
-    EnvVarAccess,
-}
-
 /// A trace event representing a function invocation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TraceEvent {
@@ -220,12 +210,6 @@ pub struct TraceEvent {
     /// Event source (set by CLI after receipt)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<EventSource>,
-    /// Derived category (set by CLI after receipt)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<EventCategory>,
-    /// Policy disposition label (set by CLI after evaluation)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disposition: Option<String>,
 }
 
 /// Type of trace event.

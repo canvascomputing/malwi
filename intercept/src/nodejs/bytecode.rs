@@ -483,7 +483,7 @@ unsafe extern "C" fn replacement_trace_enter(
     if let Some(agent) = crate::Agent::get() {
         // V8 bytecode tracing is always non-blocking: Runtime_TraceEnter fires
         // AFTER the function has already started, so we can't block it.
-        // Always send as a normal event regardless of review mode.
+        // Always send as a normal event (non-blocking path).
         let _ = agent.send_event(event);
     }
 
@@ -544,7 +544,7 @@ unsafe extern "C" fn replacement_trace_exit(
     let event = crate::tracing::event::js_leave(&function_name, None).build();
 
     if let Some(agent) = crate::Agent::get() {
-        // Leave events in review mode: just send normally (no blocking)
+        // Leave events: just send normally (no blocking)
         let _ = agent.send_event(event);
     }
 

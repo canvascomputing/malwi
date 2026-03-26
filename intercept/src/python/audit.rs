@@ -398,7 +398,7 @@ unsafe fn audit_hook_inner(event: *const c_char, args: *mut c_void) -> i32 {
         .source_location(caller_file, caller_line, None)
         .build();
 
-    // Send to CLI (handles review mode internally)
+    // Send to CLI (handles policy enforcement internally)
     // Returning non-zero aborts the audited operation (PEP 578)
     if super::helpers::send_trace_event(trace_event).is_err() {
         return -1;

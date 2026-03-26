@@ -699,24 +699,32 @@ pub unsafe fn maybe_capture_stack(frame: *mut c_void, capture: bool) -> Option<R
     }
 }
 
-/// Send trace event, handling review mode if enabled.
+/// Send trace event, applying policy enforcement.
 ///
 /// Returns `Ok(())` if the event was allowed/sent, `Err(())` if blocked by user.
 pub fn send_trace_event(event: crate::TraceEvent) -> Result<(), ()> {
     let Some(agent) = crate::Agent::get() else {
         return Ok(());
     };
-    if !agent.is_review_mode() {
-        let _ = agent.send_event(event);
-        return Ok(());
+
+    // Agent-side policy: evaluate locally
+    if let Some(decision) = agent.evaluate_policy(&event) {
+        return match decision {
+            malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                let _ = agent.send_event(event);
+                Err(())
+            }
+            malwi_protocol::agent_policy::AgentDecision::Hide
+            | malwi_protocol::agent_policy::AgentDecision::Suppress => Ok(()),
+            _ => {
+                let _ = agent.send_event(event);
+                Ok(())
+            }
+        };
     }
-    let decision = agent.await_review_decision(event.clone());
-    if decision.is_allowed() {
-        Ok(())
-    } else {
-        log::info!("BLOCKED: {}", event.function);
-        Err(())
-    }
+
+    let _ = agent.send_event(event);
+    Ok(())
 }
 
 #[cfg(test)]

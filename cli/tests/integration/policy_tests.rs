@@ -468,9 +468,9 @@ fn test_policy_warn_envvar_shows_single_warning_line() {
     });
 }
 
-/// Review-mode behavior should be deterministic with explicit stdin input.
+/// Policy `review:` rules are displayed as traced events (review mode removed).
 #[test]
-fn test_bash_install_policy_review_rule_with_stdin_decision() {
+fn test_bash_policy_review_rule_traces_command() {
     setup();
 
     skip_if_no_bash_primary!(bash => {
@@ -494,10 +494,10 @@ chmod 755 /tmp/malwi-review-test-file
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&script_path, script_content).expect("write review test script");
+        std::fs::write(&script_path, script_content).expect("write test script");
 
         let output = cmd(&format!("x -p {} -- {} {}", policy_path.display(), bash.display(), script_path.display()))
-            .stdin("n\n").timeout(secs(8)).run();
+            .timeout(secs(8)).run();
 
         let _ = std::fs::remove_file(&script_path);
         let _ = std::fs::remove_file(&policy_path);
@@ -505,9 +505,10 @@ chmod 755 /tmp/malwi-review-test-file
         let stdout = output.stdout();
         let stderr = output.stderr();
 
+        // Review rules produce warnings (not blocked, not silently traced)
         assert!(
-            stdout.contains("denied:") && stdout.contains("chmod"),
-            "Expected denied review decision for chmod. stdout:\n{}\nstderr:\n{}",
+            output.has_warning("chmod"),
+            "Expected chmod to show as warning. stdout:\n{}\nstderr:\n{}",
             stdout,
             stderr
         );

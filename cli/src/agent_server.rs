@@ -2,6 +2,7 @@
 //!
 //! Receives agent messages via length-prefixed TCP using `BinaryCodec`.
 //! Each agent connection is a persistent TCP stream on its own tokio task.
+//! Communication is unidirectional: agent → CLI only.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -10,12 +11,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use log::debug;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 
 use malwi_intercept::wire::{BinaryCodec, Codec};
 use malwi_intercept::{
-    AgentMessage, Argument, ChildOperation, CliMessage, ConfigureResponse, EventType, HookType,
-    HostChildInfo, ReviewDecision, TraceEvent,
+    AgentMessage, Argument, ChildOperation, DisplayEvent, EventType, HookType, HostChildInfo,
+    TraceEvent,
 };
 
 /// Events sent from the agent server to the main event loop.
@@ -29,37 +30,28 @@ pub enum AgentEvent {
         bash_version: Option<String>,
         modules: Vec<malwi_intercept::ModuleInfo>,
     },
-    /// Trace event from agent
+    /// Trace event from agent (raw, no disposition — legacy path)
     Trace(TraceEvent),
+    /// Display event with agent-computed disposition (config-file path)
+    DisplayTrace(DisplayEvent),
     /// Late runtime info (e.g., Node.js version detected after Ready)
     RuntimeInfo { runtime: String, version: String },
     /// Agent disconnected
     Disconnected { pid: u32 },
-    /// Review mode decision request (agent blocks on wire response)
-    ReviewRequest {
-        event: TraceEvent,
-        response_tx: tokio::sync::oneshot::Sender<ReviewDecision>,
-    },
 }
 
 /// Tracking state shared between AgentServer and the main event loop.
 pub struct AgentTracking {
     pub active_count: Arc<AtomicU32>,
-    /// PIDs that connected via reconnect. Shared with AgentTracker to avoid
-    /// double-counting active_agents when a reconnected child does exec
-    /// (which triggers a second configure for the same PID from the fresh agent).
-    pub reconnected_pids: Arc<Mutex<HashSet<u32>>>,
 }
 
 /// Shared state for the server tasks.
 struct SharedState {
-    agent_config: ConfigureResponse,
     event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
     active_agents: Arc<AtomicU32>,
     /// Suppresses duplicate exec events caused by libc PATH iteration.
     /// Key: (child_pid, command_basename).
     seen_events: Mutex<HashSet<(u32, String)>>,
-    reconnected_pids: Arc<Mutex<HashSet<u32>>>,
 }
 
 /// Binary wire server for agent communication.
@@ -126,7 +118,6 @@ fn create_reuse_addr_listener() -> Result<tokio::net::TcpListener> {
 impl AgentServer {
     /// Create a new agent server bound to a random port.
     pub fn new(
-        agent_config: ConfigureResponse,
         event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
         tracking: AgentTracking,
     ) -> Result<Self> {
@@ -135,11 +126,9 @@ impl AgentServer {
         let url = format!("http://127.0.0.1:{}", port);
 
         let shared = Arc::new(SharedState {
-            agent_config,
             event_tx,
             active_agents: tracking.active_count,
             seen_events: Mutex::new(HashSet::new()),
-            reconnected_pids: tracking.reconnected_pids,
         });
 
         Ok(Self {
@@ -183,7 +172,7 @@ async fn handle_agent_connection(
 
     let codec = BinaryCodec;
 
-    // Track the PID for this connection (set on first Configure or Reconnect)
+    // Track the PID for this connection (set on first Ready)
     let mut agent_pid: Option<u32> = None;
     // Track whether the agent sent a clean Shutdown message
     let mut shutdown_received = false;
@@ -242,8 +231,6 @@ async fn handle_agent_connection(
 
         handle_message(
             msg,
-            &codec,
-            &mut stream,
             shared,
             &mut agent_pid,
             &mut shutdown_received,
@@ -263,59 +250,29 @@ async fn handle_agent_connection(
     Ok(())
 }
 
-/// Send a binary wire response over the async TCP stream.
-async fn send_response(
-    codec: &BinaryCodec,
-    stream: &mut tokio::net::TcpStream,
-    msg: &CliMessage,
-) -> Result<()> {
-    let mut buf = Vec::new();
-    codec.encode_cli_msg(msg, &mut buf);
-    let len = (buf.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
-    stream.write_all(&buf).await?;
-    stream.flush().await?;
-    Ok(())
-}
-
 /// Handle a single agent message.
 async fn handle_message(
     msg: AgentMessage,
-    codec: &BinaryCodec,
-    stream: &mut tokio::net::TcpStream,
     shared: &SharedState,
     agent_pid: &mut Option<u32>,
     shutdown_received: &mut bool,
     counted: &mut bool,
 ) -> Result<()> {
     match msg {
-        AgentMessage::Configure(req) => {
-            debug!(
-                "Agent PID {} requesting configuration (nodejs_version: {:?})",
-                req.pid, req.nodejs_version
-            );
-
-            *agent_pid = Some(req.pid);
-
-            let already_counted = shared
-                .reconnected_pids
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&req.pid);
-            if !already_counted {
-                shared.active_agents.fetch_add(1, Ordering::SeqCst);
-                *counted = true;
-            }
-
-            let resp = CliMessage::ConfigureResponse(shared.agent_config.clone());
-            send_response(codec, stream, &resp).await?;
-        }
         AgentMessage::Ready(req) => {
             debug!(
                 "Agent PID {} ready with {} hooks",
                 req.pid,
                 req.hooks_installed.len()
             );
+
+            *agent_pid = Some(req.pid);
+
+            // Increment active agents if not already counted for this connection
+            if !*counted {
+                shared.active_agents.fetch_add(1, Ordering::SeqCst);
+                *counted = true;
+            }
 
             let _ = shared
                 .event_tx
@@ -374,54 +331,10 @@ async fn handle_message(
             debug!("Child event queued: cmd={}", cmd_name);
             let _ = shared.event_tx.send(AgentEvent::Trace(event)).await;
         }
-        AgentMessage::Reconnect(req) => {
-            debug!(
-                "Child PID {} reconnected (parent {})",
-                req.child_pid, req.parent_pid
-            );
-
-            *agent_pid = Some(req.child_pid);
-
-            shared.active_agents.fetch_add(1, Ordering::SeqCst);
-            *counted = true;
-            shared
-                .reconnected_pids
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(req.child_pid);
-
-            // Send Ready event for the child (it inherits hooks from parent)
-            let _ = shared
-                .event_tx
-                .send(AgentEvent::Ready {
-                    pid: req.child_pid,
-                    hooks: vec![],
-                    nodejs_version: None,
-                    python_version: None,
-                    bash_version: None,
-                    modules: vec![],
-                })
-                .await;
-        }
-        AgentMessage::Review { request_id, event } => {
-            // Create oneshot channel, send to main loop, await response
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel::<ReviewDecision>();
-            let _ = shared
-                .event_tx
-                .send(AgentEvent::ReviewRequest { event, response_tx })
-                .await;
-
-            // 5 min timeout prevents infinite hangs if CLI exits during review
-            let decision = match tokio::time::timeout(Duration::from_secs(300), response_rx).await {
-                Ok(Ok(d)) => d,
-                _ => ReviewDecision::Allow,
-            };
-
-            let resp = CliMessage::ReviewResponse {
-                request_id,
-                decision,
-            };
-            send_response(codec, stream, &resp).await?;
+        AgentMessage::DisplayEvents(events) => {
+            for de in events {
+                let _ = shared.event_tx.send(AgentEvent::DisplayTrace(de)).await;
+            }
         }
         AgentMessage::Shutdown(req) => {
             debug!("Agent PID {} shutting down", req.pid);
@@ -430,14 +343,8 @@ async fn handle_message(
             if let Ok(mut seen) = shared.seen_events.lock() {
                 seen.retain(|(pid, _)| *pid != req.pid);
             }
-            if let Ok(mut pids) = shared.reconnected_pids.lock() {
-                pids.remove(&req.pid);
-            }
 
             // Only send Disconnected if this connection incremented active_agents.
-            // Without this, a forked child that exec's (Reconnect +1, WS close -1)
-            // followed by the exec'd process (Configure already_counted, Shutdown -1)
-            // would undercount and cause premature CLI exit.
             if *counted {
                 let _ = shared
                     .event_tx

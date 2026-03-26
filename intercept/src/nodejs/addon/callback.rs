@@ -40,7 +40,7 @@ unsafe fn extract_string(ptr: *const c_char, len: u32) -> String {
 /// This is passed to the addon via `malwi_addon_enable_tracing`.
 /// Receives a direct struct pointer instead of JSON for better performance.
 ///
-/// Returns 1 to allow execution, 0 to block (review mode).
+/// Returns 1 to allow execution, 0 to block (policy enforcement).
 /// Uses i32 instead of bool for reliable C ABI compatibility.
 /// Only ENTER events (event_type == 0) can be blocked - Leave events always return 1.
 #[no_mangle]
@@ -145,15 +145,28 @@ pub extern "C" fn malwi_nodejs_trace_callback(event_data: *const NodejsTraceEven
         return 1; // Allow if no agent
     };
 
-    // Only check review mode for ENTER events (can't block Leave events)
-    if agent.is_review_mode() && is_enter {
-        // await_review_decision sends the event and waits for user decision
-        let allowed = agent.await_review_decision(event).is_allowed();
+    // Agent-side policy: evaluate locally
+    if let Some(decision) = agent.evaluate_policy(&event) {
+        if is_enter {
+            match decision {
+                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                    let _ = agent.send_event(event);
+                    mark_addon_handled();
+                    return 0; // Block
+                }
+                malwi_protocol::agent_policy::AgentDecision::Hide
+                | malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                    mark_addon_handled();
+                    return 1; // Suppress/Hide: don't send, allow
+                }
+                _ => {}
+            }
+        }
+        let _ = agent.send_event(event);
         mark_addon_handled();
-        return if allowed { 1 } else { 0 };
+        return 1;
     }
 
-    // Normal mode: just send the event
     let _ = agent.send_event(event);
     mark_addon_handled();
     1 // Allow execution
@@ -203,12 +216,22 @@ pub extern "C" fn malwi_nodejs_envvar_access(key_ptr: *const u8, key_len: usize)
         return 1;
     };
 
-    if agent.is_review_mode() {
-        return if agent.await_review_decision(event).is_allowed() {
-            1
-        } else {
-            0
-        };
+    // Agent-side policy: evaluate locally
+    if let Some(decision) = agent.evaluate_policy(&event) {
+        match decision {
+            malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                let _ = agent.send_event(event);
+                return 0;
+            }
+            malwi_protocol::agent_policy::AgentDecision::Hide
+            | malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                return 1; // Don't send, allow
+            }
+            _ => {
+                let _ = agent.send_event(event);
+                return 1;
+            }
+        }
     }
 
     let _ = agent.send_event(event);
