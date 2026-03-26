@@ -313,6 +313,10 @@ enum Disposition {
 
 The server is receive-only (unidirectional). No CLI→Agent messages exist.
 
+## Tools
+
+**Repomix** is available as an MCP tool for packing the codebase into a single AI-optimized file. Config: `repomix.config.json`, ignore patterns: `.repomixignore`.
+
 ## Environment Variables
 
 | Variable | Purpose |
