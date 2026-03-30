@@ -559,13 +559,6 @@ pub fn pypi_install() -> PolicyFile {
             "python",
             ad(AllowDenySection {
                 deny: rules![
-                    "os.system",
-                    "os.popen",
-                    "subprocess.call",
-                    "subprocess.Popen",
-                    "subprocess.run",
-                    "subprocess.check_call",
-                    "subprocess.check_output",
                     "ctypes.CDLL",
                     "ctypes.cdll.LoadLibrary",
                     "ctypes.WinDLL",
@@ -574,13 +567,28 @@ pub fn pypi_install() -> PolicyFile {
                     "keyring.set_password",
                     "webbrowser.open"
                 ],
+                warn: rules![
+                    "os.system",
+                    "os.popen",
+                    "subprocess.call",
+                    "subprocess.Popen",
+                    "subprocess.run",
+                    "subprocess.check_call",
+                    "subprocess.check_output"
+                ],
                 ..Default::default()
             }),
         ),
         (
             "commands",
             ad(AllowDenySection {
-                allow: rules!["git", "python*", "uv"],
+                allow: rules![
+                    "rustc", "uname", "git", "uv",
+                    // python* needed for uv interpreter probing and pip build
+                    // isolation. Safe: child processes get agent injected via
+                    // DYLD/LD_PRELOAD with the same policy protections.
+                    "python*"
+                ],
                 deny: rules![
                     "curl", "wget", "ssh", "nc", "ncat", "*sudo*", "sh", "bash", "perl", "ruby"
                 ],
@@ -640,12 +648,11 @@ pub fn comfyui() -> PolicyFile {
                     "getpass.getpass",
                     "keyring.get_password",
                     "keyring.set_password",
-                    "os.system",
-                    "os.popen",
                     "ctypes.CDLL",
                     "ctypes.cdll.LoadLibrary",
                     "ctypes.WinDLL"
                 ],
+                warn: rules!["os.system", "os.popen"],
                 ..Default::default()
             }),
         ),
@@ -1748,16 +1755,18 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_shell_execution_blocked() {
+    fn test_comfyui_shell_execution_warned() {
         let engine = comfyui_engine();
 
+        // os.system/os.popen are warned (not blocked) — the commands section
+        // enforces what child processes actually execute.
         let d = engine.evaluate_function(Runtime::Python, "os.system", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Block);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_function(Runtime::Python, "os.popen", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Block);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
@@ -2377,7 +2386,17 @@ mod tests {
     fn test_pypi_install_allows_python_child_command() {
         let engine = pypi_install_engine();
 
+        // python* is in allow — needed for uv interpreter probing and pip build
+        // isolation. Safe because child processes get agent injected with same policy.
         let d = engine.evaluate_execution("python3");
+        assert_eq!(d.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_pypi_install_allows_rustc_command() {
+        let engine = pypi_install_engine();
+
+        let d = engine.evaluate_execution("rustc");
         assert_eq!(d.action, PolicyAction::Allow);
     }
 
@@ -2406,17 +2425,19 @@ mod tests {
     }
 
     #[test]
-    fn test_pypi_install_blocks_python_os_system() {
+    fn test_pypi_install_warns_python_os_system() {
         let engine = pypi_install_engine();
         let d = engine.evaluate_function(Runtime::Python, "os.system", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
-    fn test_pypi_install_blocks_python_subprocess() {
+    fn test_pypi_install_warns_python_subprocess() {
         let engine = pypi_install_engine();
         let d = engine.evaluate_function(Runtime::Python, "subprocess.Popen", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
