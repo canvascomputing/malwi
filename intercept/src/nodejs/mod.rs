@@ -55,14 +55,10 @@ pub use crate::NodejsFrame;
 // =============================================================================
 
 pub mod addon;
-pub mod bytecode;
-pub mod codegen;
 mod detect;
-pub mod ffi;
 pub mod filters;
 pub mod format;
-pub mod native_callbacks;
-pub mod script;
+pub mod hooks;
 pub mod stack;
 pub mod state;
 pub mod symbols;
@@ -84,28 +80,6 @@ pub use state::{AddonPhase, BytecodePhase};
 // =============================================================================
 // SHARED HELPERS
 // =============================================================================
-
-/// Find the Node.js binary module name from loaded modules.
-/// Checks both module name and path for patterns like "node", "node.exe", "node-v24".
-pub fn find_node_module() -> Option<String> {
-    for module in crate::native::enumerate_modules() {
-        if module.name == "node"
-            || module.name.starts_with("node.")
-            || module.name.starts_with("node-")
-        {
-            return Some(module.name);
-        }
-        if module.path.ends_with("/node")
-            || module.path.contains("/node.")
-            || module.path.contains("/node-")
-        {
-            return Some(module.name);
-        }
-    }
-    None
-}
-
-// =============================================================================
 // PUBLIC API
 // =============================================================================
 
@@ -123,20 +97,19 @@ pub fn find_node_module() -> Option<String> {
 /// Native module C++ callback hooks (fs.*, dns.*, etc.) are installed separately
 /// in `native_callbacks::install_hooks()` after agent configuration.
 pub fn init_tracing() -> bool {
-    // Step 1: Install synchronous eval/codegen gate hooks.
-    let codegen_ok = codegen::initialize();
-    let wasm_ok = codegen::initialize_wasm_gate();
+    // Step 1: Install synchronous eval/wasm codegen gate hooks.
+    let codegen_ok = hooks::codegen::initialize();
+    let wasm_ok = hooks::codegen::initialize_wasm_gate();
 
     // Step 2: Initialize bytecode-level tracing (V8 --trace flag).
-    let bytecode_ok = bytecode::initialize();
+    let bytecode_ok = hooks::bytecode::initialize();
 
     // Step 3: Extract addon for stack parser FFI (dlopen).
     let addon_ok = initialize();
 
-    // Note: Node.js native C++ callback hooks (fs.readFileSync, dns.lookup, etc.)
-    // are installed later, after agent config provides the filter list. See agent/mod.rs.
+    // Note: Native C++ callback hooks (fs.*, dns.*, etc.) are installed later,
+    // after agent config provides the filter list. See agent/mod.rs.
 
-    // Success if at least one approach initialized
     codegen_ok || wasm_ok || bytecode_ok || addon_ok
 }
 

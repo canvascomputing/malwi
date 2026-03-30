@@ -247,7 +247,7 @@ unsafe extern "C" fn on_native_callback_enter(
         let max_args = length.min(6) as usize;
         for i in 0..max_args {
             let tagged = *values_ptr.add(i);
-            let display = super::stack::format_tagged_value(tagged);
+            let display = crate::nodejs::format::format_tagged_value(tagged);
             arguments.push(Argument {
                 raw_value: 0,
                 display: Some(display),
@@ -261,7 +261,7 @@ unsafe extern "C" fn on_native_callback_enter(
         let implicit_args = *(fci_ptr as *const *const usize);
         if !implicit_args.is_null() {
             let isolate = *implicit_args.add(1) as *mut c_void;
-            super::capture_stack_from_isolate(isolate)
+            crate::nodejs::capture_stack_from_isolate(isolate)
         } else {
             None
         }
@@ -278,7 +278,7 @@ fn emit_trace_event(
     mut arguments: Vec<Argument>,
     runtime_stack: Option<crate::RuntimeStack>,
 ) {
-    let network_info = super::format::format_nodejs_arguments(js_name, &mut arguments);
+    let network_info = crate::nodejs::format::format_nodejs_arguments(js_name, &mut arguments);
 
     let event = crate::tracing::event::js_enter(js_name)
         .arguments(arguments)

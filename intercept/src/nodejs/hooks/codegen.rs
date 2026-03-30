@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use log::{debug, info, warn};
 
-use super::stack;
 use crate::native;
+use crate::nodejs::stack;
 
 /// node::ModifyCodeGenerationFromStrings(Local<Context>, Local<Value>, bool)
 #[cfg(unix)]
@@ -123,13 +123,13 @@ unsafe extern "C" fn replacement_modify_codegen(
     }
     let original: ModifyCodegenFn = std::mem::transmute(original_ptr);
 
-    if !super::has_filters() {
+    if !crate::nodejs::has_filters() {
         return original(context, source, is_code_like);
     }
 
     // Normalize this edge to a stable JS pseudo-function so normal js: filters
     // and policy can gate it.
-    let (matches, capture_stack) = super::check_filter("eval");
+    let (matches, capture_stack) = crate::nodejs::check_filter("eval");
     if !matches {
         return original(context, source, is_code_like);
     }
@@ -138,7 +138,7 @@ unsafe extern "C" fn replacement_modify_codegen(
         unsafe { stack::get_caller_source_location(std::ptr::null_mut()) };
 
     let runtime_stack = if capture_stack {
-        super::capture_stack_from_isolate(std::ptr::null_mut())
+        crate::nodejs::capture_stack_from_isolate(std::ptr::null_mut())
     } else {
         None
     };

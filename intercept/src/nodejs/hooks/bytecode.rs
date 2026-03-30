@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use log::{debug, error, info, warn};
 
-use super::stack;
-use super::state::BytecodePhase;
 use crate::native;
+use crate::nodejs::stack;
+use crate::nodejs::state::BytecodePhase;
 use core::ptr;
 
 // =============================================================================
@@ -93,27 +93,6 @@ static ORIGINAL_TRACE_ENTER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut())
 /// Written once with Release ordering during `install_trace_hooks()`, read with
 /// Acquire ordering in the replacement callback on arbitrary V8 threads.
 static ORIGINAL_TRACE_EXIT: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
-
-// =============================================================================
-// NATIVE HOOK DEDUPLICATION
-// =============================================================================
-
-// Per-call flag: when a native C++ callback hook handles a trace event,
-// the bytecode hook should skip the duplicate. Set by native_callbacks,
-// consumed (cleared) by the bytecode hook on each trace entry/exit.
-thread_local! {
-    static NATIVE_HOOK_HANDLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Mark that the current call was handled by a native C++ callback hook.
-pub fn mark_native_hook_handled() {
-    NATIVE_HOOK_HANDLED.with(|c| c.set(true));
-}
-
-/// Check and clear the native-hook-handled flag.
-fn take_native_hook_handled() -> bool {
-    NATIVE_HOOK_HANDLED.with(|c| c.replace(false))
-}
 
 // =============================================================================
 // V8 TRACING CONTROL
@@ -422,15 +401,15 @@ unsafe extern "C" fn replacement_trace_enter(
     // Consume the addon-handled flag eagerly, before any early returns.
     // This prevents stale flags from JIT-compiled addon calls (which bypass
     // the bytecode path entirely) from leaking to the next bytecode call.
-    let native_hook_handled = take_native_hook_handled();
+    let native_hook_handled = super::take_native_hook_handled();
 
     // If no js: filters are configured, skip all JS traces
-    if !super::has_filters() {
+    if !crate::nodejs::has_filters() {
         return result;
     }
 
     // Check if this function matches our filter
-    let (matches, capture_stack) = super::check_filter(&function_name);
+    let (matches, capture_stack) = crate::nodejs::check_filter(&function_name);
     if !matches {
         return result;
     }
@@ -463,11 +442,12 @@ unsafe extern "C" fn replacement_trace_enter(
 
     // Qualify bare function names with module name from the function's own script.
     // E.g., "request" + "node:http" → "http.request"
-    let function_name = qualify_function_name(&function_name, func_file.as_deref());
+    let function_name =
+        crate::nodejs::format::qualify_function_name(&function_name, func_file.as_deref());
 
     // Skip if a native C++ callback hook is installed for this function.
     // The C++ hook fires separately with richer argument data from FunctionCallbackInfo.
-    if super::native_callbacks::has_native_hook(&function_name) {
+    if super::has_native_hook(&function_name) {
         return result;
     }
 
@@ -498,7 +478,8 @@ unsafe extern "C" fn replacement_trace_enter(
     };
 
     // Extract network info from arguments for networking functions
-    let network_info = super::format::format_nodejs_arguments(&function_name, &mut arguments);
+    let network_info =
+        crate::nodejs::format::format_nodejs_arguments(&function_name, &mut arguments);
 
     // Emit trace event using EventBuilder
     let event = crate::tracing::event::js_enter(&function_name)
@@ -548,15 +529,15 @@ unsafe extern "C" fn replacement_trace_exit(
     }
 
     // Consume the addon-handled flag eagerly (see replacement_trace_enter).
-    let native_hook_handled = take_native_hook_handled();
+    let native_hook_handled = super::take_native_hook_handled();
 
     // If no js: filters are configured, skip all JS traces
-    if !super::has_filters() {
+    if !crate::nodejs::has_filters() {
         return result;
     }
 
     // Check if this function matches our filter
-    let (matches, _capture_stack) = super::check_filter(&function_name);
+    let (matches, _capture_stack) = crate::nodejs::check_filter(&function_name);
     if !matches {
         return result;
     }
@@ -600,62 +581,6 @@ unsafe extern "C" fn replacement_printf(_format: *const c_char) {
 #[allow(unused_variables)]
 unsafe extern "C" fn replacement_printf_file(_file: *mut c_void, _format: *const c_char) {
     // No-op: suppress V8 trace output
-}
-
-// =============================================================================
-// FUNCTION NAME QUALIFICATION
-// =============================================================================
-
-/// Derive a module name from a V8 script path.
-///
-/// Examples:
-/// - `"node:fs"` → `"fs"`
-/// - `"node:internal/modules/cjs/loader"` → `None` (internal)
-/// - `"/path/to/node_modules/semver/index.js"` → `"semver"`
-/// - `"/path/to/node_modules/@scope/pkg/lib/foo.js"` → `"@scope/pkg"`
-/// - `"/path/to/app.js"` → `None` (user code)
-fn module_name_from_script(script: &str) -> Option<&str> {
-    // Built-in modules: "node:fs" → "fs"
-    if let Some(name) = script.strip_prefix("node:") {
-        // Skip internal modules (node:internal/*)
-        if name.starts_with("internal/") {
-            return None;
-        }
-        return Some(name);
-    }
-
-    // node_modules packages: extract package name
-    let nm = "node_modules/";
-    let pos = script.rfind(nm)?;
-    let after = &script[pos + nm.len()..];
-
-    // Scoped package: @scope/pkg/...
-    if after.starts_with('@') {
-        // Find second slash: @scope/pkg/rest
-        let first_slash = after.find('/')?;
-        let rest = &after[first_slash + 1..];
-        let second_slash = rest.find('/').unwrap_or(rest.len());
-        Some(&after[..first_slash + 1 + second_slash])
-    } else {
-        // Regular package: pkg/rest
-        let slash = after.find('/').unwrap_or(after.len());
-        Some(&after[..slash])
-    }
-}
-
-/// Qualify a bare function name with its module from the script path.
-/// Returns the original name if no module can be derived.
-fn qualify_function_name(name: &str, script: Option<&str>) -> String {
-    // Already qualified (contains a dot) — return as-is
-    if name.contains('.') {
-        return name.to_string();
-    }
-
-    if let Some(module) = script.and_then(module_name_from_script) {
-        format!("{}.{}", module, name)
-    } else {
-        name.to_string()
-    }
 }
 
 // =============================================================================

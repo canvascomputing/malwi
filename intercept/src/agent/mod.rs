@@ -297,7 +297,7 @@ impl Agent {
         if crate::nodejs::is_loaded() {
             let native_filters = crate::nodejs::filters::get_filters();
             if !native_filters.is_empty() {
-                crate::nodejs::native_callbacks::install_hooks(&native_filters);
+                crate::nodejs::hooks::native::install_hooks(&native_filters);
             }
         }
 

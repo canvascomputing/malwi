@@ -19,7 +19,7 @@ static NODEJS_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| FilterManager:
 pub fn add_filter(pattern: &str, capture_stack: bool) {
     NODEJS_FILTERS.add(pattern, capture_stack);
     if capture_stack {
-        super::bytecode::enable_stack_capture();
+        super::hooks::bytecode::enable_stack_capture();
     }
 }
 

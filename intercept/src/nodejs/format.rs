@@ -1,11 +1,61 @@
-//! Node.js function argument formatting.
-//!
-//! Extracts structured `NetworkInfo` from pre-formatted Node.js arguments.
-//! Unlike Python/native formatters which set display strings, Node.js args
-//! arrive pre-formatted from the C++ addon — this module only parses them
-//! for NetworkInfo population.
+//! Node.js formatting: argument display, NetworkInfo extraction, module qualification.
 
 use crate::{Argument, NetworkInfo, Protocol};
+
+// Re-export value formatting from stack parser (depends on FFI internals).
+pub use super::stack::format_tagged_value;
+
+// =============================================================================
+// MODULE QUALIFICATION
+// =============================================================================
+
+/// Derive a module name from a V8 script path.
+///
+/// Examples:
+/// - `"node:fs"` → `"fs"`
+/// - `"node:internal/modules/cjs/loader"` → `None` (internal)
+/// - `"/path/to/node_modules/semver/index.js"` → `"semver"`
+/// - `"/path/to/node_modules/@scope/pkg/lib/foo.js"` → `"@scope/pkg"`
+/// - `"/path/to/app.js"` → `None` (user code)
+pub fn module_name_from_script(script: &str) -> Option<&str> {
+    if let Some(name) = script.strip_prefix("node:") {
+        if name.starts_with("internal/") {
+            return None;
+        }
+        return Some(name);
+    }
+
+    let nm = "node_modules/";
+    let pos = script.rfind(nm)?;
+    let after = &script[pos + nm.len()..];
+
+    if after.starts_with('@') {
+        let first_slash = after.find('/')?;
+        let rest = &after[first_slash + 1..];
+        let second_slash = rest.find('/').unwrap_or(rest.len());
+        Some(&after[..first_slash + 1 + second_slash])
+    } else {
+        let slash = after.find('/').unwrap_or(after.len());
+        Some(&after[..slash])
+    }
+}
+
+/// Qualify a bare function name with its module from the script path.
+/// Returns the original name if no module can be derived.
+pub fn qualify_function_name(name: &str, script: Option<&str>) -> String {
+    if name.contains('.') {
+        return name.to_string();
+    }
+    if let Some(module) = script.and_then(module_name_from_script) {
+        format!("{}.{}", module, name)
+    } else {
+        name.to_string()
+    }
+}
+
+// =============================================================================
+// NETWORK INFO EXTRACTION
+// =============================================================================
 
 /// Extract `NetworkInfo` from Node.js function arguments.
 ///
