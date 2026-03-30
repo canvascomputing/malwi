@@ -123,12 +123,10 @@ impl SectionRules {
             };
         }
 
-        // No match, no allow rules — suppress when monitoring-only (no deny rules)
-        if self.deny.is_empty() {
-            return AgentDecision::Suppress;
-        }
-
-        AgentDecision::Trace
+        // No match, no allow rules — suppress. Trace only comes from explicit
+        // log pattern matches. This is the blocklist model: deny-only sections
+        // block matching events and stay quiet about everything else.
+        AgentDecision::Suppress
     }
 
     /// Evaluate a name against this section's rules (case-sensitive).
@@ -466,7 +464,7 @@ mod tests {
         ));
 
         let event2 = make_event(HookType::Python, "json.loads");
-        assert_eq!(policy.evaluate(&event2), AgentDecision::Trace);
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
     }
 
     #[test]
@@ -509,7 +507,7 @@ mod tests {
         ));
 
         let event2 = make_network_event("connect", "pypi.org");
-        assert_eq!(policy.evaluate(&event2), AgentDecision::Trace);
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
     }
 
     #[test]
@@ -546,7 +544,7 @@ mod tests {
         ));
 
         let event2 = make_event(HookType::Exec, "ls");
-        assert_eq!(policy.evaluate(&event2), AgentDecision::Trace);
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
     }
 
     #[test]
@@ -703,6 +701,106 @@ mod tests {
         });
         assert!(matches!(
             policy.evaluate(&connect_event),
+            AgentDecision::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn test_file_deny_suppresses_unmatched() {
+        let sections = AgentPolicySections {
+            files: PolicySection {
+                deny: vec!["*.pem".into(), "~/.ssh/**".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        // Unmatched file path → Suppress (not Trace)
+        let event = make_event_with_args(HookType::Native, "open", &["/tmp/foo.txt"]);
+        assert_eq!(policy.evaluate(&event), AgentDecision::Suppress);
+    }
+
+    #[test]
+    fn test_file_deny_blocks_matching() {
+        let sections = AgentPolicySections {
+            files: PolicySection {
+                deny: vec!["*.pem".into(), "~/.ssh/**".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        let event = make_event_with_args(HookType::Native, "open", &["/etc/ssl/cert.pem"]);
+        assert!(matches!(
+            policy.evaluate(&event),
+            AgentDecision::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn test_log_produces_trace() {
+        // Explicit log patterns are the only way to get Trace
+        let sections = AgentPolicySections {
+            functions: PolicySection {
+                deny: vec!["eval".into()],
+                log: vec!["open".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        // log match → Trace
+        let event = make_event(HookType::Native, "open");
+        assert_eq!(policy.evaluate(&event), AgentDecision::Trace);
+
+        // deny match → Block
+        let event2 = make_event(HookType::Python, "eval");
+        assert!(matches!(
+            policy.evaluate(&event2),
+            AgentDecision::Block { .. }
+        ));
+
+        // no match → Suppress
+        let event3 = make_event(HookType::Native, "read");
+        assert_eq!(policy.evaluate(&event3), AgentDecision::Suppress);
+    }
+
+    #[test]
+    fn test_deny_only_no_trace_noise() {
+        // Reproduce pip install scenario: functions deny + files deny,
+        // native open("/tmp/foo") should be fully suppressed.
+        let sections = AgentPolicySections {
+            functions: PolicySection {
+                deny: vec!["os.system".into(), "subprocess.*".into()],
+                ..Default::default()
+            },
+            files: PolicySection {
+                deny: vec!["~/.ssh/**".into(), "*.pem".into()],
+                ..Default::default()
+            },
+            envvars: PolicySection {
+                deny: vec!["SECRET_*".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        // Native open to harmless file → Suppress (not Trace)
+        let event = make_event_with_args(HookType::Native, "open", &["/tmp/pip-xyz/setup.py"]);
+        assert_eq!(policy.evaluate(&event), AgentDecision::Suppress);
+
+        // Envvar read of harmless var → Suppress
+        let event2 = make_event(HookType::EnvVar, "BUILD_ID");
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
+
+        // Envvar read of denied var → Block
+        let event3 = make_event(HookType::EnvVar, "SECRET_KEY");
+        assert!(matches!(
+            policy.evaluate(&event3),
             AgentDecision::Block { .. }
         ));
     }

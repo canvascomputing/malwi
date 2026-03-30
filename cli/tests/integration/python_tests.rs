@@ -1284,3 +1284,90 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
         stdout
     );
 }
+
+// ============================================================================
+// Policy Decision Engine Tests — deny-only sections suppress unmatched events
+// ============================================================================
+
+/// Deny-only functions section: matched functions are denied, unmatched are suppressed.
+#[test]
+fn test_python_deny_only_suppresses_unmatched_functions() {
+    setup();
+
+    skip_if_no_python_primary!(python => {
+        let (policy_path, _f) = write_temp_policy(
+            "version: 1\npython:\n  deny:\n    - os.system\n"
+        );
+        // Script calls both a denied function and a non-denied one
+        let script = r#"
+import os, json
+# This should be denied
+try:
+    os.system('echo denied')
+except:
+    pass
+# This should be suppressed (not shown) — deny-only, no log rule
+json.loads('{}')
+"#;
+        let output = cmd(&format!("x -p {} --py os.system --py json.loads -f json -- {} -c {}",
+            policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
+
+        let events = output.json_events();
+        let stdout = output.stdout_raw();
+
+        // os.system should be denied
+        let has_denied = events.iter().any(|v| {
+            v["name"].as_str().map_or(false, |n| n.contains("os.system"))
+                && v["policy"]["decision"].as_str() == Some("denied")
+        });
+        assert!(has_denied, "os.system should be denied. stdout: {}", stdout);
+
+        // json.loads should NOT appear (suppressed by deny-only policy)
+        let has_loads = events.iter().any(|v| {
+            v["name"].as_str().map_or(false, |n| n.contains("json.loads"))
+        });
+        assert!(!has_loads,
+            "json.loads should be suppressed by deny-only policy (no log rule). stdout: {}", stdout);
+    });
+}
+
+/// Log rules produce Trace (visible events) even alongside deny rules.
+#[test]
+fn test_python_log_rule_traces_alongside_deny() {
+    setup();
+
+    skip_if_no_python_primary!(python => {
+        let (policy_path, _f) = write_temp_policy(
+            "version: 1\npython:\n  deny:\n    - os.system\n  log:\n    - json.loads\n"
+        );
+        let script = r#"
+import os, json
+try:
+    os.system('echo denied')
+except:
+    pass
+json.loads('{}')
+"#;
+        let output = cmd(&format!("x -p {} --py os.system --py json.loads -f json -- {} -c {}",
+            policy_path.display(), python.display(), sq(script)))
+            .timeout(secs(10)).run();
+
+        let events = output.json_events();
+        let stdout = output.stdout_raw();
+
+        // os.system denied
+        let has_denied = events.iter().any(|v| {
+            v["name"].as_str().map_or(false, |n| n.contains("os.system"))
+                && v["policy"]["decision"].as_str() == Some("denied")
+        });
+        assert!(has_denied, "os.system should be denied. stdout: {}", stdout);
+
+        // json.loads traced (explicit log rule)
+        let has_loads = events.iter().any(|v| {
+            v["name"].as_str().map_or(false, |n| n.contains("json.loads"))
+        });
+        assert!(has_loads,
+            "json.loads should be traced via explicit log rule. stdout: {}", stdout);
+    });
+}
