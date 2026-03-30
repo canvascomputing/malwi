@@ -83,8 +83,11 @@ intercept/src/
 ├── agent/                  # Agent lifecycle (init → config file → ready → tracing)
 ├── native/                 # Native symbol hooks (frida-gum), hide enforcement
 ├── python/                 # Python tracing (sys.setprofile, audit hooks, CPython FFI)
-├── nodejs/                 # Node.js tracing (V8 bytecode, codegen gate, N-API addon)
-│   └── addon/              # Addon loading: --require preload, embed/extract per Node version
+├── nodejs/                 # Node.js tracing (V8 bytecode, codegen gate, native C++ hooks)
+│   ├── native_callbacks.rs # Direct frida hooks on node::fs::*, node::dns::*, etc.
+│   ├── bytecode.rs         # V8 --trace flag + Runtime_TraceEnter/Exit hooks
+│   ├── codegen.rs          # ModifyCodeGenerationFromStrings hook (eval blocking)
+│   └── addon/              # V8 addon extraction for stack parser FFI (dlopen, no N-API)
 ├── bash/                   # Bash tracing (eval_builtin, source_builtin, shell_execve hooks)
 ├── exec/                   # Child process monitoring (posix_spawn/fork/exec hooks)
 └── tracing/                # Shared utilities: filters, event builder, timestamps, fork-safe mutex
@@ -104,11 +107,38 @@ protocol/src/
 
 Each runtime module (`python/`, `nodejs/`, `bash/`) follows a standard pattern: `mod.rs` (facade), `detect.rs` (is_loaded, version), `hooks.rs` (callbacks), `format.rs` (arg formatting + NetworkInfo), `filters.rs` (filter management).
 
+## Node.js Tracing Architecture
+
+Node.js tracing uses **pure frida-gum hooks** — no NODE_OPTIONS, no JS wrapper, no process.env Proxy, no N-API wrapping. Three mechanisms work together:
+
+1. **V8 bytecode tracing** (`bytecode.rs`): Sets `--trace --no-sparkplug --no-maglev` flags in V8's memory (via `SetFlagsFromString` + frida `gum_try_mprotect` for post-freeze fallback). Hooks `Runtime_TraceEnter/Exit` to trace all interpreted JS function calls. Extracts function names via stack parser FFI, qualifies them with module name from script origin (e.g., `readFileSync` + `node:http` → `http.readFileSync`).
+
+2. **Native C++ callback hooks** (`native_callbacks.rs`): Hooks Node.js built-in module C++ callbacks directly (e.g., `node::fs::ReadFileUtf8` for `fs.readFileSync`). These functions all share the signature `void Func(const FunctionCallbackInfo<Value>& args)`. Arguments are extracted from the `FunctionCallbackInfo` struct (offset 0x08: values pointer, 0x10: length) and decoded using the stack parser's `malwi_classify_tagged_value` FFI. Object properties are expanded from raw V8 heap reads (Map → DescriptorArray → property keys + in-object values).
+
+3. **Codegen gate** (`codegen.rs`): Hooks `ModifyCodeGenerationFromStrings` to block `eval()` / `Function()` calls per policy.
+
+**Version detection**: Reads `napi_get_node_version`'s compile-time static local (symbol `_ZZ21napi_get_node_versionE7version`) for the Node.js major version. This works at constructor time before V8 static init because the struct is a compile-time constant in the binary's data section.
+
+**Deduplication**: When both bytecode and native hooks could fire for the same call, the native hook's JS name is registered in `HOOKED_NAMES`. The bytecode hook checks `has_native_hook()` and suppresses duplicates.
+
+**WebAssembly gate**: Hooks `node::AllowWasmCodeGenerationCallback` to intercept/block wasm module compilation per policy. Same pattern as the JS codegen gate.
+
+**V8 JIT coverage**: All JIT tiers are disabled (`--no-sparkplug --no-maglev --no-turbofan`) to keep code in the Ignition interpreter where `--trace` works. Performance cost ~20-30%, acceptable for security tracing (install scripts are I/O-bound).
+
+**Native module coverage** (C++ callback hooks via `JS_TO_CPP` table):
+- `fs.*` (21 functions), `os.*` (4), `dns.*` (2)
+- `child_process.*` (spawn, spawnSync, kill)
+- `crypto.*` (CipherBase.Init/InitIv/Update/Final)
+- `net.*` (TCPWrap.New), `tls.*` (SecureContext.New)
+- `vm.*` (Script.New, RunInContext, MakeContext)
+
+**Stack parser addon**: The V8 introspection addon (`node-addon/`) is extracted to a temp dir and loaded via `dlopen`/`dlsym` for its C exports (`malwi_get_current_function_name`, `malwi_classify_tagged_value`, `malwi_get_caller_source_location`, etc.). The addon's N-API Init function is a no-op — all functionality is in `stack_parser.cc` and `tagged_value.h`. The `DescriptorArray` header size is version-dependent: 24 bytes for V8 ≤13 (Node 21-24), 32 bytes for V8 ≥14 (Node 25+), selected at compile time via `#if V8_MAJOR_VERSION >= 14`.
+
 ## Policy System
 
 Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn`/`hide` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
 
-**Agent-side policy evaluation**: The CLI compiles the policy into an `AgentConfig` (hooks + per-section glob lists), writes it to a temp YAML file, and passes its path via `MALWI_CONFIG`. The agent reads the config at init, compiles glob patterns into an `AgentPolicy`, and evaluates events locally — no TCP round-trip needed. Evaluation order: allow → hide → deny → warn → trace (default).
+**Agent-side policy evaluation**: The CLI compiles the policy into an `AgentConfig` (hooks + per-section glob lists), writes it to a temp YAML file, and passes its path via `MALWI_CONFIG`. The agent reads the config at init, compiles glob patterns into an `AgentPolicy`, and evaluates events locally — no TCP round-trip needed. Evaluation order: hide → allow → deny → warn → log → implicit deny → suppress/trace (default). Monitoring-only sections (no allow/deny patterns) suppress unmatched events.
 
 **Hide enforcement**: Hide patterns in the policy config cause the agent to return fake values from hooks (NULL for getenv, -1/ENOENT for stat/access). Evaluated agent-side via `AgentPolicy`.
 
@@ -262,7 +292,7 @@ No runtime prefix — runtime is identified by `HookType`:
 ### Other Conventions
 
 - **FFI**: All C/Rust structs use `#[repr(C)]` with exact field order matching
-- **Node.js injection**: Parent prepares `--require` wrapper before spawn. `NODE_OPTIONS` is set for child-process propagation but is not the primary injection path
+- **Node.js injection**: Pure frida-gum — no NODE_OPTIONS, no JS wrapper. V8 flags set in memory, C++ callbacks hooked directly, stack parser loaded via dlopen
 - **CLI modules**: Descriptive snake_case (`agent_server.rs`, `embedded_agent.rs`, `shell_format.rs`)
 - **Policy modules**: Grouped by concern — engine (`engine.rs`, `compiler.rs`, `compiled.rs`), evaluation (`active.rs`, `network.rs`, `files.rs`, `commands.rs`), templates (`templates/mod.rs`, `taxonomy.rs`)
 

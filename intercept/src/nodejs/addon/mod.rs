@@ -1,18 +1,10 @@
-//! Node.js Addon Management.
+//! V8 Addon Embedding and Extraction.
 //!
-//! This module handles:
-//! - Addon binary embedding and extraction (embed.rs)
-//! - Trace event callback from addon (callback.rs)
-//! - FFI function resolution (ffi.rs)
-//! - Loading via NODE_OPTIONS (loader.rs)
+//! Embeds prebuilt V8 introspection addon binaries and extracts them at runtime
+//! for stack parser FFI access via dlopen. No N-API wrapping or NODE_OPTIONS.
 
-pub mod callback;
 pub mod embed;
-pub mod ffi;
-pub mod loader;
 
-// Re-export commonly used items
-pub use callback::malwi_nodejs_trace_callback;
-pub use embed::{detect_node_version, extract_all_addons, get_addon_path};
-pub use ffi::{resolve_addon_ffi, AddonFfi, ADDON_FFI};
-pub use loader::{activate_addon_tracing, forward_filters_to_addon, node_options_initialize};
+pub use embed::{
+    detect_node_version, extract_addon_for_ffi, extract_all_addons, get_addon_path, is_addon_loaded,
+};

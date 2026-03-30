@@ -206,6 +206,12 @@ impl ActivePolicy {
                                     .warn
                                     .push(rule.domain_pattern.original().to_string());
                             }
+                            EnforcementMode::Log => {
+                                sections
+                                    .network
+                                    .log
+                                    .push(rule.domain_pattern.original().to_string());
+                            }
                             EnforcementMode::Hide => {
                                 sections
                                     .network
@@ -222,16 +228,21 @@ impl ActivePolicy {
                     }
                 }
                 Category::Execution => {
-                    extract_section_patterns(section, &mut sections.commands);
+                    extract_section_patterns(section, &mut sections.commands, true);
                 }
                 Category::Files => {
-                    extract_section_patterns(section, &mut sections.files);
+                    extract_section_patterns(section, &mut sections.files, true);
                 }
                 Category::EnvVars => {
-                    extract_section_patterns(section, &mut sections.envvars);
+                    extract_section_patterns(section, &mut sections.envvars, true);
                 }
                 Category::Functions => {
-                    extract_section_patterns(section, &mut sections.functions);
+                    // Only merge native (runtime=None) allow rules into the agent's
+                    // functions section. Runtime-specific allow rules (e.g., nodejs
+                    // "dns.lookup") would cause implicit deny for native functions
+                    // like "open" that share the merged section.
+                    let include_allow = key.runtime.is_none();
+                    extract_section_patterns(section, &mut sections.functions, include_allow);
                 }
                 _ => {}
             }
@@ -242,17 +253,26 @@ impl ActivePolicy {
 }
 
 /// Extract patterns from a CompiledSection into a PolicySection.
+/// When `include_allow` is false, allow rules are skipped — used for
+/// runtime-specific function sections that shouldn't create implicit deny
+/// for native functions in the merged functions section.
 fn extract_section_patterns(
     compiled: &super::compiled::CompiledSection,
     out: &mut malwi_intercept::agent_config::PolicySection,
+    include_allow: bool,
 ) {
-    for rule in &compiled.allow_rules {
-        out.allow.push(rule.pattern.original().to_string());
+    if include_allow {
+        for rule in &compiled.allow_rules {
+            out.allow.push(rule.pattern.original().to_string());
+        }
     }
     for rule in &compiled.deny_rules {
         match rule.mode {
             EnforcementMode::Warn => {
                 out.warn.push(rule.pattern.original().to_string());
+            }
+            EnforcementMode::Log => {
+                out.log.push(rule.pattern.original().to_string());
             }
             EnforcementMode::Hide => {
                 out.hide.push(rule.pattern.original().to_string());
@@ -407,9 +427,13 @@ impl ActivePolicy {
                     }
                 }
                 Category::Files => {
-                    // Native file syscalls
-                    for sym in super::templates::file_functions_native() {
-                        emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
+                    // Native file syscalls — only when section has blocking/hide rules.
+                    // Warn/log-only sections use runtime hooks to avoid frida-gum
+                    // interference with V8/libc++ during Node.js startup.
+                    if section.has_blocking_rules() {
+                        for sym in super::templates::file_functions_native() {
+                            emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
+                        }
                     }
                     // Python file functions — only bare names (no dots).
                     // Module-qualified names like "builtins.open" trigger eager C hook

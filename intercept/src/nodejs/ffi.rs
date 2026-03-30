@@ -136,60 +136,6 @@ pub type NapiModuleRegisterBySymbolFn = unsafe extern "C" fn(
 pub type UvRunFn = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 
 // =============================================================================
-// ADDON FFI STRUCTS
-// =============================================================================
-
-/// FFI struct for passing argument data from C++ (no JSON).
-/// Must match the C++ NodejsTraceArgument struct layout exactly.
-#[repr(C)]
-pub struct NodejsTraceArgument {
-    pub index: u32,
-    pub type_hint: *const c_char, // nullable
-    pub type_hint_len: u32,
-    pub display: *const c_char,
-    pub display_len: u32,
-}
-
-/// FFI struct for passing trace event data from C++ (no JSON).
-/// Must match the C++ NodejsTraceEventData struct layout exactly.
-#[repr(C)]
-pub struct NodejsTraceEventData {
-    pub timestamp_ns: u64,
-    pub thread_id: u64,
-    pub event_type: u8, // 0 = Enter, 1 = Leave
-    pub function: *const c_char,
-    pub function_len: u32,
-    pub script_path: *const c_char, // Script origin path (e.g., "node:fs")
-    pub script_path_len: u32,
-    pub return_value: *const c_char, // nullable, for Leave events
-    pub return_value_len: u32,
-    pub arg_count: u32,
-    pub arguments: *const NodejsTraceArgument, // pointer to array
-}
-
-// =============================================================================
-// ADDON CALLBACK TYPES
-// =============================================================================
-
-/// Callback type for trace events from the addon.
-/// The callback receives a pointer to a NodejsTraceEventData struct (no JSON).
-/// Returns 1 to allow execution, 0 to block (policy enforcement).
-/// Uses i32 instead of bool for reliable C ABI compatibility.
-pub type TraceCallback = extern "C" fn(*const NodejsTraceEventData) -> i32;
-
-/// Function type for malwi_addon_enable_tracing
-/// Enables tracing and registers the callback.
-pub type EnableTracingFn = unsafe extern "C" fn(TraceCallback) -> bool;
-
-/// Function type for malwi_addon_add_filter
-/// Adds a filter pattern and returns the number of functions wrapped.
-pub type AddFilterFn = unsafe extern "C" fn(*const c_char, bool) -> i32;
-
-/// Function type for malwi_addon_get_module_version
-/// Returns the NODE_MODULE_VERSION the addon was built for.
-pub type GetModuleVersionFn = unsafe extern "C" fn() -> u32;
-
-// =============================================================================
 // TYPE ALIASES FOR BACKWARDS COMPATIBILITY
 // =============================================================================
 

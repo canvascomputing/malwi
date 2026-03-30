@@ -119,6 +119,15 @@ impl CompiledSection {
         !self.hide_rules.is_empty()
     }
 
+    /// True if the section has rules that require native enforcement (block/hide).
+    /// Warn/log-only sections don't need native hooks — runtime hooks suffice.
+    pub fn has_blocking_rules(&self) -> bool {
+        self.deny_rules
+            .iter()
+            .any(|r| matches!(r.mode, EnforcementMode::Block | EnforcementMode::Review))
+            || !self.hide_rules.is_empty()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.allow_rules.is_empty()
             && self.deny_rules.is_empty()

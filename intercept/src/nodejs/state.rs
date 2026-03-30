@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! BytecodePhase:  Uninitialized ──> TraceEnabled ──> HooksInstalled
-//! AddonPhase:     Uninitialized ──> Initializing ──> Active
+//! AddonPhase:     Uninitialized ──> Extracting ──> Active
 //! ```
 //!
 //! Replaces 7 scattered `AtomicBool` statics with 2 `AtomicU8` values
@@ -76,15 +76,15 @@ impl BytecodePhase {
 // ADDON PHASE
 // =============================================================================
 
-/// N-API addon tracing phase.
+/// Addon extraction phase for stack parser FFI.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AddonPhase {
-    /// Not yet initialized.
+    /// Not yet extracted.
     Uninitialized = 0,
-    /// `filters::initialize()` called, NODE_OPTIONS set up. Replaces `NODEJS_TRACING_INITIALIZED`.
-    Initializing = 1,
-    /// Addon loaded and tracing callback connected. Replaces `ADDON_TRACING_ACTIVE`.
+    /// Addon binaries extracted to temp directory.
+    Extracting = 1,
+    /// Stack parser FFI resolved via dlopen.
     Active = 2,
 }
 
@@ -131,7 +131,7 @@ impl AddonPhase {
     fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::Uninitialized,
-            1 => Self::Initializing,
+            1 => Self::Extracting,
             _ => Self::Active,
         }
     }
@@ -203,12 +203,12 @@ mod tests {
         with_phase_reset(|| {
             assert!(AddonPhase::advance(
                 AddonPhase::Uninitialized,
-                AddonPhase::Initializing
+                AddonPhase::Extracting
             ));
             assert!(!AddonPhase::is_active());
 
             assert!(AddonPhase::advance(
-                AddonPhase::Initializing,
+                AddonPhase::Extracting,
                 AddonPhase::Active
             ));
             assert!(AddonPhase::is_active());
@@ -264,8 +264,7 @@ mod tests {
                     let w = Arc::clone(&winners);
                     std::thread::spawn(move || {
                         b.wait();
-                        if AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Initializing)
-                        {
+                        if AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Extracting) {
                             w.fetch_add(1, Ordering::SeqCst);
                         }
                     })
@@ -277,7 +276,7 @@ mod tests {
             }
 
             assert_eq!(winners.load(Ordering::SeqCst), 1);
-            assert_eq!(AddonPhase::current(), AddonPhase::Initializing);
+            assert_eq!(AddonPhase::current(), AddonPhase::Extracting);
         });
     }
 
@@ -334,7 +333,7 @@ mod tests {
         with_phase_reset(|| {
             let phases = [
                 AddonPhase::Uninitialized,
-                AddonPhase::Initializing,
+                AddonPhase::Extracting,
                 AddonPhase::Active,
             ];
 
@@ -368,10 +367,10 @@ mod tests {
             // Full advance
             assert!(AddonPhase::advance(
                 AddonPhase::Uninitialized,
-                AddonPhase::Initializing
+                AddonPhase::Extracting
             ));
             assert!(AddonPhase::advance(
-                AddonPhase::Initializing,
+                AddonPhase::Extracting,
                 AddonPhase::Active
             ));
             assert!(AddonPhase::is_active());
@@ -387,10 +386,10 @@ mod tests {
             // Re-advance
             assert!(AddonPhase::advance(
                 AddonPhase::Uninitialized,
-                AddonPhase::Initializing
+                AddonPhase::Extracting
             ));
             assert!(AddonPhase::advance(
-                AddonPhase::Initializing,
+                AddonPhase::Extracting,
                 AddonPhase::Active
             ));
             assert!(AddonPhase::is_active());

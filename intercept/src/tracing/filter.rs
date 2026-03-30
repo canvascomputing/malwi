@@ -19,14 +19,28 @@ pub struct Filter {
     pub pattern: String,
     /// Whether to capture the runtime call stack for matched functions
     pub capture_stack: bool,
+    /// Pre-extracted bare function name for fast matching on the hot path.
+    /// Set for exact patterns like "fs.readFileSync" → "readFileSync".
+    /// None for glob patterns like "fs.*" (wildcards can't be pre-matched).
+    bare_name: Option<String>,
 }
 
 impl Filter {
     /// Create a new filter with the given pattern and capture setting.
     pub fn new(pattern: impl Into<String>, capture_stack: bool) -> Self {
+        let pattern = pattern.into();
+        let bare_name = pattern.rfind('.').and_then(|dot| {
+            let func = &pattern[dot + 1..];
+            if func.contains('*') || func.contains('?') {
+                None
+            } else {
+                Some(func.to_string())
+            }
+        });
         Self {
-            pattern: pattern.into(),
+            pattern,
             capture_stack,
+            bare_name,
         }
     }
 }
@@ -43,6 +57,13 @@ pub fn check_filter(filters: &[Filter], name: &str) -> (bool, bool) {
     for filter in filters {
         if matches_glob(&filter.pattern, name) {
             return (true, filter.capture_stack);
+        }
+        // Fast path: match pre-computed bare function name for module-qualified
+        // patterns (e.g., "fs.readFileSync" matches bare "readFileSync").
+        if let Some(ref bare) = filter.bare_name {
+            if bare == name {
+                return (true, filter.capture_stack);
+            }
         }
     }
     (false, false)

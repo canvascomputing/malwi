@@ -34,6 +34,7 @@ pub struct PolicySection {
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub warn: Vec<String>,
+    pub log: Vec<String>,
     pub hide: Vec<String>,
 }
 
@@ -43,6 +44,7 @@ impl PolicySection {
         self.allow.is_empty()
             && self.deny.is_empty()
             && self.warn.is_empty()
+            && self.log.is_empty()
             && self.hide.is_empty()
     }
 }
@@ -206,6 +208,9 @@ fn section_to_yaml(section: &PolicySection) -> YamlValue {
     if !section.warn.is_empty() {
         pairs.push(("warn".into(), strings_to_yaml(&section.warn)));
     }
+    if !section.log.is_empty() {
+        pairs.push(("log".into(), strings_to_yaml(&section.log)));
+    }
     if !section.hide.is_empty() {
         pairs.push(("hide".into(), strings_to_yaml(&section.hide)));
     }
@@ -224,6 +229,7 @@ fn parse_policy_section(val: &YamlValue) -> PolicySection {
             .unwrap_or_default(),
         deny: val.get("deny").map(|v| v.string_list()).unwrap_or_default(),
         warn: val.get("warn").map(|v| v.string_list()).unwrap_or_default(),
+        log: val.get("log").map(|v| v.string_list()).unwrap_or_default(),
         hide: val.get("hide").map(|v| v.string_list()).unwrap_or_default(),
     }
 }
@@ -257,12 +263,14 @@ mod tests {
                     allow: vec!["*.pypi.org".into()],
                     deny: vec!["*".into()],
                     warn: vec![],
+                    log: vec![],
                     hide: vec![],
                 },
                 commands: PolicySection {
                     allow: vec!["node".into(), "npm".into()],
                     deny: vec!["curl".into(), "wget".into()],
                     warn: vec!["ssh".into()],
+                    log: vec![],
                     hide: vec![],
                 },
                 files: PolicySection {

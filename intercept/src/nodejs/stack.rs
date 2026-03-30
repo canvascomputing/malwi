@@ -174,6 +174,8 @@ type CaptureStackTraceFn = unsafe extern "C" fn(*mut c_void, c_int) -> *mut c_ch
 type GetCallerSourceLocationFn = unsafe extern "C" fn(*mut c_void) -> *mut MalwiSourceLocationFfi;
 type GetTopSourceLocationFn = unsafe extern "C" fn(*mut c_void) -> *mut MalwiSourceLocationFfi;
 type FreeSourceLocationFn = unsafe extern "C" fn(*mut MalwiSourceLocationFfi);
+type ClassifyTaggedValueFn = unsafe extern "C" fn(usize) -> *mut MalwiParameterInfo;
+type FreeParameterInfoFn = unsafe extern "C" fn(*mut MalwiParameterInfo);
 
 /// FFI structure for caller source location.
 /// Matches MalwiSourceLocation from stack_parser.h.
@@ -205,6 +207,8 @@ struct StackParserFfi {
     get_caller_source_location: GetCallerSourceLocationFn,
     get_top_source_location: GetTopSourceLocationFn,
     free_source_location: FreeSourceLocationFn,
+    classify_tagged_value: Option<ClassifyTaggedValueFn>,
+    free_parameter_info: Option<FreeParameterInfoFn>,
 }
 
 /// Global FFI - resolved once when addon is loaded
@@ -278,6 +282,26 @@ pub fn resolve_stack_parser_ffi(addon_path: &std::path::Path) -> bool {
                 GetTopSourceLocationFn
             ),
             free_source_location: resolve_sym!("malwi_free_source_location", FreeSourceLocationFn),
+            classify_tagged_value: CString::new("malwi_classify_tagged_value").ok().and_then(
+                |sym| {
+                    let ptr = libc::dlsym(handle, sym.as_ptr());
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        Some(std::mem::transmute(ptr))
+                    }
+                },
+            ),
+            free_parameter_info: CString::new("malwi_free_parameter_info")
+                .ok()
+                .and_then(|sym| {
+                    let ptr = libc::dlsym(handle, sym.as_ptr());
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        Some(std::mem::transmute(ptr))
+                    }
+                }),
         };
 
         let _ = STACK_PARSER_FFI.set(ffi);
@@ -446,7 +470,13 @@ impl fmt::Display for ParameterInfo {
                     write!(f, "[Function]")
                 }
             }
-            ValueType::Object => write!(f, "[Object]"),
+            ValueType::Object => {
+                if let Some(ref props) = self.string_value {
+                    write!(f, "{{{}}}", props)
+                } else {
+                    write!(f, "[Object]")
+                }
+            }
             ValueType::Undefined => write!(f, "undefined"),
             ValueType::Null => write!(f, "null"),
             ValueType::True => write!(f, "true"),
@@ -462,6 +492,36 @@ impl fmt::Display for ParameterInfo {
             _ => write!(f, "{}", self.type_name),
         }
     }
+}
+
+/// Format a raw V8 tagged value as a display string.
+///
+/// Used by the native callback hooks to format FunctionCallbackInfo arguments.
+/// Does basic Smi detection in Rust and delegates to the C++ stack parser
+/// for heap objects (strings, arrays, objects, etc.).
+pub fn format_tagged_value(tagged: usize) -> String {
+    // Use the C++ stack parser's ClassifyValue via FFI for full type detection
+    // and value extraction (strings, numbers, arrays, etc.).
+    if let Some(ffi) = STACK_PARSER_FFI.get() {
+        if let (Some(classify), Some(free_info)) =
+            (ffi.classify_tagged_value, ffi.free_parameter_info)
+        {
+            let info_ptr = unsafe { classify(tagged) };
+            if !info_ptr.is_null() {
+                let param = unsafe { ParameterInfo::from_ffi(&*info_ptr) };
+                unsafe { free_info(info_ptr) };
+                return param.to_string();
+            }
+        }
+    }
+
+    // Fallback: basic Smi detection in Rust (no FFI needed)
+    if tagged & 1 == 0 {
+        let smi_value = (tagged as i64) >> 32;
+        return smi_value.to_string();
+    }
+
+    format!("0x{:x}", tagged)
 }
 
 /// Result of parsing frame parameters.

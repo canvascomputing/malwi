@@ -372,6 +372,17 @@ pub fn detect_node_version() -> Option<u32> {
         return Some(version);
     }
 
+    // Method 1: Read from napi_get_node_version's compile-time static local.
+    // This works at constructor time (before main/static init) because the
+    // struct { u32 major, minor, patch; *const char release } is initialized
+    // at compile time in the binary's data section.
+    if let Some(major) = detect_version_from_napi_static() {
+        info!("Node.js {} detected from napi static", major);
+        let _ = DETECTED_VERSION.set(major);
+        return Some(major);
+    }
+
+    // Method 2: Read from metadata std::string (works after static init).
     if let Some(major) = detect_version_from_metadata() {
         info!("Node.js {} detected from metadata", major);
         let _ = DETECTED_VERSION.set(major);
@@ -380,6 +391,32 @@ pub fn detect_node_version() -> Option<u32> {
 
     warn!("Node.js version detection failed");
     None
+}
+
+/// Detect Node.js version from the compile-time `napi_node_version` static.
+///
+/// `napi_get_node_version` contains a static local:
+///   static const napi_node_version version = { NODE_MAJOR_VERSION, ... };
+/// This is a compile-time constant in the binary's data section, valid at
+/// constructor time before any C++ static initialization runs.
+fn detect_version_from_napi_static() -> Option<u32> {
+    // Mangled symbol: napi_get_node_version()::version
+    #[cfg(unix)]
+    const NAPI_VERSION_SYMBOL: &str = "_ZZ21napi_get_node_versionE7version";
+
+    let addr = native::find_export(None, NAPI_VERSION_SYMBOL).ok()?;
+    debug!("napi_node_version static at {:#x}", addr);
+
+    // napi_node_version { major: u32, minor: u32, patch: u32, release: *const char }
+    let major = unsafe { *(addr as *const u32) };
+    debug!("napi_node_version.major = {}", major);
+
+    if major >= 21 && major <= 99 {
+        Some(major)
+    } else {
+        debug!("napi_node_version.major out of range: {}", major);
+        None
+    }
 }
 
 /// Get the version bucket for a given Node.js major version.
@@ -617,18 +654,30 @@ pub fn get_addon_path() -> Option<PathBuf> {
     Some(path)
 }
 
-/// Check if the addon is loaded (FFI functions resolved).
+/// Check if the addon has been extracted.
 pub fn is_addon_loaded() -> bool {
-    super::ADDON_FFI.get().is_some()
+    ADDON_DIR.get().is_some()
 }
 
-/// Load the addon - DEPRECATED, use filters::initialize() instead.
-///
-/// This exists for backwards compatibility but does nothing.
-/// The addon is now loaded via direct FFI in filters.rs.
-pub fn load_addon() -> bool {
-    warn!("load_addon() is deprecated - use filters::initialize() instead");
-    is_addon_loaded()
+/// Extract the V8 addon to a temp directory for stack parser FFI via dlopen.
+pub fn extract_addon_for_ffi() -> bool {
+    use crate::nodejs::state::AddonPhase;
+
+    if !AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Extracting) {
+        return AddonPhase::current() >= AddonPhase::Extracting;
+    }
+
+    match extract_all_addons() {
+        Some(_dir) => {
+            info!("V8 addon extracted for stack parser FFI");
+            true
+        }
+        None => {
+            AddonPhase::reset_to(AddonPhase::Extracting, AddonPhase::Uninitialized);
+            warn!("Failed to extract addons");
+            false
+        }
+    }
 }
 
 // =============================================================================

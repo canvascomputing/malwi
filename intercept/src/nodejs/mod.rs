@@ -50,11 +50,6 @@
 
 pub use crate::NodejsFrame;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Whether Node.js envvar monitoring is enabled.
-static ENVVAR_MONITORING_ENABLED: AtomicBool = AtomicBool::new(false);
-
 // =============================================================================
 // SUBMODULES
 // =============================================================================
@@ -66,13 +61,16 @@ mod detect;
 pub mod ffi;
 pub mod filters;
 pub mod format;
+pub mod native_callbacks;
 pub mod script;
 pub mod stack;
 pub mod state;
 pub mod symbols;
 
+use crate::RuntimeStack;
+
 // Re-export commonly used items from addon
-pub use addon::embed::{is_addon_loaded, load_addon};
+pub use addon::embed::is_addon_loaded;
 
 // Re-export from detect (standard runtime convention)
 pub use detect::{detected_version, is_loaded};
@@ -84,52 +82,62 @@ pub use filters::{add_filter, check_filter, get_thread_id, has_filters, initiali
 pub use state::{AddonPhase, BytecodePhase};
 
 // =============================================================================
+// SHARED HELPERS
+// =============================================================================
+
+/// Find the Node.js binary module name from loaded modules.
+/// Checks both module name and path for patterns like "node", "node.exe", "node-v24".
+pub fn find_node_module() -> Option<String> {
+    for module in crate::native::enumerate_modules() {
+        if module.name == "node"
+            || module.name.starts_with("node.")
+            || module.name.starts_with("node-")
+        {
+            return Some(module.name);
+        }
+        if module.path.ends_with("/node")
+            || module.path.contains("/node.")
+            || module.path.contains("/node-")
+        {
+            return Some(module.name);
+        }
+    }
+    None
+}
+
+// =============================================================================
 // PUBLIC API
 // =============================================================================
 
 /// Initialize V8 JavaScript tracing.
 ///
-/// This function uses a **hybrid approach** combining two tracing mechanisms:
+/// Three mechanisms work together via frida-gum hooks:
 ///
-/// 1. **bytecode** (Runtime_TraceEnter hooks):
-///    - Catches user JavaScript bytecode functions
-///    - Works for synchronous `--eval` code that runs before module loading
-///    - Uses V8's internal --trace flag with hooks on Runtime_TraceEnter/TraceExit
-///    - Catches user JS functions in --eval, ESM, dynamic imports, etc.
+/// 1. **codegen gates** — hook `ModifyCodeGenerationFromStrings` (eval/Function
+///    blocking) and `AllowWasmCodeGenerationCallback` (wasm compilation gate)
+/// 2. **bytecode tracing** — set V8 `--trace` flag + hook `Runtime_TraceEnter/Exit`
+///    to trace all interpreted JS functions
+/// 3. **addon extraction** — extract V8 introspection addon for stack parser FFI
+///    (function names, parameters, source locations via dlopen)
 ///
-/// 2. **codegen** (ModifyCodeGenerationFromStrings hook):
-///    - Catches eval/function-constructor code generation
-///    - Synchronous path that can block via policy
-///
-/// 3. **addon** (N-API function wrapping):
-///    - Catches native module functions (fs.*, crypto.*, etc.)
-///    - Extracts and loads the v8_introspect addon
-///    - Installs a require hook to intercept module loading
-///    - Wraps matching JavaScript functions at the JavaScript level
-///
-/// Both mechanisms use the same filter list and emit events through the same
-/// channel - they are complementary and together provide complete coverage.
-///
-/// Call this after checking `is_v8_loaded()` and adding filters.
-///
-/// # Returns
-/// - true if at least one tracing mechanism initialized successfully
-/// - false if V8 tracing could not be enabled
+/// Native module C++ callback hooks (fs.*, dns.*, etc.) are installed separately
+/// in `native_callbacks::install_hooks()` after agent configuration.
 pub fn init_tracing() -> bool {
-    // Step 1: Install synchronous eval/codegen gate hook.
-    // This enables blocking decisions for eval()/Function() via policy.
+    // Step 1: Install synchronous eval/codegen gate hooks.
     let codegen_ok = codegen::initialize();
+    let wasm_ok = codegen::initialize_wasm_gate();
 
-    // Step 2: Initialize bytecode-level tracing.
-    // This catches user JS functions in --eval, ESM, dynamic imports, etc.
+    // Step 2: Initialize bytecode-level tracing (V8 --trace flag).
     let bytecode_ok = bytecode::initialize();
 
-    // Step 3: Initialize wrapper-based addon tracing
-    // This catches native module functions (fs.*, etc.)
+    // Step 3: Extract addon for stack parser FFI (dlopen).
     let addon_ok = initialize();
 
+    // Note: Node.js native C++ callback hooks (fs.readFileSync, dns.lookup, etc.)
+    // are installed later, after agent config provides the filter list. See agent/mod.rs.
+
     // Success if at least one approach initialized
-    codegen_ok || bytecode_ok || addon_ok
+    codegen_ok || wasm_ok || bytecode_ok || addon_ok
 }
 
 /// Capture the current JavaScript call stack.
@@ -144,39 +152,24 @@ pub fn init_tracing() -> bool {
 /// # Note
 /// This requires V8 to be in a valid state with an active Isolate.
 /// Returns empty if called outside of V8 context.
-pub fn capture_stack() -> Vec<NodejsFrame> {
-    // Use null isolate to let the stack parser get the current isolate
-    let frames = match unsafe { stack::capture_stack_trace(std::ptr::null_mut(), 10) } {
-        Some(frames) => frames,
-        None => return Vec::new(),
-    };
-
-    // Convert internal stack frame to NodejsFrame (malwi_protocol type)
-    frames
+/// Capture JS stack trace from a specific isolate, returning RuntimeStack.
+/// Used by native callback hooks which have the isolate from FunctionCallbackInfo.
+pub fn capture_stack_from_isolate(isolate: *mut std::ffi::c_void) -> Option<RuntimeStack> {
+    let frames = unsafe { stack::capture_stack_trace(isolate, 10) }?;
+    if frames.is_empty() {
+        return None;
+    }
+    let nodejs_frames: Vec<NodejsFrame> = frames
         .into_iter()
         .map(|f| NodejsFrame {
             function: f.function,
             script: f.script.clone(),
             line: f.line.max(0) as u32,
             column: f.column.max(0) as u32,
-            // User JavaScript is anything not from node: internals
             is_user_javascript: !f.script.starts_with("node:"),
         })
-        .collect()
-}
-
-/// Enable Node.js envvar monitoring.
-///
-/// Sets a flag so the JS wrapper installs a `process.env` Proxy
-/// (the Proxy checks `addon.checkEnvVar` at load time; this flag
-/// is for the native getenv hook to skip when Node.js handles it).
-pub fn enable_envvar_monitoring() {
-    ENVVAR_MONITORING_ENABLED.store(true, Ordering::SeqCst);
-}
-
-/// Check if Node.js envvar monitoring is enabled.
-pub fn is_envvar_monitoring_enabled() -> bool {
-    ENVVAR_MONITORING_ENABLED.load(Ordering::SeqCst)
+        .collect();
+    Some(RuntimeStack::Nodejs(nodejs_frames))
 }
 
 // =============================================================================

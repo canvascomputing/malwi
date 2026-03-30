@@ -1,25 +1,11 @@
-//! Node.js Filter Management - Coordination Layer.
+//! Node.js Filter Management.
 //!
-//! This module coordinates Node.js tracing initialization and filter management.
-//! The actual implementation is in the addon/ submodule:
-//!
-//! - `addon/`: Addon embedding, extraction, callback, FFI, and loading
-//!
-//! ## Architecture
-//!
-//! Node.js tracing uses an N-API addon for function wrapping:
-//! - The addon wraps JavaScript functions with C++ wrappers
-//! - Arguments are captured via napi_get_cb_info()
-//! - Events are sent to Rust via a C callback
-//! - Addon is injected via Script::Run hook when Node.js starts executing JavaScript
+//! Manages Node.js function tracing filters and coordinates addon extraction.
+//! The addon is extracted for stack parser FFI access via dlopen — no N-API wrapping.
 
-use std::ffi::CString;
 use std::sync::LazyLock;
 
-use log::debug;
-
 use super::addon;
-use super::state::AddonPhase;
 use crate::tracing::FilterManager;
 
 // =============================================================================
@@ -27,20 +13,7 @@ use crate::tracing::FilterManager;
 // =============================================================================
 
 /// Node.js filter manager using the shared FilterManager.
-static NODEJS_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| {
-    FilterManager::with_callback(
-        "Nodejs",
-        Box::new(|pattern, capture_stack| {
-            // Forward to addon if loaded
-            if let Some(ffi) = addon::ADDON_FFI.get() {
-                if let Ok(c_pattern) = CString::new(pattern) {
-                    let count = unsafe { (ffi.add_filter)(c_pattern.as_ptr(), capture_stack) };
-                    debug!("Forwarded filter to addon: {} functions wrapped", count);
-                }
-            }
-        }),
-    )
-});
+static NODEJS_FILTERS: LazyLock<FilterManager> = LazyLock::new(|| FilterManager::new("Nodejs"));
 
 /// Add a Node.js function pattern to the filter list.
 pub fn add_filter(pattern: &str, capture_stack: bool) {
@@ -79,19 +52,7 @@ pub fn get_thread_id() -> u64 {
 // INITIALIZATION
 // =============================================================================
 
-/// Initialize Node.js JavaScript tracing via addon.
-///
-/// Uses NODE_OPTIONS --require preloading.
+/// Extract the V8 addon for stack parser FFI access.
 pub fn initialize() -> bool {
-    if !AddonPhase::advance(AddonPhase::Uninitialized, AddonPhase::Initializing) {
-        return AddonPhase::current() >= AddonPhase::Initializing;
-    }
-
-    let result = addon::node_options_initialize();
-
-    if !result {
-        AddonPhase::reset_to(AddonPhase::Initializing, AddonPhase::Uninitialized);
-    }
-
-    result
+    addon::extract_addon_for_ffi()
 }

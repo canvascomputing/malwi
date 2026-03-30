@@ -846,13 +846,12 @@ unsafe extern "C" fn on_getenv_leave(context: *mut InvocationContext, _user_data
         return;
     }
 
-    // Skip if Python or Node.js envvar monitoring is active — those layers are more informative
+    // Skip if Python envvar monitoring is active — Python's sys.setprofile
+    // provides richer context. Node.js uses native getenv hooks directly
+    // (the process.env Proxy was removed for npm/npx compatibility).
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         if crate::python::is_envvar_monitoring_enabled() {
-            return;
-        }
-        if crate::nodejs::is_envvar_monitoring_enabled() {
             return;
         }
     }

@@ -46,25 +46,6 @@ fn deny_result() -> CodegenResult {
     }
 }
 
-/// Find the Node module name from loaded modules.
-fn find_node_module() -> Option<String> {
-    for module in native::enumerate_modules() {
-        if module.name == "node"
-            || module.name.starts_with("node.")
-            || module.name.starts_with("node-")
-        {
-            return Some(module.name);
-        }
-        if module.path.ends_with("/node")
-            || module.path.contains("/node.")
-            || module.path.contains("/node-")
-        {
-            return Some(module.name);
-        }
-    }
-    None
-}
-
 /// Try to find a symbol, first as export, then as local symbol.
 fn find_symbol(module_name: &str, symbol: &str) -> Option<usize> {
     if let Ok(addr) = native::find_export(None, symbol) {
@@ -84,7 +65,7 @@ pub fn initialize() -> bool {
         a
     } else {
         // Fallback: module-local symbol enumeration.
-        let node_module = match find_node_module() {
+        let node_module = match super::find_node_module() {
             Some(name) => name,
             None => {
                 warn!("Node module not found; skipping codegen gate hook");
@@ -157,12 +138,7 @@ unsafe extern "C" fn replacement_modify_codegen(
         unsafe { stack::get_caller_source_location(std::ptr::null_mut()) };
 
     let runtime_stack = if capture_stack {
-        let frames = super::capture_stack();
-        if frames.is_empty() {
-            None
-        } else {
-            Some(crate::RuntimeStack::Nodejs(frames))
-        }
+        super::capture_stack_from_isolate(std::ptr::null_mut())
     } else {
         None
     };
@@ -207,4 +183,94 @@ unsafe extern "C" fn replacement_modify_codegen(
     }
 
     original(context, source, is_code_like)
+}
+
+// =============================================================================
+// WASM CODE GENERATION GATE
+// =============================================================================
+
+/// node::AllowWasmCodeGenerationCallback(Local<Context>, Local<String>)
+#[cfg(unix)]
+const ALLOW_WASM_CODEGEN: &str =
+    "_ZN4node31AllowWasmCodeGenerationCallbackEN2v85LocalINS0_7ContextEEENS1_INS0_6StringEEE";
+
+static WASM_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static ORIGINAL_ALLOW_WASM: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+type AllowWasmFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
+
+/// Install the WebAssembly code generation gate hook.
+pub fn initialize_wasm_gate() -> bool {
+    if WASM_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+
+    let addr = match native::find_export(None, ALLOW_WASM_CODEGEN) {
+        Ok(a) => a,
+        Err(_) => {
+            debug!("AllowWasmCodeGenerationCallback not found; skipping wasm gate");
+            WASM_HOOK_INSTALLED.store(false, Ordering::SeqCst);
+            return false;
+        }
+    };
+
+    let interceptor = crate::Interceptor::obtain();
+    let mut original_ptr: *const c_void = ptr::null();
+
+    interceptor.begin_transaction();
+    let result = interceptor.replace(
+        addr as *mut c_void,
+        replacement_allow_wasm as *const c_void,
+        ptr::null_mut(),
+        &mut original_ptr,
+    );
+
+    if let Err(e) = result {
+        interceptor.end_transaction();
+        debug!("Failed to install wasm gate hook: {:?}", e);
+        WASM_HOOK_INSTALLED.store(false, Ordering::SeqCst);
+        return false;
+    }
+
+    ORIGINAL_ALLOW_WASM.store(original_ptr as *mut c_void, Ordering::Release);
+    interceptor.end_transaction();
+    info!("Installed wasm code generation gate at {:#x}", addr);
+    true
+}
+
+unsafe extern "C" fn replacement_allow_wasm(context: *mut c_void, source: *mut c_void) -> bool {
+    let original_ptr = ORIGINAL_ALLOW_WASM.load(Ordering::Acquire);
+    if original_ptr.is_null() {
+        return false;
+    }
+    let original: AllowWasmFn = std::mem::transmute(original_ptr);
+
+    // Emit a trace event for wasm compilation
+    let event = crate::tracing::event::js_enter("WebAssembly.compile")
+        .arguments(vec![crate::Argument {
+            raw_value: 0,
+            display: Some("<wasm_module>".to_string()),
+        }])
+        .build();
+
+    if let Some(agent) = crate::Agent::get() {
+        if let Some(decision) = agent.evaluate_policy(&event) {
+            match decision {
+                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                    let _ = agent.send_event(event);
+                    info!("Blocked WebAssembly compilation via agent policy");
+                    return false;
+                }
+                malwi_protocol::agent_policy::AgentDecision::Hide
+                | malwi_protocol::agent_policy::AgentDecision::Suppress => {}
+                _ => {
+                    let _ = agent.send_event(event);
+                }
+            }
+        } else {
+            let _ = agent.send_event(event);
+        }
+    }
+
+    original(context, source)
 }

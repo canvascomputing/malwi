@@ -176,10 +176,6 @@ impl Agent {
                 if crate::python::is_loaded() {
                     crate::python::enable_envvar_monitoring();
                 }
-                // Node.js envvar monitoring
-                if crate::nodejs::is_loaded() {
-                    crate::nodejs::enable_envvar_monitoring();
-                }
                 debug!("Enabled envvar monitoring");
             }
         }
@@ -295,6 +291,15 @@ impl Agent {
         // Set up agent-side policy evaluator
         let policy = malwi_protocol::agent_policy::AgentPolicy::new(&agent_config.policy);
         self.agent_policy = Some(policy);
+
+        // Install Node.js native C++ callback hooks (fs.readFileSync, dns.lookup, etc.)
+        // This runs AFTER filters are registered so the hook table can match them.
+        if crate::nodejs::is_loaded() {
+            let native_filters = crate::nodejs::filters::get_filters();
+            if !native_filters.is_empty() {
+                crate::nodejs::native_callbacks::install_hooks(&native_filters);
+            }
+        }
 
         // Enable child gating unconditionally
         self.enable_child_gating_internal();
@@ -737,7 +742,7 @@ pub extern "C" fn malwi_agent_init() -> i32 {
     // Detect Node.js runtime and enable tracing.
     // Only initialize when JS tracing was requested (NODE_OPTIONS is set by the CLI
     // when --js is used). Unconditional init breaks programs like npm.
-    if crate::nodejs::is_loaded() && std::env::var_os("NODE_OPTIONS").is_some() {
+    if crate::nodejs::is_loaded() {
         info!("Node.js detected, initializing tracing");
         if crate::nodejs::init_tracing() {
             info!("Node.js JavaScript tracing enabled");
@@ -830,188 +835,12 @@ pub extern "C" fn malwi_agent_init() -> i32 {
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn malwi_prepare_node_options(
-    url_ptr: *const std::ffi::c_char,
-    out_buffer: *mut std::ffi::c_char,
-    buffer_size: usize,
+    _url_ptr: *const std::ffi::c_char,
+    _out_buffer: *mut std::ffi::c_char,
+    _buffer_size: usize,
 ) -> i32 {
-    use std::ffi::CStr;
-
-    if url_ptr.is_null() || out_buffer.is_null() || buffer_size == 0 {
-        return -1;
-    }
-
-    let url = unsafe {
-        match CStr::from_ptr(url_ptr).to_str() {
-            Ok(s) => s,
-            Err(_) => return -1,
-        }
-    };
-
-    // Temporarily set MALWI_URL for the wrapper script generation
-    std::env::set_var("MALWI_URL", url);
-
-    // Extract all addons and generate wrapper
-    let node_options = match prepare_node_options_internal() {
-        Some(opts) => opts,
-        None => return 0, // No JS tracing available, but not an error
-    };
-
-    // Copy to output buffer
-    let bytes = node_options.as_bytes();
-    if bytes.len() >= buffer_size {
-        return -1; // Buffer too small
-    }
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer.cast::<u8>(), bytes.len());
-        *out_buffer.add(bytes.len()) = 0; // Null terminate
-    }
-
-    bytes.len() as i32
-}
-
-/// Internal function to prepare NODE_OPTIONS.
-fn prepare_node_options_internal() -> Option<String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Extract all addons to stable directory
-    let addon_dir = crate::nodejs::addon::embed::extract_all_addons()?;
-
-    // Generate wrapper script
-    let url = std::env::var("MALWI_URL").unwrap_or_default();
-    let hash = {
-        let mut hasher = DefaultHasher::new();
-        url.hash(&mut hasher);
-        format!("{:08x}", hasher.finish() as u32)
-    };
-
-    let wrapper_path = std::env::temp_dir().join(format!("malwi-wrapper-{}.js", hash));
-    let wrapper_js = generate_wrapper_script(&addon_dir);
-
-    // Write wrapper if needed
-    let should_write = if wrapper_path.exists() {
-        match std::fs::read_to_string(&wrapper_path) {
-            Ok(existing) => existing != wrapper_js,
-            Err(_) => true,
-        }
-    } else {
-        true
-    };
-
-    if should_write && std::fs::write(&wrapper_path, &wrapper_js).is_err() {
-        return None;
-    }
-
-    // Build NODE_OPTIONS value
-    let require_opt = format!("--require={}", wrapper_path.display());
-
-    // Preserve existing NODE_OPTIONS
-    let node_options = match std::env::var("NODE_OPTIONS") {
-        Ok(existing) => format!("{} {}", existing, require_opt),
-        Err(_) => require_opt,
-    };
-
-    Some(node_options)
-}
-
-/// Generate the JS wrapper script content (same as in loader.rs).
-fn generate_wrapper_script(addon_dir: &std::path::Path) -> String {
-    let addon_dir_str = addon_dir.to_string_lossy().replace('\\', "\\\\");
-
-    format!(
-        r#"// Malwi V8 tracing wrapper - auto-generated
-(function() {{
-    'use strict';
-
-    const path = require('path');
-    const Module = require('module');
-
-    // Detect Node.js major version
-    const major = parseInt(process.versions.node.split('.')[0], 10);
-
-    // Map version to bucket (must match embed.rs version_bucket())
-    const bucket = major >= 25 ? 'node25'
-                 : major >= 24 ? 'node24'
-                 : major >= 23 ? 'node23'
-                 : major >= 22 ? 'node22'
-                 : major >= 21 ? 'node21'
-                 : null;  // Unsupported versions
-
-    if (!bucket) {{
-        if (process.env.MALWI_DEBUG) {{
-            console.error('[malwi] Node.js', major, 'is not supported (requires Node 21+)');
-        }}
-        return;
-    }}
-
-    // Build addon path
-    const addonPath = path.join('{addon_dir}', bucket, 'v8_introspect.node');
-
-    try {{
-        // Load the native addon
-        const addon = require(addonPath);
-
-        // Enable tracing FIRST - connects the trace callback from Rust agent
-        if (addon.enableTracing) {{
-            addon.enableTracing();
-        }}
-
-        // Install require hook unconditionally so late-arriving filters
-        // (hook config received after wrapper execution) still take effect.
-        if (addon.installRequireHook) {{
-            addon.installRequireHook(Module);
-        }}
-
-        // Forward any pre-registered filters to the addon
-        if (addon.getFilters) {{
-            const filters = addon.getFilters();
-            for (const f of filters) {{
-                if (addon.addFilter) {{
-                    addon.addFilter(f.pattern, f.captureStack);
-                }}
-            }}
-        }}
-
-        // Envvar monitoring: wrap process.env with a Proxy that calls checkEnvVar
-        if (addon.checkEnvVar) {{
-            const _envChecked = new Map();
-            const _origEnv = process.env;
-            process.env = new Proxy(_origEnv, {{
-                get(target, prop, receiver) {{
-                    if (typeof prop === 'string' && !prop.startsWith('MALWI_')) {{
-                        if (!_envChecked.has(prop)) {{
-                            const result = addon.checkEnvVar(prop);
-                            _envChecked.set(prop, result === 1);
-                        }}
-                        if (!_envChecked.get(prop)) return undefined;
-                    }}
-                    return Reflect.get(target, prop, receiver);
-                }},
-                set(target, prop, value, receiver) {{
-                    return Reflect.set(target, prop, value, receiver);
-                }},
-                has(target, prop) {{ return Reflect.has(target, prop); }},
-                deleteProperty(target, prop) {{ return Reflect.deleteProperty(target, prop); }},
-                ownKeys(target) {{ return Reflect.ownKeys(target); }},
-                getOwnPropertyDescriptor(target, prop) {{
-                    return Reflect.getOwnPropertyDescriptor(target, prop);
-                }}
-            }});
-        }}
-
-        // Debug output if requested
-        if (process.env.MALWI_DEBUG) {{
-            console.error('[malwi] Addon loaded: Node', major, '(' + bucket + ')');
-        }}
-    }} catch (e) {{
-        // Fallback: bytecode tracing still works
-        if (process.env.MALWI_DEBUG) {{
-            console.error('[malwi] Addon load failed:', e.message);
-        }}
-    }}
-}})();
-"#,
-        addon_dir = addon_dir_str
-    )
+    // Node.js tracing now uses frida-gum hooks exclusively (V8 --trace flag,
+    // Runtime_TraceEnter/Exit, codegen gate). No NODE_OPTIONS or --require
+    // wrapper needed. This function is kept as a no-op for ABI compatibility.
+    0
 }

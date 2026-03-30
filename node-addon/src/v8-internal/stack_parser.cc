@@ -174,8 +174,9 @@ static MalwiValueType ClassifyValue(Tagged tagged_value, MalwiParameterInfo* inf
         return MALWI_TYPE_ERROR;
     }
 
-    // Generic JS object
+    // Generic JS object — try to expand properties
     if (IsJSObjectInstanceType(instance_type)) {
+        info->string_value = SafeExpandObjectProperties(tagged_value, kMaxExpandProperties);
         return MALWI_TYPE_OBJECT;
     }
 
@@ -666,31 +667,32 @@ char* malwi_get_current_function_name(void* isolate_ptr) {
         return nullptr;
     }
 
-    // Create a scope for V8 handles
-    v8::HandleScope handle_scope(isolate);
+    // Use the same pattern as source_location_from_js_frame (which works
+    // reliably from the bytecode hook). Wrap V8 API calls in try/catch
+    // to guard against std::length_error from handle allocation.
+    try {
+        v8::HandleScope handle_scope(isolate);
 
-    // Create a v8::Local pointing to the frame's function slot.
-    // v8::Local<T> stores a T** (pointer to a handle slot). The stack slot
-    // at func_addr holds the tagged JSFunction value, which serves as a
-    // valid handle slot since it contains a full-width tagged pointer.
-    Tagged* func_slot = reinterpret_cast<Tagged*>(func_addr);
-    v8::Local<v8::Value> local;
-    memcpy(static_cast<void*>(&local), &func_slot, sizeof(func_slot));
+        Tagged* func_slot = reinterpret_cast<Tagged*>(func_addr);
+        v8::Local<v8::Value> local;
+        memcpy(static_cast<void*>(&local), &func_slot, sizeof(func_slot));
 
-    if (!local->IsFunction()) {
+        if (!local->IsFunction()) {
+            return nullptr;
+        }
+
+        v8::Local<v8::Function> func = local.As<v8::Function>();
+        v8::Local<v8::Value> name = func->GetName();
+        if (!name.IsEmpty() && name->IsString()) {
+            v8::Local<v8::String> name_str = name.As<v8::String>();
+            if (name_str->Length() > 0) {
+                return V8StringToCString(isolate, name_str);
+            }
+        }
+    } catch (...) {
         return nullptr;
     }
 
-    v8::Local<v8::Function> func = local.As<v8::Function>();
-    v8::Local<v8::Value> name = func->GetName();
-    if (!name.IsEmpty() && name->IsString()) {
-        v8::Local<v8::String> name_str = name.As<v8::String>();
-        if (name_str->Length() > 0) {
-            return V8StringToCString(isolate, name_str);
-        }
-    }
-
-    // No function name found
     return nullptr;
 }
 
@@ -915,6 +917,27 @@ void malwi_free_source_location(MalwiSourceLocation* loc) {
         }
         free(loc);
     }
+}
+
+// Classify a single V8 tagged value and return its type + extracted content.
+// Used by the Rust native callback hooks to decode FunctionCallbackInfo arguments.
+MalwiParameterInfo* malwi_classify_tagged_value(uintptr_t tagged_value) {
+    MalwiParameterInfo* info = static_cast<MalwiParameterInfo*>(
+        calloc(1, sizeof(MalwiParameterInfo)));
+    if (!info) return nullptr;
+
+    Tagged tagged = static_cast<Tagged>(tagged_value);
+    MalwiValueType type = ClassifyValue(tagged, info);
+    info->type = type;
+    info->type_name = kTypeNames[type];
+    return info;
+}
+
+void malwi_free_parameter_info(MalwiParameterInfo* info) {
+    if (!info) return;
+    if (info->string_value) free(info->string_value);
+    if (info->function_name) free(info->function_name);
+    free(info);
 }
 
 } // extern "C"

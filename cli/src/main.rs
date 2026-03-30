@@ -916,12 +916,8 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     std::env::set_var("MALWI_CONFIG", config_file_path.as_os_str());
 
     // Spawn the target process with the agent injected (sync, one-shot posix_spawn)
-    let needs_js = requested_hooks
-        .iter()
-        .any(|h| h.hook_type == HookType::Nodejs);
-
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let root_pid = spawn::spawn_with_injection(&program[0], &program[1..], &server_url, needs_js)?;
+    let root_pid = spawn::spawn_with_injection(&program[0], &program[1..], &server_url)?;
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     anyhow::bail!("Process spawning with agent injection is only supported on macOS and Linux");

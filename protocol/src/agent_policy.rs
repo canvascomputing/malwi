@@ -10,7 +10,9 @@
 //! 2. Check allow patterns → if match, `Suppress`
 //! 3. Check deny patterns → if match, `Block { rule }`
 //! 4. Check warn patterns → if match, `Warn { rule }`
-//! 5. No match → `Trace` (display normally)
+//! 5. Check log patterns → if match, `Trace` (display normally)
+//! 6. Implicit deny (if allow patterns exist) → `Block`
+//! 7. No match → `Suppress` if monitoring-only section, else `Trace`
 
 use crate::agent_config::{AgentPolicySections, PolicySection};
 use crate::event::{HookType, TraceEvent};
@@ -57,6 +59,7 @@ struct SectionRules {
     allow: Vec<String>,
     deny: Vec<String>,
     warn: Vec<String>,
+    log: Vec<String>,
     hide: Vec<String>,
 }
 
@@ -66,33 +69,31 @@ impl SectionRules {
             allow: section.allow.clone(),
             deny: section.deny.clone(),
             warn: section.warn.clone(),
+            log: section.log.clone(),
             hide: section.hide.clone(),
         }
     }
 
-    /// Evaluate a name against this section's rules.
-    /// Uses case-sensitive glob matching.
+    /// Core evaluation cascade shared by all matching modes.
     ///
-    /// When `allow` patterns exist, anything not explicitly allowed is implicitly
-    /// denied (matching CLI's ActivePolicy behavior for network/commands sections).
-    fn evaluate(&self, name: &str, section: &str) -> AgentDecision {
-        // 1. Hide check first (highest priority)
+    /// Evaluation order: hide → allow → deny → warn → log → implicit deny → default.
+    /// When `allow` patterns exist, anything not explicitly allowed is implicitly denied.
+    /// When no allow/deny patterns exist (monitoring-only), unmatched events are suppressed.
+    fn evaluate_with(&self, section: &str, matches: impl Fn(&str, &str) -> bool) -> AgentDecision {
         for pattern in &self.hide {
-            if matches_glob(pattern, name) {
+            if matches(pattern, section) {
                 return AgentDecision::Hide;
             }
         }
 
-        // 2. Allow check (suppress if explicitly allowed)
         for pattern in &self.allow {
-            if matches_glob(pattern, name) {
+            if matches(pattern, section) {
                 return AgentDecision::Suppress;
             }
         }
 
-        // 3. Deny check
         for pattern in &self.deny {
-            if matches_glob(pattern, name) {
+            if matches(pattern, section) {
                 return AgentDecision::Block {
                     rule: pattern.clone(),
                     section: section.to_string(),
@@ -100,9 +101,8 @@ impl SectionRules {
             }
         }
 
-        // 4. Warn check
         for pattern in &self.warn {
-            if matches_glob(pattern, name) {
+            if matches(pattern, section) {
                 return AgentDecision::Warn {
                     rule: pattern.clone(),
                     section: section.to_string(),
@@ -110,7 +110,12 @@ impl SectionRules {
             }
         }
 
-        // 5. Implicit deny: allow patterns exist but name didn't match any
+        for pattern in &self.log {
+            if matches(pattern, section) {
+                return AgentDecision::Trace;
+            }
+        }
+
         if !self.allow.is_empty() {
             return AgentDecision::Block {
                 rule: "(implicit deny)".to_string(),
@@ -118,111 +123,43 @@ impl SectionRules {
             };
         }
 
-        // 6. No match → trace normally
+        // No match, no allow rules — suppress when monitoring-only (no deny rules)
+        if self.deny.is_empty() {
+            return AgentDecision::Suppress;
+        }
+
         AgentDecision::Trace
     }
 
-    /// Evaluate using case-insensitive matching (for network hostnames).
-    ///
-    /// Same implicit-deny logic as `evaluate()`.
+    /// Evaluate a name against this section's rules (case-sensitive).
+    fn evaluate(&self, name: &str, section: &str) -> AgentDecision {
+        self.evaluate_with(section, |pattern, _| matches_glob(pattern, name))
+    }
+
+    /// Evaluate using case-insensitive matching (for network hostnames/URLs).
     fn evaluate_ci(&self, name: &str, section: &str) -> AgentDecision {
         let lower = name.to_lowercase();
-
-        for pattern in &self.hide {
-            if matches_glob(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Hide;
-            }
-        }
-
-        for pattern in &self.allow {
-            if matches_glob(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Suppress;
-            }
-        }
-
-        for pattern in &self.deny {
-            if matches_glob(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Block {
-                    rule: pattern.clone(),
-                    section: section.to_string(),
-                };
-            }
-        }
-
-        for pattern in &self.warn {
-            if matches_glob(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Warn {
-                    rule: pattern.clone(),
-                    section: section.to_string(),
-                };
-            }
-        }
-
-        // Implicit deny: allow patterns exist but name didn't match any
-        if !self.allow.is_empty() {
-            return AgentDecision::Block {
-                rule: "(implicit deny)".to_string(),
-                section: section.to_string(),
-            };
-        }
-
-        AgentDecision::Trace
+        self.evaluate_with(section, |pattern, _| {
+            matches_glob(&pattern.to_lowercase(), &lower)
+        })
     }
 
     /// Evaluate a hostname against network rules, handling URL-like patterns.
     ///
     /// Network patterns may be URL-like (e.g. `pypi.org/**`). When matching a
-    /// bare hostname, we also try the domain prefix of URL patterns (everything
-    /// before the first `/`). This matches the CLI's behavior where
-    /// `pypi.org/**` in the network allow list permits connections to pypi.org.
+    /// bare hostname, we also try the domain prefix (everything before the first `/`).
     fn evaluate_network_host(&self, hostname: &str) -> AgentDecision {
         let lower = hostname.to_lowercase();
-
-        for pattern in &self.hide {
-            if matches_network_host(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Hide;
-            }
-        }
-
-        for pattern in &self.allow {
-            if matches_network_host(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Suppress;
-            }
-        }
-
-        for pattern in &self.deny {
-            if matches_network_host(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Block {
-                    rule: pattern.clone(),
-                    section: "network".to_string(),
-                };
-            }
-        }
-
-        for pattern in &self.warn {
-            if matches_network_host(&pattern.to_lowercase(), &lower) {
-                return AgentDecision::Warn {
-                    rule: pattern.clone(),
-                    section: "network".to_string(),
-                };
-            }
-        }
-
-        // Implicit deny: allow patterns exist but hostname didn't match any
-        if !self.allow.is_empty() {
-            return AgentDecision::Block {
-                rule: "(implicit deny)".to_string(),
-                section: "network".to_string(),
-            };
-        }
-
-        AgentDecision::Trace
+        self.evaluate_with("network", |pattern, _| {
+            matches_network_host(&pattern.to_lowercase(), &lower)
+        })
     }
 
     fn is_empty(&self) -> bool {
         self.allow.is_empty()
             && self.deny.is_empty()
             && self.warn.is_empty()
+            && self.log.is_empty()
             && self.hide.is_empty()
     }
 }
@@ -627,7 +564,7 @@ mod tests {
         assert_eq!(policy.evaluate(&event), AgentDecision::Hide);
 
         let event2 = make_event(HookType::EnvVar, "HOME");
-        assert_eq!(policy.evaluate(&event2), AgentDecision::Trace);
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
     }
 
     #[test]
@@ -645,9 +582,9 @@ mod tests {
         let event = make_event_with_args(HookType::Native, "getenv", &["SECRET_KEY"]);
         assert_eq!(policy.evaluate(&event), AgentDecision::Hide);
 
-        // Native getenv("HOME") should not
+        // Native getenv("HOME") — suppressed (hide-only section has no display rules)
         let event2 = make_event_with_args(HookType::Native, "getenv", &["HOME"]);
-        assert_eq!(policy.evaluate(&event2), AgentDecision::Trace);
+        assert_eq!(policy.evaluate(&event2), AgentDecision::Suppress);
     }
 
     #[test]

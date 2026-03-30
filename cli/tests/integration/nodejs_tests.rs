@@ -460,12 +460,13 @@ fn test_nodejs_addon_stack_trace_with_module_function() {
     setup();
 
     skip_if_no_node!(node => {
-        // Test the addon callback path for stack capture.
-        // fs.readFileSync goes through the addon (N-API wrapped function).
+        // Test stack capture for native C++ callback hooks.
+        // fs.readFileSync with 'utf8' encoding goes through node::fs::ReadFileUtf8,
+        // which is hooked via frida-gum interceptor.
         let output = cmd(&format!(
             "x --js fs.readFileSync --st -- {} --eval {}",
             node.display(),
-            sq("const fs = require('fs'); function myReader() { try { fs.readFileSync('/tmp/nonexistent-malwi-test'); } catch(e) {} } myReader();")
+            sq("const fs = require('fs'); function myReader() { try { fs.readFileSync('/etc/hosts', 'utf8'); } catch(e) {} } myReader();")
         )).timeout(STACK_TRACE_TIMEOUT).run();
 
         let stdout = output.stdout();
@@ -1267,19 +1268,20 @@ fn test_nodejs_object_args_show_properties() {
         let stdout = output.stdout();
         let stderr = output.stderr();
 
-        // If addon-wrapped tracing captured the call, verify formatting
-        if stdout.contains("http.request") {
-            // Should show property keys for the options object
-            let has_properties = stdout.contains("hostname") || stdout.contains("port") || stdout.contains("method");
-            assert!(
-                has_properties,
-                "Object args should show property keys (hostname/port/method) instead of [Object]. stdout: {}",
-                stdout
-            );
-        } else {
-            // Addon wrapping may not have fired (timing/version dependent)
-            println!("NOTE: js:http.request not captured via addon wrapper. stderr: {}", stderr);
-        }
+        // Should have traced http.request with object argument
+        assert!(
+            stdout.contains("http.request"),
+            "Expected http.request to be traced. stdout: {}",
+            stdout
+        );
+
+        // Object properties should be expanded (hostname/port shown).
+        let has_properties = stdout.contains("hostname") || stdout.contains("port") || stdout.contains("method");
+        assert!(
+            has_properties,
+            "Expected object properties (hostname/port/method). stdout: {}",
+            stdout
+        );
     });
 }
 
