@@ -333,6 +333,56 @@ unsafe fn get_class_name_from_self(frame: *mut c_void, code: *mut c_void) -> Opt
     result
 }
 
+/// Read a string attribute from a Python object pointer.
+/// Returns None if the attribute doesn't exist, the object is null, or the API isn't available.
+pub unsafe fn get_string_attribute(obj_ptr: usize, attr: &std::ffi::CStr) -> Option<String> {
+    if obj_ptr == 0 {
+        return None;
+    }
+    let api = super::ffi::PYTHON_API.get()?;
+    let obj = obj_ptr as *mut std::ffi::c_void;
+    let attr_obj = (api.get_attr_string)(obj, attr.as_ptr());
+    if attr_obj.is_null() {
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
+        return None;
+    }
+    let result = cstr_to_string((api.unicode_as_utf8)(attr_obj));
+    (api.py_decref)(attr_obj);
+    result
+}
+
+/// Read an integer attribute from a Python object pointer.
+/// Returns None if the attribute doesn't exist, isn't an int, or the API isn't available.
+pub unsafe fn get_int_attribute(obj_ptr: usize, attr: &std::ffi::CStr) -> Option<i64> {
+    if obj_ptr == 0 {
+        return None;
+    }
+    let api = super::ffi::PYTHON_API.get()?;
+    let long_as_long = api.long_as_long?;
+    let obj = obj_ptr as *mut std::ffi::c_void;
+    let attr_obj = (api.get_attr_string)(obj, attr.as_ptr());
+    if attr_obj.is_null() {
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
+        return None;
+    }
+    let val = long_as_long(attr_obj);
+    // PyLong_AsLong returns -1 on error — check for Python exception
+    if val == -1 {
+        // Could be actual -1 or error; clear any error and return None for safety
+        if let Some(err_clear) = api.err_clear {
+            err_clear();
+        }
+        (api.py_decref)(attr_obj);
+        return None;
+    }
+    (api.py_decref)(attr_obj);
+    Some(val as i64)
+}
+
 /// Strip CPython `PyObject_Repr` quoting from a string or bytes repr.
 ///
 /// Handles `b'...'`, `b"..."`, `'...'`, and `"..."` wrappers that CPython

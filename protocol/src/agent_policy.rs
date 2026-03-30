@@ -237,9 +237,13 @@ impl AgentPolicy {
                 if let Some(ref domain) = net.domain {
                     decisions.push(self.network.evaluate_network_host(domain));
                 }
-                // Try URL (full match against URL patterns)
+                // Try URL (full match against URL patterns).
+                // Skip relative paths (no scheme) — they come from stateful
+                // connection objects where the host was already evaluated above.
                 if let Some(ref url) = net.url {
-                    decisions.push(self.network.evaluate_ci(url, "network"));
+                    if url.contains("://") {
+                        decisions.push(self.network.evaluate_ci(url, "network"));
+                    }
                 }
                 // Try IP — but skip when network has allow-only rules and
                 // no hostname context. Domain allow rules can't match bare IPs;

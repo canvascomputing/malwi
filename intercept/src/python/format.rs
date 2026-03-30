@@ -110,7 +110,8 @@ pub fn format_python_arguments(
             return non_empty_network_info(ni);
         }
         ("http.client.HTTPConnection" | "http.client.HTTPSConnection", "request") => {
-            let ni = format_http_request_net(arguments, module);
+            let mut ni = format_http_request_net(arguments, module);
+            unsafe { enrich_from_self_host(&mut ni, arguments) };
             return non_empty_network_info(ni);
         }
         ("http.client.HTTPResponse", "read") => format_http_response_read(arguments),
@@ -198,7 +199,11 @@ pub fn format_python_arguments(
         }
         ("urllib3.connectionpool.HTTPConnectionPool", "urlopen")
         | ("urllib3.connectionpool.HTTPSConnectionPool", "urlopen") => {
-            return format_urllib3_urlopen_net(arguments);
+            let mut ni_opt = format_urllib3_urlopen_net(arguments);
+            if let Some(ref mut ni) = ni_opt {
+                unsafe { enrich_from_self_host(ni, arguments) };
+            }
+            return ni_opt;
         }
 
         // =====================================================================
@@ -1329,6 +1334,37 @@ fn format_http_connection_init_net(args: &mut [Argument], scheme: &str) -> Netwo
         };
     }
     ni
+}
+
+/// Enrich a NetworkInfo that has no hostname by reading `self.host` from the
+/// Python connection object. Handles stateful HTTP objects (HTTPConnection,
+/// urllib3 pools) where the host is set at construction but requests use
+/// relative paths.
+///
+/// # Safety
+/// Reads Python object attributes via CPython C API — must only be called
+/// when the GIL is held (inside a profile hook callback).
+unsafe fn enrich_from_self_host(ni: &mut NetworkInfo, args: &[Argument]) {
+    if ni.domain.is_some() {
+        return;
+    }
+    let self_ptr = match args.first() {
+        Some(a) if a.raw_value != 0 => a.raw_value,
+        _ => return,
+    };
+    if let Some(host) = super::helpers::get_string_attribute(self_ptr, c"host") {
+        let host = host.trim_matches('\'').trim_matches('"');
+        if !host.is_empty() {
+            ni.set_host(host.to_string());
+        }
+    }
+    if ni.port.is_none() {
+        if let Some(port_val) = super::helpers::get_int_attribute(self_ptr, c"port") {
+            if port_val > 0 && port_val <= 65535 {
+                ni.port = Some(port_val as u16);
+            }
+        }
+    }
 }
 
 /// Format HTTPConnection.request with NetworkInfo.
