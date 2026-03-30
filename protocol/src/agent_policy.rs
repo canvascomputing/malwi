@@ -259,7 +259,24 @@ impl AgentPolicy {
         // Phase 3: File evaluation (extract path from args for file-related hooks)
         if !self.files.is_empty() {
             if let Some(path) = extract_file_path(event) {
-                decisions.push(self.files.evaluate(&path, "files"));
+                let decision = self.files.evaluate(&path, "files");
+                // If absolute path didn't match, try tilde form (~/...) since
+                // policy patterns commonly use tilde notation.
+                let decision = if matches!(decision, AgentDecision::Suppress) {
+                    if let Some(tilde) = to_tilde_path(&path) {
+                        let tilde_decision = self.files.evaluate(&tilde, "files");
+                        if !matches!(tilde_decision, AgentDecision::Suppress) {
+                            tilde_decision
+                        } else {
+                            decision
+                        }
+                    } else {
+                        decision
+                    }
+                } else {
+                    decision
+                };
+                decisions.push(decision);
             }
         }
 
@@ -311,7 +328,17 @@ impl AgentPolicy {
         if self.files.is_empty() {
             return AgentDecision::Trace;
         }
-        self.files.evaluate(path, "files")
+        let decision = self.files.evaluate(path, "files");
+        // Try tilde form if absolute path didn't match
+        if matches!(decision, AgentDecision::Suppress) {
+            if let Some(tilde) = to_tilde_path(path) {
+                let tilde_decision = self.files.evaluate(&tilde, "files");
+                if !matches!(tilde_decision, AgentDecision::Suppress) {
+                    return tilde_decision;
+                }
+            }
+        }
+        decision
     }
 
     /// Evaluate just the network section (for connect hooks).
@@ -365,12 +392,23 @@ fn is_networking_symbol(name: &str) -> bool {
 }
 
 /// Extract a file path from a trace event's arguments (first string arg).
+/// Strips surrounding quotes from native hook argument formatting.
 fn extract_file_path(event: &TraceEvent) -> Option<String> {
     event
         .arguments
         .first()
         .and_then(|a| a.display.as_deref())
-        .map(|s| s.to_string())
+        .map(|s| s.trim_matches('"').trim_matches('\'').to_string())
+}
+
+/// Convert an absolute path to tilde notation (e.g. /Users/mav/.ssh → ~/.ssh).
+/// Returns None if HOME is not set or the path is not under HOME.
+fn to_tilde_path(path: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static HOME: OnceLock<Option<String>> = OnceLock::new();
+    let home = HOME.get_or_init(|| std::env::var("HOME").ok());
+    let home = home.as_deref()?;
+    path.strip_prefix(home).map(|rest| format!("~{rest}"))
 }
 
 /// Severity ranking for decisions (higher = more specific/stricter).
@@ -737,6 +775,53 @@ mod tests {
             policy.evaluate(&event),
             AgentDecision::Block { .. }
         ));
+    }
+
+    #[test]
+    fn test_file_deny_tilde_matches_absolute_path() {
+        // Tilde patterns like ~/.ssh/** must match absolute paths like /Users/x/.ssh/id_rsa
+        let sections = AgentPolicySections {
+            files: PolicySection {
+                deny: vec!["~/.ssh/**".into(), "~/.aws/**".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        let home = std::env::var("HOME").unwrap();
+        let ssh_path = format!("{home}/.ssh/id_rsa");
+        let event = make_event_with_args(HookType::Native, "open", &[&ssh_path]);
+        assert!(
+            matches!(policy.evaluate(&event), AgentDecision::Block { .. }),
+            "Absolute path {ssh_path} should match tilde pattern ~/.ssh/**"
+        );
+
+        let aws_path = format!("{home}/.aws/credentials");
+        let event2 = make_event_with_args(HookType::Native, "open", &[&aws_path]);
+        assert!(
+            matches!(policy.evaluate(&event2), AgentDecision::Block { .. }),
+            "Absolute path {aws_path} should match tilde pattern ~/.aws/**"
+        );
+    }
+
+    #[test]
+    fn test_file_deny_quoted_path_stripped() {
+        // Native open hook formats paths with surrounding quotes — must be stripped
+        let sections = AgentPolicySections {
+            files: PolicySection {
+                deny: vec!["*.pem".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let policy = AgentPolicy::new(&sections);
+
+        let event = make_event_with_args(HookType::Native, "open", &["\"/etc/ssl/cert.pem\""]);
+        assert!(
+            matches!(policy.evaluate(&event), AgentDecision::Block { .. }),
+            "Quoted path should match after stripping quotes"
+        );
     }
 
     #[test]

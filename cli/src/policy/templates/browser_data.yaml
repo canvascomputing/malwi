@@ -15,3 +15,13 @@
 - "~/.config/solana/id.json"
 - "~/.bitcoin/wallet.dat"
 - "~/.ethereum/keystore/**"
+# Brave
+- "~/Library/Application Support/BraveSoftware/Brave-Browser/*/Cookies*"
+- "~/Library/Application Support/BraveSoftware/Brave-Browser/*/Login Data*"
+- "~/.config/BraveSoftware/Brave-Browser/*/Cookies*"
+- "~/.config/BraveSoftware/Brave-Browser/*/Login Data*"
+# Edge
+- "~/Library/Application Support/Microsoft Edge/*/Cookies*"
+- "~/Library/Application Support/Microsoft Edge/*/Login Data*"
+- "~/.config/microsoft-edge/*/Cookies*"
+- "~/.config/microsoft-edge/*/Login Data*"
