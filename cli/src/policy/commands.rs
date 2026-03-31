@@ -1,24 +1,12 @@
 //! Command triage — integrates the deterministic command analysis engine.
 
 use super::active::{pick_stricter, ActivePolicy, EventDisposition};
-use crate::policy::{Category, SectionKey};
 use malwi_intercept::{HookType, TraceEvent};
 
 impl ActivePolicy {
-    /// Collect command deny/warn/log patterns from the `commands:` policy section.
-    pub(super) fn command_deny_patterns(&self) -> Vec<&str> {
-        let key = SectionKey::global(Category::Execution);
-        self.engine
-            .policy()
-            .get_section(&key)
-            .map(|s| s.deny_rules.iter().map(|r| r.pattern.original()).collect())
-            .unwrap_or_default()
-    }
-
     /// Run the deterministic command triage layer on exec events.
-    ///
     /// If suspicious, escalates the disposition to at least Warn.
-    pub(super) fn evaluate_command_phase(
+    pub(super) fn escalate_suspicious_command(
         &self,
         event: &TraceEvent,
         disp: EventDisposition,
@@ -31,8 +19,8 @@ impl ActivePolicy {
             .iter()
             .filter_map(|a| a.display.as_deref())
             .collect();
-        let file_patterns = self.file_deny_patterns();
-        let cmd_patterns = self.command_deny_patterns();
+        let file_patterns = self.resolved.file_deny_patterns();
+        let cmd_patterns = self.resolved.command_deny_patterns();
         match super::analysis::analyze_command(
             &event.function,
             &args,

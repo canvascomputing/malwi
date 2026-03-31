@@ -125,7 +125,7 @@ fn validate_pattern(pattern: &str) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::parser::parse_policy;
+    use crate::compiler::parser::parse_policy;
 
     fn validate_yaml(yaml: &str) -> Result<(), ValidationError> {
         let policy = parse_policy(yaml).unwrap();

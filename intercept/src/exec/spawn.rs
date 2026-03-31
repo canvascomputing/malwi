@@ -700,13 +700,13 @@ pub(crate) fn check_exec_policy(
     // Agent-side policy: evaluate locally
     if let Some(decision) = agent.evaluate_policy(&event) {
         return match decision {
-            malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+            malwi_policy::Outcome::Block { .. } => {
                 // Send event so CLI shows "denied:" line
                 let _ = agent.send_event(event);
                 false
             }
-            malwi_protocol::agent_policy::AgentDecision::Hide => false,
-            malwi_protocol::agent_policy::AgentDecision::Suppress => true,
+            malwi_policy::Outcome::Hide => false,
+            malwi_policy::Outcome::Suppress => true,
             _ => true,
         };
     }

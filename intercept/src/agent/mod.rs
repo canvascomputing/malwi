@@ -68,7 +68,8 @@ pub struct Agent {
     forked: AtomicBool,
     /// Agent-side policy evaluator (loaded from config file).
     /// When present, the agent evaluates policy locally instead of sending raw events.
-    agent_policy: Option<malwi_protocol::agent_policy::AgentPolicy>,
+    /// Uses the unified malwi-policy evaluator (same code as CLI).
+    agent_policy: Option<malwi_policy::Policy>,
     #[cfg(unix)]
     fork_monitor: Mutex<Option<ForkMonitor>>,
     spawn_monitor: Mutex<Option<SpawnMonitor>>,
@@ -201,19 +202,16 @@ impl Agent {
         // The batch channel stays as TraceEvent for simplicity — policy events
         // bypass it and go directly via client.send_display_events().
         if let Some(ref policy) = self.agent_policy {
-            let decision = policy.evaluate(&event);
+            let decision = policy.check_event(&event);
             let disposition = match decision {
-                malwi_protocol::agent_policy::AgentDecision::Trace => {
-                    malwi_protocol::Disposition::Traced
-                }
-                malwi_protocol::agent_policy::AgentDecision::Block { rule, section } => {
+                malwi_policy::Outcome::Trace => malwi_protocol::Disposition::Traced,
+                malwi_policy::Outcome::Block { rule, section } => {
                     malwi_protocol::Disposition::Blocked { rule, section }
                 }
-                malwi_protocol::agent_policy::AgentDecision::Warn { rule, section } => {
+                malwi_policy::Outcome::Warn { rule, section } => {
                     malwi_protocol::Disposition::Warning { rule, section }
                 }
-                malwi_protocol::agent_policy::AgentDecision::Suppress
-                | malwi_protocol::agent_policy::AgentDecision::Hide => {
+                malwi_policy::Outcome::Suppress | malwi_policy::Outcome::Hide => {
                     // Suppress and Hide events are not sent to CLI
                     return Ok(());
                 }
@@ -237,33 +235,27 @@ impl Agent {
     pub fn evaluate_policy(
         &self,
         event: &malwi_protocol::TraceEvent,
-    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+    ) -> Option<malwi_policy::Outcome> {
         if self.forked.load(Ordering::Acquire) {
             return None;
         }
-        self.agent_policy.as_ref().map(|p| p.evaluate(event))
+        self.agent_policy.as_ref().map(|p| p.check_event(event))
     }
 
     /// Evaluate just the envvar section of agent-side policy.
-    pub fn evaluate_envvar_policy(
-        &self,
-        name: &str,
-    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+    pub fn evaluate_envvar_policy(&self, name: &str) -> Option<malwi_policy::Outcome> {
         if self.forked.load(Ordering::Acquire) {
             return None;
         }
-        self.agent_policy.as_ref().map(|p| p.evaluate_envvar(name))
+        self.agent_policy.as_ref().map(|p| p.check_envvar(name))
     }
 
     /// Evaluate just the file section of agent-side policy.
-    pub fn evaluate_file_policy(
-        &self,
-        path: &str,
-    ) -> Option<malwi_protocol::agent_policy::AgentDecision> {
+    pub fn evaluate_file_policy(&self, path: &str) -> Option<malwi_policy::Outcome> {
         if self.forked.load(Ordering::Acquire) {
             return None;
         }
-        self.agent_policy.as_ref().map(|p| p.evaluate_file(path))
+        self.agent_policy.as_ref().map(|p| p.check_file(path))
     }
 
     /// Get a reference to the global agent.
@@ -288,9 +280,10 @@ impl Agent {
             }
         }
 
-        // Set up agent-side policy evaluator
-        let policy = malwi_protocol::agent_policy::AgentPolicy::new(&agent_config.policy);
-        self.agent_policy = Some(policy);
+        // Set up agent-side policy evaluator (unified malwi-policy engine).
+        if agent_config.policy.has_rules() {
+            self.agent_policy = Some(agent_config.policy);
+        }
 
         // Install Node.js native C++ callback hooks (fs.readFileSync, dns.lookup, etc.)
         // This runs AFTER filters are registered so the hook table can match them.
@@ -350,10 +343,10 @@ impl Agent {
     }
 
     /// Try to load configuration from a file (MALWI_CONFIG env var).
-    fn try_load_config_file() -> Option<malwi_protocol::agent_config::AgentConfig> {
+    fn try_load_config_file() -> Option<malwi_policy::AgentConfig> {
         let config_path = std::env::var("MALWI_CONFIG").ok()?;
         let yaml = std::fs::read_to_string(&config_path).ok()?;
-        match malwi_protocol::agent_config::AgentConfig::from_yaml(&yaml) {
+        match malwi_policy::AgentConfig::from_yaml(&yaml) {
             Ok(config) => {
                 info!("Loaded agent config from {}", config_path);
                 Some(config)

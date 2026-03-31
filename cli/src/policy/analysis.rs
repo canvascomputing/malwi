@@ -13,8 +13,8 @@
 //! 7. DangerousPatterns — cross-command catch-all for universal danger signals
 
 use super::files::normalize_path;
-use super::templates::taxonomy::{self, Category};
 use malwi_intercept::glob::matches_glob;
+use malwi_policy::templates::taxonomy::{self, Category};
 
 /// Result of command analysis when a suspicious pattern is detected.
 #[allow(dead_code)]

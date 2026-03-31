@@ -452,7 +452,7 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
         if let Some(decision) = agent.evaluate_policy(&event) {
             // Agent-side policy: evaluate locally, enforce immediately
             match decision {
-                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                malwi_policy::Outcome::Block { .. } => {
                     crate::invocation::replace_return_value(
                         context,
                         (-1isize) as usize as *mut c_void,
@@ -460,7 +460,7 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
                     set_errno(libc::EACCES);
                     info!("BLOCKED: {}", event.function);
                 }
-                malwi_protocol::agent_policy::AgentDecision::Hide => {
+                malwi_policy::Outcome::Hide => {
                     match function.as_str() {
                         "getenv" | "secure_getenv" => {
                             crate::invocation::replace_return_value(context, std::ptr::null_mut());
@@ -476,7 +476,7 @@ unsafe fn on_enter_inner(context: *mut InvocationContext, user_data: *mut c_void
                     info!("HIDDEN: {}", event.function);
                     return; // Hidden events are not sent to CLI
                 }
-                malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                malwi_policy::Outcome::Suppress => {
                     return; // Suppressed events are not sent to CLI
                 }
                 _ => {

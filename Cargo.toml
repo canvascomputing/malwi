@@ -5,6 +5,7 @@ members = [
     "agent",
     "intercept",
     "protocol",
+    "policy",
 ]
 
 [workspace.package]
@@ -37,4 +38,5 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # Internal crates
 malwi-agent = { path = "agent" }
 malwi-intercept = { path = "intercept", default-features = false }
+malwi-policy = { path = "policy" }
 malwi-protocol = { path = "protocol" }

@@ -164,13 +164,12 @@ unsafe extern "C" fn replacement_modify_codegen(
         // Agent-side policy: evaluate locally
         if let Some(decision) = agent.evaluate_policy(&event) {
             match decision {
-                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                malwi_policy::Outcome::Block { .. } => {
                     let _ = agent.send_event(event);
                     info!("Blocked Node eval/codegen via agent policy");
                     return deny_result();
                 }
-                malwi_protocol::agent_policy::AgentDecision::Hide
-                | malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                malwi_policy::Outcome::Hide | malwi_policy::Outcome::Suppress => {
                     // Don't send, allow execution
                 }
                 _ => {
@@ -256,13 +255,12 @@ unsafe extern "C" fn replacement_allow_wasm(context: *mut c_void, source: *mut c
     if let Some(agent) = crate::Agent::get() {
         if let Some(decision) = agent.evaluate_policy(&event) {
             match decision {
-                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                malwi_policy::Outcome::Block { .. } => {
                     let _ = agent.send_event(event);
                     info!("Blocked WebAssembly compilation via agent policy");
                     return false;
                 }
-                malwi_protocol::agent_policy::AgentDecision::Hide
-                | malwi_protocol::agent_policy::AgentDecision::Suppress => {}
+                malwi_policy::Outcome::Hide | malwi_policy::Outcome::Suppress => {}
                 _ => {
                     let _ = agent.send_event(event);
                 }

@@ -760,12 +760,11 @@ pub fn send_trace_event(event: crate::TraceEvent) -> Result<(), ()> {
     // Agent-side policy: evaluate locally
     if let Some(decision) = agent.evaluate_policy(&event) {
         return match decision {
-            malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+            malwi_policy::Outcome::Block { .. } => {
                 let _ = agent.send_event(event);
                 Err(())
             }
-            malwi_protocol::agent_policy::AgentDecision::Hide
-            | malwi_protocol::agent_policy::AgentDecision::Suppress => Ok(()),
+            malwi_policy::Outcome::Hide | malwi_policy::Outcome::Suppress => Ok(()),
             _ => {
                 let _ = agent.send_event(event);
                 Ok(())

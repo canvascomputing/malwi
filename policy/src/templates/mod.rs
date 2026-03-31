@@ -4,11 +4,11 @@
 //! pattern groups (loaded from embedded YAML files). The `rules!` macro and
 //! group macros make composition declarative and concise.
 
-pub(crate) mod taxonomy;
+pub mod taxonomy;
 
 use std::sync::{LazyLock, OnceLock};
 
-use super::parser::{AllowDenySection, PolicyFile, Rule, SectionValue};
+use crate::compiler::parser::{AllowDenySection, PolicyFile, Rule, SectionValue};
 
 // ---------------------------------------------------------------------------
 // parse_yaml_list — shared YAML list parser for group files
@@ -31,258 +31,123 @@ fn parse_yaml_list(raw: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Group macros — lazily parsed YAML lists as shared pattern groups
+// Group macros — lazily parsed YAML lists as shared pattern groups.
+// Each define_group! call creates an OnceLock + macro for one YAML file.
 // ---------------------------------------------------------------------------
 
-static CREDENTIAL_FILES_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! credential_files {
-    () => {
-        CREDENTIAL_FILES_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("credential_files.yaml")))
-            .as_slice()
+macro_rules! define_group {
+    ($name:ident, $static:ident, $file:expr) => {
+        static $static: OnceLock<Vec<String>> = OnceLock::new();
+        macro_rules! $name {
+            () => {
+                $static
+                    .get_or_init(|| parse_yaml_list(include_str!($file)))
+                    .as_slice()
+            };
+        }
     };
 }
 
-static KEYRINGS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! keyrings {
-    () => {
-        KEYRINGS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("keyrings.yaml")))
-            .as_slice()
-    };
-}
+// File/credential groups
+define_group!(
+    credential_files,
+    CREDENTIAL_FILES_DATA,
+    "credential_files.yaml"
+);
+define_group!(keyrings, KEYRINGS_DATA, "keyrings.yaml");
+define_group!(browser_data, BROWSER_DATA_DATA, "browser_data.yaml");
+define_group!(
+    persistence_files,
+    PERSISTENCE_FILES_DATA,
+    "persistence_files.yaml"
+);
+define_group!(shell_profiles, SHELL_PROFILES_DATA, "shell_profiles.yaml");
 
-static BROWSER_DATA_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! browser_data {
-    () => {
-        BROWSER_DATA_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("browser_data.yaml")))
-            .as_slice()
-    };
-}
+// Environment variable groups
+define_group!(
+    sensitive_envvars,
+    SENSITIVE_ENVVARS_DATA,
+    "sensitive_envvars.yaml"
+);
+define_group!(
+    anti_tracing_envvars,
+    ANTI_TRACING_ENVVARS_DATA,
+    "anti_tracing_envvars.yaml"
+);
 
-static PERSISTENCE_FILES_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! persistence_files {
-    () => {
-        PERSISTENCE_FILES_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("persistence_files.yaml")))
-            .as_slice()
-    };
-}
+// Symbol/function groups
+define_group!(
+    dangerous_symbols,
+    DANGEROUS_SYMBOLS_DATA,
+    "dangerous_symbols.yaml"
+);
+define_group!(
+    networking_symbols,
+    NETWORKING_SYMBOLS_DATA,
+    "networking_symbols.yaml"
+);
+define_group!(
+    network_functions_python,
+    NETWORK_FUNCTIONS_PYTHON_DATA,
+    "network_functions_python.yaml"
+);
+define_group!(
+    network_functions_nodejs,
+    NETWORK_FUNCTIONS_NODEJS_DATA,
+    "network_functions_nodejs.yaml"
+);
+define_group!(
+    file_functions_python,
+    FILE_FUNCTIONS_PYTHON_DATA,
+    "file_functions_python.yaml"
+);
+define_group!(
+    file_functions_native,
+    FILE_FUNCTIONS_NATIVE_DATA,
+    "file_functions_native.yaml"
+);
 
-static SHELL_PROFILES_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! shell_profiles {
-    () => {
-        SHELL_PROFILES_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("shell_profiles.yaml")))
-            .as_slice()
-    };
-}
-
-static SENSITIVE_ENVVARS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! sensitive_envvars {
-    () => {
-        SENSITIVE_ENVVARS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("sensitive_envvars.yaml")))
-            .as_slice()
-    };
-}
-
-static ANTI_TRACING_ENVVARS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! anti_tracing_envvars {
-    () => {
-        ANTI_TRACING_ENVVARS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("anti_tracing_envvars.yaml")))
-            .as_slice()
-    };
-}
-
-static DANGEROUS_SYMBOLS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! dangerous_symbols {
-    () => {
-        DANGEROUS_SYMBOLS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("dangerous_symbols.yaml")))
-            .as_slice()
-    };
-}
-
-static NETWORKING_SYMBOLS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! networking_symbols {
-    () => {
-        NETWORKING_SYMBOLS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("networking_symbols.yaml")))
-            .as_slice()
-    };
-}
-
-static NETWORK_FUNCTIONS_PYTHON_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! network_functions_python {
-    () => {
-        NETWORK_FUNCTIONS_PYTHON_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("network_functions_python.yaml")))
-            .as_slice()
-    };
-}
-
-static NETWORK_FUNCTIONS_NODEJS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! network_functions_nodejs {
-    () => {
-        NETWORK_FUNCTIONS_NODEJS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("network_functions_nodejs.yaml")))
-            .as_slice()
-    };
-}
-
-static FILE_FUNCTIONS_PYTHON_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! file_functions_python {
-    () => {
-        FILE_FUNCTIONS_PYTHON_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("file_functions_python.yaml")))
-            .as_slice()
-    };
-}
-
-static FILE_FUNCTIONS_NATIVE_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! file_functions_native {
-    () => {
-        FILE_FUNCTIONS_NATIVE_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("file_functions_native.yaml")))
-            .as_slice()
-    };
-}
-
-/// Networking symbols accessor for sibling modules (e.g. active.rs).
-pub(crate) fn networking_symbols() -> &'static [String] {
-    networking_symbols!()
-}
-
-/// Network functions (Python) accessor for sibling modules.
-pub(crate) fn network_functions_python() -> &'static [String] {
-    network_functions_python!()
-}
-
-/// Network functions (Node.js) accessor for sibling modules.
-pub(crate) fn network_functions_nodejs() -> &'static [String] {
-    network_functions_nodejs!()
-}
-
-/// File functions (Python) accessor for sibling modules.
-pub(crate) fn file_functions_python() -> &'static [String] {
-    file_functions_python!()
-}
-
-/// File functions (Native) accessor for sibling modules.
-pub(crate) fn file_functions_native() -> &'static [String] {
-    file_functions_native!()
-}
-
-static SCRIPTING_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! scripting {
-    () => {
-        SCRIPTING_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("scripting.yaml")))
-            .as_slice()
-    };
-}
-
-static EXFILTRATION_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! exfiltration {
-    () => {
-        EXFILTRATION_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("exfiltration.yaml")))
-            .as_slice()
-    };
-}
-
-static CREDENTIAL_READERS_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! credential_readers {
-    () => {
-        CREDENTIAL_READERS_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("credential_readers.yaml")))
-            .as_slice()
-    };
-}
-
-static ANTI_TRACING_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! anti_tracing {
-    () => {
-        ANTI_TRACING_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("anti_tracing.yaml")))
-            .as_slice()
-    };
-}
-
-static INTERPROCESS_COMMUNICATION_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! interprocess_communication {
-    () => {
-        INTERPROCESS_COMMUNICATION_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("interprocess_communication.yaml")))
-            .as_slice()
-    };
-}
-
-static RECONNAISSANCE_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! reconnaissance {
-    () => {
-        RECONNAISSANCE_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("reconnaissance.yaml")))
-            .as_slice()
-    };
-}
-
-static CONTAINER_ESCAPE_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! container_escape {
-    () => {
-        CONTAINER_ESCAPE_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("container_escape.yaml")))
-            .as_slice()
-    };
-}
-
-static MANDATORY_ACCESS_CONTROL_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! mandatory_access_control {
-    () => {
-        MANDATORY_ACCESS_CONTROL_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("mandatory_access_control.yaml")))
-            .as_slice()
-    };
-}
-
-static FILESYSTEM_HARDENING_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! filesystem_hardening {
-    () => {
-        FILESYSTEM_HARDENING_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("filesystem_hardening.yaml")))
-            .as_slice()
-    };
-}
-
-static KERNEL_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! kernel {
-    () => {
-        KERNEL_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("kernel.yaml")))
-            .as_slice()
-    };
-}
-
-static DEBUG_INJECTION_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! debug_injection {
-    () => {
-        DEBUG_INJECTION_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("debug_injection.yaml")))
-            .as_slice()
-    };
-}
-
-static PRIVILEGE_ESCALATION_DATA: OnceLock<Vec<String>> = OnceLock::new();
-macro_rules! privilege_escalation {
-    () => {
-        PRIVILEGE_ESCALATION_DATA
-            .get_or_init(|| parse_yaml_list(include_str!("privilege_escalation.yaml")))
-            .as_slice()
-    };
-}
+// Threat behavior groups
+define_group!(scripting, SCRIPTING_DATA, "scripting.yaml");
+define_group!(exfiltration, EXFILTRATION_DATA, "exfiltration.yaml");
+define_group!(
+    credential_readers,
+    CREDENTIAL_READERS_DATA,
+    "credential_readers.yaml"
+);
+define_group!(anti_tracing, ANTI_TRACING_DATA, "anti_tracing.yaml");
+define_group!(
+    interprocess_communication,
+    INTERPROCESS_COMMUNICATION_DATA,
+    "interprocess_communication.yaml"
+);
+define_group!(reconnaissance, RECONNAISSANCE_DATA, "reconnaissance.yaml");
+define_group!(
+    container_escape,
+    CONTAINER_ESCAPE_DATA,
+    "container_escape.yaml"
+);
+define_group!(
+    mandatory_access_control,
+    MANDATORY_ACCESS_CONTROL_DATA,
+    "mandatory_access_control.yaml"
+);
+define_group!(
+    filesystem_hardening,
+    FILESYSTEM_HARDENING_DATA,
+    "filesystem_hardening.yaml"
+);
+define_group!(kernel, KERNEL_DATA, "kernel.yaml");
+define_group!(
+    debug_injection,
+    DEBUG_INJECTION_DATA,
+    "debug_injection.yaml"
+);
+define_group!(
+    privilege_escalation,
+    PRIVILEGE_ESCALATION_DATA,
+    "privilege_escalation.yaml"
+);
 
 /// Composite: all baseline warn categories combined.
 static WARN_BASELINE_DATA: OnceLock<Vec<String>> = OnceLock::new();
@@ -290,23 +155,43 @@ macro_rules! warn_baseline {
     () => {
         WARN_BASELINE_DATA
             .get_or_init(|| {
-                let mut v = Vec::new();
-                v.extend_from_slice(scripting!());
-                v.extend_from_slice(exfiltration!());
-                v.extend_from_slice(credential_readers!());
-                v.extend_from_slice(anti_tracing!());
-                v.extend_from_slice(interprocess_communication!());
-                v.extend_from_slice(reconnaissance!());
-                v.extend_from_slice(container_escape!());
-                v.extend_from_slice(mandatory_access_control!());
-                v.extend_from_slice(filesystem_hardening!());
-                v.extend_from_slice(kernel!());
-                v.extend_from_slice(debug_injection!());
-                v.extend_from_slice(privilege_escalation!());
-                v
+                [
+                    scripting!(),
+                    exfiltration!(),
+                    credential_readers!(),
+                    anti_tracing!(),
+                    interprocess_communication!(),
+                    reconnaissance!(),
+                    container_escape!(),
+                    mandatory_access_control!(),
+                    filesystem_hardening!(),
+                    kernel!(),
+                    debug_injection!(),
+                    privilege_escalation!(),
+                ]
+                .into_iter()
+                .flat_map(|s| s.iter().cloned())
+                .collect()
             })
             .as_slice()
     };
+}
+
+// Public accessors for sibling modules
+pub fn networking_symbols() -> &'static [String] {
+    networking_symbols!()
+}
+pub fn network_functions_python() -> &'static [String] {
+    network_functions_python!()
+}
+pub fn network_functions_nodejs() -> &'static [String] {
+    network_functions_nodejs!()
+}
+pub fn file_functions_python() -> &'static [String] {
+    file_functions_python!()
+}
+pub fn file_functions_native() -> &'static [String] {
+    file_functions_native!()
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +222,34 @@ macro_rules! rules {
         rules!(@push v; $($input)*);
         v
     }};
+}
+
+// ---------------------------------------------------------------------------
+// Shared preset sections — reusable deny lists for common security patterns.
+// ---------------------------------------------------------------------------
+
+/// Standard file deny patterns: credential files, keyrings, browser data, etc.
+fn hardened_files_deny() -> Vec<Rule> {
+    rules![
+        credential_files!(),
+        keyrings!(),
+        persistence_files!(),
+        browser_data!(),
+        shell_profiles!(),
+    ]
+}
+
+/// Standard envvar deny patterns: sensitive envvars + anti-tracing envvars.
+fn hardened_envvars_deny() -> Vec<Rule> {
+    rules![sensitive_envvars!(), anti_tracing_envvars!()]
+}
+
+/// Standard dangerous symbols warn section.
+fn warn_dangerous_symbols() -> AllowDenySection {
+    AllowDenySection {
+        warn: rules![dangerous_symbols!()],
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,9 +1370,9 @@ pub fn embedded_policy(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::compiled::{EnforcementMode, Runtime};
-    use crate::policy::engine::{PolicyAction, PolicyEngine};
-    use crate::policy::parser::parse_policy;
+    use crate::compiler::compiled::{EnforcementMode, Runtime};
+    use crate::compiler::engine::{PolicyAction, PolicyEngine};
+    use crate::compiler::parser::parse_policy;
 
     // =====================================================================
     // parse_yaml_list tests

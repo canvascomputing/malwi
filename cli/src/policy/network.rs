@@ -1,121 +1,111 @@
-//! Network policy evaluation — URL, domain, endpoint, and protocol checks.
+//! CLI-only network enrichment — extracts URLs and domains from command arguments.
+//!
+//! The core network evaluation happens in `Policy::check_event()` (shared with
+//! agent). This module handles the CLI-only fallback: when Exec/Bash events
+//! lack `NetworkInfo` (macOS SIP prevents agent injection), extract URLs and
+//! domains from command arguments and evaluate them against network rules.
 
-use super::active::{
-    decision_to_disposition, pick_stricter, pick_stricter_opt, ActivePolicy, EventDisposition,
-};
-use crate::policy::PolicyDecision;
-use malwi_intercept::{HookType, NetworkInfo, TraceEvent};
+use super::active::{pick_stricter, ActivePolicy, EventDisposition};
+use malwi_intercept::{HookType, NetworkInfo, Protocol, TraceEvent};
 
-/// Evaluate a policy decision and merge into the running strictest disposition.
-fn merge_decision(strictest: &mut Option<EventDisposition>, decision: PolicyDecision) {
-    let disp = decision_to_disposition(decision);
-    if disp.should_display() {
-        *strictest = Some(pick_stricter_opt(strictest.take(), disp));
+/// Convert a malwi_policy Outcome to EventDisposition.
+fn outcome_to_disp(outcome: malwi_policy::Outcome) -> EventDisposition {
+    match outcome {
+        malwi_policy::Outcome::Trace => EventDisposition::Display,
+        malwi_policy::Outcome::Block { rule, section } => EventDisposition::Block { rule, section },
+        malwi_policy::Outcome::Warn { rule, section } => EventDisposition::Warn { rule, section },
+        malwi_policy::Outcome::Suppress => EventDisposition::Suppress,
+        malwi_policy::Outcome::Hide => EventDisposition::Hide,
     }
 }
 
 impl ActivePolicy {
-    /// Evaluate networking policy (URL, domain, endpoint, protocol) against a trace event.
-    /// Takes the function-level disposition and returns the strictest combined result.
-    pub(super) fn evaluate_network_phase(
+    /// CLI-only: enrich network evaluation from command arguments.
+    ///
+    /// When events have `NetworkInfo` (agent-populated), `check_event()` already
+    /// evaluated them. This method handles the fallback for Exec/Bash events
+    /// without `NetworkInfo` (macOS SIP prevents agent injection).
+    pub(super) fn enrich_network_from_args(
         &self,
         event: &TraceEvent,
-        mut disp: EventDisposition,
+        disp: EventDisposition,
     ) -> EventDisposition {
-        // Prefer structured NetworkInfo when available (populated agent-side for
-        // native hooks like connect()). Bash/Exec events may lack NetworkInfo
-        // when the child runs without agent injection (macOS arm64e/SIP) — fall
-        // back to command argument parsing and text-based URL extraction.
-        if let Some(ref net) = event.network_info {
-            if let Some(net_disp) = self.evaluate_network_info(net) {
-                disp = pick_stricter(disp, net_disp);
-            }
-        } else {
-            let args: Vec<&str> = event
-                .arguments
-                .iter()
-                .filter_map(|a| a.display.as_deref())
-                .collect();
+        // Events with NetworkInfo were already evaluated by check_event()
+        if event.network_info.is_some() || !self.resolved.network.is_active() {
+            return disp;
+        }
 
-            // Command-aware extraction for known network tools (curl, nc, ssh, etc.)
-            // Handles bare domains (e.g., `curl evil.com`) that lack a scheme.
-            if matches!(event.hook_type, HookType::Bash | HookType::Exec) {
-                if let Some(net) = extract_network_target_from_command(&event.function, &args) {
-                    if let Some(net_disp) = self.evaluate_network_info(&net) {
-                        disp = pick_stricter(disp, net_disp);
+        let args: Vec<&str> = event
+            .arguments
+            .iter()
+            .filter_map(|a| a.display.as_deref())
+            .collect();
+
+        let mut result = disp;
+
+        // Command-aware extraction for known network tools (curl, nc, ssh, etc.)
+        if matches!(event.hook_type, HookType::Bash | HookType::Exec) {
+            if let Some(net) = extract_network_target_from_command(&event.function, &args) {
+                let outcome = self.resolved.network.match_connection(&net);
+                let net_disp = outcome_to_disp(outcome);
+                result = pick_stricter(result, net_disp);
+            }
+        }
+
+        // Text-based URL extraction from args (all hook types)
+        if !result.is_blocked() {
+            if let Some(net_disp) = self.evaluate_urls_from_args(&args) {
+                result = pick_stricter(result, net_disp);
+            }
+        }
+
+        // Direct domain matching from args (for bare hostnames in function args)
+        if !result.is_blocked() {
+            for arg in &args {
+                // Try as a bare domain (skip obvious non-domains)
+                let cleaned = arg.trim_matches(|c: char| c == '\'' || c == '"');
+                if cleaned.contains("://") {
+                    continue; // Already handled as URL above
+                }
+                if cleaned.contains('=') {
+                    // Skip key=value args, extract value
+                    if let Some((_, val)) = cleaned.split_once('=') {
+                        let val = val.trim_matches(|c: char| c == '\'' || c == '"');
+                        if looks_like_host(val) {
+                            let net = NetworkInfo {
+                                domain: Some(val.to_string()),
+                                ..Default::default()
+                            };
+                            let outcome = self.resolved.network.match_connection(&net);
+                            let net_disp = outcome_to_disp(outcome);
+                            if net_disp.should_display() {
+                                result = pick_stricter(result, net_disp);
+                                break;
+                            }
+                        }
                     }
                 }
             }
-
-            // Text-based URL extraction (both command and non-command paths)
-            if !disp.is_blocked() {
-                if let Some(http_disp) = self.evaluate_http_from_args(&args) {
-                    disp = pick_stricter(disp, http_disp);
-                }
-            }
-            if !disp.is_blocked() {
-                if let Some(net_disp) = self.evaluate_networking_from_args(&args) {
-                    disp = pick_stricter(disp, net_disp);
-                }
-            }
         }
 
-        disp
+        result
     }
 
-    /// Evaluate structured networking metadata against network policy.
-    ///
-    /// Two-step evaluation:
-    /// 1. Protocol check — broadest constraint (orthogonal to patterns)
-    /// 2. Unified pattern match — every pattern tried against all representations
-    fn evaluate_network_info(&self, info: &NetworkInfo) -> Option<EventDisposition> {
-        let mut s: Option<EventDisposition> = None;
-
-        // 1. Protocol — broadest constraint
-        if let Some(ref protocol) = info.protocol {
-            merge_decision(&mut s, self.engine.evaluate_protocol(protocol.as_str()));
-            if s.as_ref().is_some_and(|d| d.is_blocked()) {
-                return s;
-            }
-        }
-
-        // 2. Unified pattern match — build all available representations
-        let parsed = info
-            .url
-            .as_deref()
-            .filter(|u| u.contains("://"))
-            .and_then(ParsedUrl::parse);
-        let full_url = parsed.as_ref().map(|p| p.full_url());
-        let no_scheme_url = parsed.as_ref().map(|p| p.url_without_scheme());
-
-        let endpoint_host = info.domain.as_deref().or(info.ip.as_deref());
-        let endpoint = match (endpoint_host, info.port) {
-            (Some(host), Some(port)) => Some(format!("{}:{}", host, port)),
-            _ => None,
-        };
-
-        merge_decision(
-            &mut s,
-            self.engine.evaluate_network(
-                full_url.as_deref(),
-                no_scheme_url.as_deref(),
-                info.domain.as_deref(),
-                endpoint.as_deref(),
-            ),
-        );
-
-        s
-    }
-
-    /// Extract URL from arguments and evaluate against network URL rules.
-    pub(super) fn evaluate_http_from_args(&self, args: &[&str]) -> Option<EventDisposition> {
+    /// Extract URLs from argument strings and evaluate against network rules.
+    fn evaluate_urls_from_args(&self, args: &[&str]) -> Option<EventDisposition> {
         for arg in args {
             if let Some(url) = extract_url_from_arg(arg) {
                 if let Some(parsed) = ParsedUrl::parse(&url) {
-                    let full_url = parsed.full_url();
-                    let no_scheme_url = parsed.url_without_scheme();
-                    let decision = self.engine.evaluate_http_url(&full_url, &no_scheme_url);
-                    let disp = decision_to_disposition(decision);
+                    // Build a NetworkInfo from the parsed URL for evaluation
+                    let net = NetworkInfo {
+                        url: Some(parsed.full_url()),
+                        domain: Some(parsed.host.clone()),
+                        port: parsed.port,
+                        protocol: Some(Protocol::from(parsed.scheme.as_str())),
+                        ..Default::default()
+                    };
+                    let outcome = self.resolved.network.match_connection(&net);
+                    let disp = outcome_to_disp(outcome);
                     if disp.should_display() {
                         return Some(disp);
                     }
@@ -123,46 +113,6 @@ impl ActivePolicy {
             }
         }
         None
-    }
-
-    /// Extract HTTP metadata (URL, domain, protocol) from argument strings
-    /// and evaluate against networking policy sections.
-    ///
-    /// Evaluation order: Protocol → Domain → Endpoint (short-circuit on Block).
-    fn evaluate_networking_from_args(&self, args: &[&str]) -> Option<EventDisposition> {
-        let mut strictest: Option<EventDisposition> = None;
-
-        for arg in args {
-            if let Some(url) = extract_url_from_arg(arg) {
-                if let Some(parsed) = ParsedUrl::parse(&url) {
-                    // 1. Protocol
-                    let proto_decision = self.engine.evaluate_protocol(&parsed.scheme);
-                    let proto_disp = decision_to_disposition(proto_decision);
-                    strictest = Some(pick_stricter_opt(strictest, proto_disp));
-                    if strictest.as_ref().is_some_and(|d| d.is_blocked()) {
-                        return strictest.filter(|d| d.should_display());
-                    }
-
-                    // 2. Domain
-                    let domain_decision = self.engine.evaluate_domain(&parsed.host);
-                    let domain_disp = decision_to_disposition(domain_decision);
-                    strictest = Some(pick_stricter_opt(strictest, domain_disp));
-                    if strictest.as_ref().is_some_and(|d| d.is_blocked()) {
-                        return strictest.filter(|d| d.should_display());
-                    }
-
-                    // 3. Endpoint (host:port)
-                    if let Some(port) = parsed.port {
-                        let ep_decision = self.engine.evaluate_endpoint(&parsed.host, port);
-                        let ep_disp = decision_to_disposition(ep_decision);
-                        strictest = Some(pick_stricter_opt(strictest, ep_disp));
-                    }
-                }
-            }
-        }
-
-        // Only return if we found a non-Suppress result
-        strictest.filter(|d| d.should_display())
     }
 }
 
@@ -671,6 +621,8 @@ mod tests {
         let engine =
             PolicyEngine::from_yaml("version: 1\nnetwork:\n  protocols: [https]\n").unwrap();
         let policy = ActivePolicy::new(engine);
+
+        // Verify resolved policy has protocols
 
         let event = make_trace_event(
             HookType::Python,

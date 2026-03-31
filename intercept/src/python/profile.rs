@@ -369,15 +369,15 @@ unsafe fn handle_envvar_access(frame: *mut c_void) -> c_int {
     if let Some(agent) = crate::Agent::get() {
         if let Some(decision) = agent.evaluate_policy(&event) {
             match decision {
-                malwi_protocol::agent_policy::AgentDecision::Block { .. } => {
+                malwi_policy::Outcome::Block { .. } => {
                     let _ = agent.send_event(event);
                     raise_permission_error();
                     return -1;
                 }
-                malwi_protocol::agent_policy::AgentDecision::Hide => {
+                malwi_policy::Outcome::Hide => {
                     return -1; // Hidden, not sent
                 }
-                malwi_protocol::agent_policy::AgentDecision::Suppress => {
+                malwi_policy::Outcome::Suppress => {
                     return 0; // Suppressed, not sent
                 }
                 _ => {

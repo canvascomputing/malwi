@@ -1,7 +1,5 @@
 //! Common types shared between malwi-trace CLI and agent.
 
-pub mod agent_config;
-pub mod agent_policy;
 pub mod event;
 pub mod exec;
 pub mod glob;

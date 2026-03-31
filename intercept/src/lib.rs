@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use malwi_protocol::*;
 pub use malwi_protocol::{event, glob, message, platform, protocol, wire};
 
+// Re-export policy crate for agent-side policy evaluation.
+pub use malwi_policy;
+
 pub(crate) mod ffi;
 
 pub mod backtrace;

@@ -891,7 +891,7 @@ async fn spawn_and_trace(config: TraceConfig, program: Vec<String>) -> Result<()
     let file_config = if let Some(ref policy) = active_policy {
         policy.to_agent_config(config.stack_trace)
     } else {
-        malwi_intercept::agent_config::AgentConfig {
+        malwi_policy::AgentConfig {
             hooks: hook_configs.clone(),
             ..Default::default()
         }

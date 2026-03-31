@@ -57,27 +57,49 @@ The agent library is embedded in the CLI binary at compile time (`include_bytes!
 
 | Crate | Path | What it does |
 |-------|------|-------------|
-| `malwi` | `cli/` | CLI binary: spawns processes, receives events, policy engine, display |
+| `malwi` | `cli/` | CLI binary: spawns processes, receives events, display rendering, CLI-only enrichment |
+| `malwi-policy` | `policy/` | Policy engine: compiler, evaluator, templates, types. Single source of truth for policy evaluation — used by both CLI and agent |
 | `malwi-intercept` | `intercept/` | Agent runtime: hooks for all 4 runtimes + exec monitoring. Re-exports malwi-protocol |
-| `malwi-protocol` | `protocol/` | Shared types: `TraceEvent`, `HookType`, binary codec, glob matching |
+| `malwi-protocol` | `protocol/` | Wire format: `TraceEvent`, `HookType`, binary codec, YAML parser |
 | `malwi-agent` | `agent/` | Thin cdylib: constructor statics + `pub use malwi_intercept::*` |
 
 ## Key Directories
 
 ```
+policy/src/                 # malwi-policy: the single policy engine
+├── lib.rs                  # Public API: Policy, Outcome, compile_policy(), etc.
+├── resolved.rs             # Policy, RuleSet, NetworkRuleSet, Rule, NetworkRule, Decision
+├── eval.rs                 # Policy::check_event() — the unified evaluator (agent + CLI)
+├── decision.rs             # Outcome enum, severity, pick_stricter, combine_outcomes
+├── config.rs               # AgentConfig: hooks + Policy YAML serialization
+├── glob.rs                 # Glob pattern matching (matches_glob, matches_glob_ci)
+├── util.rs                 # Shared: NETWORKING_SYMBOLS, extract_file_path, to_tilde_path
+├── compiler/               # YAML → CompiledPolicy → Policy
+│   ├── compile.rs          # compile_policy_yaml() → CompiledPolicy
+│   ├── resolve.rs          # prioritize_and_resolve() → Policy (specificity sorting)
+│   ├── compiled.rs         # Intermediate: CompiledPolicy, CompiledSection, SectionKey
+│   ├── engine.rs           # Legacy PolicyEngine (used by CLI for hook derivation)
+│   ├── pattern.rs          # CompiledPattern, glob_to_regex, pattern_specificity
+│   ├── parser.rs           # YAML → PolicyFile
+│   ├── validate.rs         # Policy validation
+│   └── error.rs            # PolicyError, ValidationError, PatternError
+└── templates/              # Policy presets + shared pattern groups
+    ├── mod.rs              # define_group! macro factory, rules! macro, preset functions
+    ├── taxonomy.rs         # Command taxonomy: Category enum, flat-file parser
+    ├── commands_*.yaml     # Per-category command lists (shared + OS-specific via #[cfg])
+    └── *.yaml              # Pattern groups (credential_files, networking_symbols, etc.)
+
 cli/src/
 ├── main.rs                 # Entry point, arg parsing, output formatting (text + JSON NDJSON)
 ├── spawn.rs                # Process spawning with agent injection
-├── policy/                 # Policy engine + evaluation
-│   ├── engine.rs           # PolicyEngine: compile YAML → match events → allow/deny/warn
-│   ├── active.rs           # ActivePolicy: evaluate TraceEvents against compiled rules
-│   ├── analysis.rs         # 7-engine command triage (safe/build/text/package/fileop/threat)
-│   ├── detect.rs           # Auto-detect policy from command (npm install → npm-install policy)
-│   └── templates/          # Policy presets + shared pattern groups
-│       ├── mod.rs          # rules! macro, group macros, preset functions, YAML serializer
-│       ├── taxonomy.rs     # Command taxonomy: Category enum, flat-file parser, singleton
-│       ├── commands_*.yaml # Per-category command lists (shared + OS-specific via #[cfg])
-│       └── *.yaml          # Pattern groups (credential_files, networking_symbols, etc.)
+├── policy/                 # CLI-specific policy wrappers + enrichment
+│   ├── active.rs           # ActivePolicy: wraps Policy, adds CLI enrichment + hook derivation
+│   ├── network.rs          # CLI-only: extract URLs/domains from command args
+│   ├── files.rs            # CLI-only: normalize_path() utility
+│   ├── commands.rs         # CLI-only: 7-engine command analysis escalation
+│   ├── analysis.rs         # Deterministic command triage engine
+│   ├── config.rs           # Policy file management (~/.config/malwi/policies/)
+│   └── detect.rs           # Auto-detect policy from command (npm install → npm-install)
 
 intercept/src/
 ├── agent/                  # Agent lifecycle (init → config file → ready → tracing)
@@ -93,14 +115,12 @@ intercept/src/
 └── tracing/                # Shared utilities: filters, event builder, timestamps, fork-safe mutex
 
 protocol/src/
-├── event.rs                # TraceEvent, EventType, Argument, NetworkInfo, RuntimeStack
+├── event.rs                # TraceEvent, EventType, Argument, NetworkInfo, HookConfig
 ├── protocol.rs             # ModuleInfo, ReadyRequest, RuntimeInfoRequest, ShutdownRequest
 ├── message.rs              # AgentMessage enum, DisplayEvent, Disposition
-├── agent_config.rs         # AgentConfig: hook list + policy sections (YAML serializable)
-├── agent_policy.rs         # AgentPolicy: agent-side glob-based policy evaluation
 ├── yaml.rs                 # Minimal YAML parser/writer (zero deps, shared CLI+agent)
 ├── wire.rs                 # Length-prefixed binary codec (agent→CLI only)
-├── glob.rs                 # Glob pattern matching
+├── glob.rs                 # Glob pattern matching (protocol-local copy)
 ├── exec.rs                 # Exec/spawn platform types
 └── platform.rs             # Platform-specific constants
 ```
@@ -138,9 +158,15 @@ Node.js tracing uses **pure frida-gum hooks** — no NODE_OPTIONS, no JS wrapper
 
 Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`, `functions`. Each section has `allow`/`deny`/`warn`/`hide` lists with glob patterns. The CLI auto-detects policies per command (e.g., `npm install` → `npm-install` policy) or uses `~/.config/malwi/policies/default.yaml`.
 
-**Agent-side policy evaluation**: The CLI compiles the policy into an `AgentConfig` (hooks + per-section glob lists), writes it to a temp YAML file, and passes its path via `MALWI_CONFIG`. The agent reads the config at init, compiles glob patterns into an `AgentPolicy`, and evaluates events locally — no TCP round-trip needed. Evaluation order: hide → allow → deny → warn → log → implicit deny → suppress/trace (default). Monitoring-only sections (no allow/deny patterns) suppress unmatched events.
+**Unified policy engine** (`malwi-policy` crate): The CLI compiles YAML into a `Policy` via `compile_policy()`. This resolves all allow/deny conflicts at compile time using pattern specificity, producing priority-ordered rule lists. Both agent and CLI use the same `Policy::check_event()` evaluator — identical decisions by construction.
 
-**Hide enforcement**: Hide patterns in the policy config cause the agent to return fake values from hooks (NULL for getenv, -1/ENOENT for stat/access). Evaluated agent-side via `AgentPolicy`.
+**Compilation pipeline**: `YAML → compile_policy_yaml() → CompiledPolicy → prioritize_and_resolve() → Policy`. Simple sections (functions, commands, files, envvars) use pre-sorted `RuleSet` where first match = correct answer. Network section uses `NetworkRuleSet` with multi-representation matching (URL × domain × endpoint, runtime specificity).
+
+**Agent-side evaluation**: The CLI writes `AgentConfig` (hooks + `Policy`) to a YAML file, passes the path via `MALWI_CONFIG`. The agent reads it, installs hooks, and evaluates events via `Policy::check_event()` — the same code the CLI uses. No legacy intermediary formats.
+
+**CLI evaluation**: `ActivePolicy::evaluate_trace()` delegates to `Policy::check_event()`, then adds CLI-only enrichment: network extraction from command args (for events without `NetworkInfo`) and 7-engine command analysis escalation.
+
+**Hide enforcement**: Hide patterns in the policy config cause the agent to return fake values from hooks (NULL for getenv, -1/ENOENT for stat/access). Evaluated via `Policy::check_event()`.
 
 **Block enforcement**: Deny patterns cause the agent to block the function call synchronously (return -1/EACCES for native, raise PermissionError for Python, return 0 for Node.js). The blocked call never reaches the OS.
 
@@ -313,16 +339,17 @@ TraceEvent {
 }
 ```
 
-## Agent-Side Policy Decisions
+## Policy Evaluation Outcome
 
 ```rust
-// protocol/src/agent_policy.rs — evaluated locally in the agent
-enum AgentDecision {
-    Trace,                              // Display normally
+// policy/src/decision.rs — returned by Policy::check_event()
+// Used by both agent (enforcement) and CLI (display rendering)
+enum Outcome {
+    Trace,                              // Display normally (log match)
     Block { rule: String, section: String },  // Return error from hook + display "denied"
     Warn { rule: String, section: String },   // Allow but display "warning"
     Hide,                               // Fake return value (NULL/ENOENT), don't display
-    Suppress,                           // Don't display, don't block
+    Suppress,                           // Don't display, don't block (allowed)
 }
 ```
 

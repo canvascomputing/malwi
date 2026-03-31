@@ -13,6 +13,7 @@ libc.workspace = true
 log.workspace = true
 env_logger.workspace = true
 anyhow.workspace = true
+malwi-policy.workspace = true
 malwi-protocol.workspace = true
 
 [build-dependencies]

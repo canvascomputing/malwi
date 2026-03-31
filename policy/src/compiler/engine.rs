@@ -1,8 +1,8 @@
+use super::compile::compile_policy_yaml;
 use super::compiled::{
     Category, CompiledNetworkRule, CompiledPolicy, CompiledRule, Constraint, ConstraintKind,
     EnforcementMode, Runtime, SectionKey,
 };
-use super::compiler::compile_policy_yaml;
 use super::error::Result;
 use super::pattern::CompiledPattern;
 
@@ -83,7 +83,7 @@ impl PolicyEngine {
         yaml: &str,
         resolver: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self> {
-        let policy = super::compiler::compile_policy_yaml_with_includes(yaml, resolver)?;
+        let policy = super::compile::compile_policy_yaml_with_includes(yaml, resolver)?;
         Ok(Self::new(policy))
     }
 

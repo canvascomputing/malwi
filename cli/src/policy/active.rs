@@ -14,7 +14,7 @@
 //!
 //! Phase-specific evaluation methods (network, files, commands) are in sibling modules.
 
-use crate::policy::{Category, EnforcementMode, PolicyDecision, PolicyEngine, Runtime, SectionKey};
+use crate::policy::{Category, EnforcementMode, PolicyEngine, Runtime, SectionKey};
 use malwi_intercept::{HookConfig, HookType, TraceEvent};
 
 /// Maximum argument count for native function hooks (covers most libc signatures).
@@ -51,22 +51,15 @@ impl EventDisposition {
 
 /// Active policy loaded and ready for evaluation.
 pub struct ActivePolicy {
+    /// Compiled engine — used for hook derivation.
     pub(super) engine: PolicyEngine,
-    /// Cache: (hook_type discriminant, function_name) → function-level disposition only.
-    /// Arg-dependent phases (network, file, command) always run regardless of cache hits.
-    pub(super) fn_cache:
-        std::cell::RefCell<std::collections::HashMap<(u8, String), EventDisposition>>,
-    /// Whether the policy has any network allow rules (Http, Domains, or Endpoints).
-    /// Computed once at construction time since the policy is immutable after load.
+    /// Resolved policy — used for evaluation (shared with agent) and agent config delivery.
+    pub(super) resolved: malwi_policy::Policy,
+    /// Whether the policy has any network allow rules.
     has_network_allow: bool,
-    /// Whether the policy has any network rules at all (deny, allow, warn, or protocols).
-    /// Broader than `has_network_allow` — true for deny-only policies like
-    /// `network: deny: ["*.evil.com"]`. Used to auto-emit native networking hooks
-    /// and to defer native networking symbols to the network phase.
+    /// Whether the policy has any network rules at all.
     has_network_rules: bool,
-    /// Whether the policy has any commands allow rules (implicit deny for unlisted).
-    /// When true, a wildcard `*` exec filter is emitted so the agent intercepts
-    /// all spawned commands, letting the CLI evaluate them against the allowlist.
+    /// Whether the policy has any commands allow rules.
     has_commands_allow: bool,
 }
 
@@ -78,9 +71,10 @@ impl ActivePolicy {
         let has_network_allow = compute_has_network_allow(&engine);
         let has_network_rules = compute_has_network_rules(&engine);
         let has_commands_allow = compute_has_commands_allow(&engine);
+        let resolved = malwi_policy::prioritize_and_resolve(engine.policy());
         Self {
             engine,
-            fn_cache: Default::default(),
+            resolved,
             has_network_allow,
             has_network_rules,
             has_commands_allow,
@@ -107,7 +101,7 @@ impl ActivePolicy {
     /// Load the built-in default security policy.
     #[cfg(test)]
     pub fn default_security() -> anyhow::Result<Self> {
-        let engine = PolicyEngine::from_yaml(&super::templates::DEFAULT_SECURITY_YAML)
+        let engine = PolicyEngine::from_yaml(&malwi_policy::templates::DEFAULT_SECURITY_YAML)
             .map_err(|e| anyhow::anyhow!("Failed to parse default security policy: {}", e))?;
         Ok(Self::new(engine))
     }
@@ -115,7 +109,7 @@ impl ActivePolicy {
 
 /// Resolve an `includes:` name to a YAML string using the embedded policy templates.
 fn include_resolver(name: &str) -> Option<String> {
-    super::templates::embedded_policy(name)
+    malwi_policy::templates::embedded_policy(name)
 }
 
 /// Check if a policy engine has any network allow rules (unified Network section).
@@ -170,120 +164,16 @@ impl ActivePolicy {
     ///
     /// Extracts hooks (via `derive_hook_configs`) and flattens compiled policy
     /// sections into glob pattern lists that the agent can evaluate locally.
-    pub fn to_agent_config(
-        &self,
-        capture_stack: bool,
-    ) -> malwi_intercept::agent_config::AgentConfig {
+    /// Convert this policy to an `AgentConfig` for file-based delivery.
+    ///
+    /// Uses the resolved policy (pre-sorted rules with full network pattern
+    /// fidelity) paired with derived hook configs.
+    pub fn to_agent_config(&self, capture_stack: bool) -> malwi_policy::AgentConfig {
         let hooks = self.derive_hook_configs(capture_stack);
-        let policy = self.extract_policy_sections();
-
-        malwi_intercept::agent_config::AgentConfig { hooks, policy }
-    }
-
-    /// Extract policy sections as flat glob pattern lists for agent-side evaluation.
-    fn extract_policy_sections(&self) -> malwi_intercept::agent_config::AgentPolicySections {
-        let mut sections = malwi_intercept::agent_config::AgentPolicySections::default();
-
-        for (key, section) in self.engine.policy().iter_sections() {
-            if section.mode == EnforcementMode::Noop {
-                continue;
-            }
-
-            match key.category {
-                Category::Network => {
-                    // Network rules use CompiledNetworkRule — extract original patterns
-                    for rule in &section.network_allow_rules {
-                        sections
-                            .network
-                            .allow
-                            .push(rule.domain_pattern.original().to_string());
-                    }
-                    for rule in &section.network_deny_rules {
-                        match rule.mode {
-                            EnforcementMode::Warn => {
-                                sections
-                                    .network
-                                    .warn
-                                    .push(rule.domain_pattern.original().to_string());
-                            }
-                            EnforcementMode::Log => {
-                                sections
-                                    .network
-                                    .log
-                                    .push(rule.domain_pattern.original().to_string());
-                            }
-                            EnforcementMode::Hide => {
-                                sections
-                                    .network
-                                    .hide
-                                    .push(rule.domain_pattern.original().to_string());
-                            }
-                            _ => {
-                                sections
-                                    .network
-                                    .deny
-                                    .push(rule.domain_pattern.original().to_string());
-                            }
-                        }
-                    }
-                }
-                Category::Execution => {
-                    extract_section_patterns(section, &mut sections.commands, true);
-                }
-                Category::Files => {
-                    extract_section_patterns(section, &mut sections.files, true);
-                }
-                Category::EnvVars => {
-                    extract_section_patterns(section, &mut sections.envvars, true);
-                }
-                Category::Functions => {
-                    // Only merge native (runtime=None) allow rules into the agent's
-                    // functions section. Runtime-specific allow rules (e.g., nodejs
-                    // "dns.lookup") would cause implicit deny for native functions
-                    // like "open" that share the merged section.
-                    let include_allow = key.runtime.is_none();
-                    extract_section_patterns(section, &mut sections.functions, include_allow);
-                }
-                _ => {}
-            }
+        malwi_policy::AgentConfig {
+            hooks,
+            policy: self.resolved.clone(),
         }
-
-        sections
-    }
-}
-
-/// Extract patterns from a CompiledSection into a PolicySection.
-/// When `include_allow` is false, allow rules are skipped — used for
-/// runtime-specific function sections that shouldn't create implicit deny
-/// for native functions in the merged functions section.
-fn extract_section_patterns(
-    compiled: &super::compiled::CompiledSection,
-    out: &mut malwi_intercept::agent_config::PolicySection,
-    include_allow: bool,
-) {
-    if include_allow {
-        for rule in &compiled.allow_rules {
-            out.allow.push(rule.pattern.original().to_string());
-        }
-    }
-    for rule in &compiled.deny_rules {
-        match rule.mode {
-            EnforcementMode::Warn => {
-                out.warn.push(rule.pattern.original().to_string());
-            }
-            EnforcementMode::Log => {
-                out.log.push(rule.pattern.original().to_string());
-            }
-            EnforcementMode::Hide => {
-                out.hide.push(rule.pattern.original().to_string());
-            }
-            _ => {
-                out.deny.push(rule.pattern.original().to_string());
-            }
-        }
-    }
-    for rule in &compiled.hide_rules {
-        out.hide.push(rule.pattern.original().to_string());
     }
 }
 
@@ -431,14 +321,14 @@ impl ActivePolicy {
                     // Warn/log-only sections use runtime hooks to avoid frida-gum
                     // interference with V8/libc++ during Node.js startup.
                     if section.has_blocking_rules() {
-                        for sym in super::templates::file_functions_native() {
+                        for sym in malwi_policy::templates::file_functions_native() {
                             emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
                         }
                     }
                     // Python file functions — only bare names (no dots).
                     // Module-qualified names like "builtins.open" trigger eager C hook
                     // resolution in the agent, which can interfere with Python startup.
-                    for func in super::templates::file_functions_python() {
+                    for func in malwi_policy::templates::file_functions_python() {
                         if !func.contains('.') {
                             emit_function_hook(
                                 Some(Runtime::Python),
@@ -451,7 +341,7 @@ impl ActivePolicy {
                     }
                     // Node.js fs module (prefix → wildcard)
                     let node_pattern =
-                        format!("{}*", super::templates::taxonomy::NODEJS_FILE_PREFIX);
+                        format!("{}*", malwi_policy::templates::taxonomy::NODEJS_FILE_PREFIX);
                     emit_function_hook(
                         Some(Runtime::Node),
                         &node_pattern,
@@ -514,7 +404,7 @@ impl ActivePolicy {
         // These functions aren't in any deny/warn list, but the network phase
         // needs to see them fire to evaluate URLs/hosts against the allowlist.
         if self.has_network_allow {
-            for func in super::templates::network_functions_python() {
+            for func in malwi_policy::templates::network_functions_python() {
                 emit_function_hook(
                     Some(Runtime::Python),
                     func,
@@ -523,7 +413,7 @@ impl ActivePolicy {
                     &mut seen,
                 );
             }
-            for func in super::templates::network_functions_nodejs() {
+            for func in malwi_policy::templates::network_functions_nodejs() {
                 emit_function_hook(
                     Some(Runtime::Node),
                     func,
@@ -539,7 +429,7 @@ impl ActivePolicy {
         // evaluates against deny/allow patterns. SeenSet prevents duplicates
         // when symbols are already hooked from the symbols: section.
         if self.has_network_rules {
-            for sym in super::templates::networking_symbols() {
+            for sym in malwi_policy::templates::networking_symbols() {
                 emit_function_hook(None, sym, capture_stack, &mut configs, &mut seen);
             }
         }
@@ -551,172 +441,41 @@ impl ActivePolicy {
 // ── Evaluation Pipeline ────────────────────────────────────────
 
 impl ActivePolicy {
-    /// Evaluate a trace event against the full policy pipeline.
+    /// Evaluate a trace event against the policy.
     ///
-    /// Four sequential phases:
-    /// 1. Function-level — is this function allowed/denied? (cached for Python/Node/Native)
-    /// 2. Network — URL, domain, endpoint, protocol checks (from NetworkInfo or args)
-    /// 3. File — file path extraction and evaluation against files: rules
-    /// 4. Command — deterministic command triage (Exec/Bash only)
-    ///
-    /// Returns the strictest disposition across all phases.
+    /// Delegates core evaluation to `Policy::check_event()` (the unified
+    /// evaluator shared with the agent), then applies CLI-only enrichment:
+    /// - Network extraction from command args (Exec/Bash without NetworkInfo)
+    /// - Command analysis escalation (7-engine triage)
     pub fn evaluate_trace(&self, event: &TraceEvent) -> EventDisposition {
-        // Phase 1: Function-level (cached for Python/Node/Native)
-        let mut disp = self.evaluate_function_phase(event);
+        // Unified evaluator — same code the agent runs
+        let outcome = self.resolved.check_event(event);
+        let mut disp = outcome_to_disposition(outcome);
 
-        // Native networking symbols are low-level plumbing. When the policy has
-        // network rules (deny, allow, or protocols), don't block on the symbol
-        // name — let the network phase decide based on the actual destination.
-        // Even socket() is deferred because blocking it prevents subsequent
-        // connect() calls from being evaluated by the network phase.
-        let deferred_to_network = disp.is_blocked()
-            && self.has_network_rules
-            && matches!(event.hook_type, HookType::Native)
-            && is_networking_symbol(&event.function);
-        if deferred_to_network {
-            disp = EventDisposition::Display;
+        // CLI-only: network enrichment for Exec/Bash events without NetworkInfo.
+        // The agent populates NetworkInfo for native hooks (connect, etc.), but
+        // Exec/Bash events may lack it when the child runs without agent injection
+        // (macOS SIP). Extract URLs/hosts from command args and re-evaluate.
+        if !disp.is_blocked() {
+            disp = self.enrich_network_from_args(event, disp);
         }
 
-        // Phase 2: Network evaluation
-        let mut disp = self.evaluate_network_phase(event, disp);
-
-        // We deferred to the network phase, but it blocked because domain
-        // allow rules didn't match. If we only have a raw IP (no domain or
-        // URL), that's expected — domain rules *can't* match a bare IP.
-        // Don't block in that case; the event simply has no domain context.
-        // Only applies when allow rules exist (implicit deny); explicit deny
-        // rules (e.g. port-based) can match bare IPs and should stick.
-        if deferred_to_network && disp.is_blocked() && self.has_network_allow {
-            if let Some(ref net) = event.network_info {
-                if !has_hostname_context(net) {
-                    disp = EventDisposition::Display;
-                }
-            }
-        }
-
-        // Phase 2.5: Envvar cross-evaluation for native getenv/secure_getenv.
-        // When a native hook fires for getenv, extract the envvar name from arg0
-        // and evaluate it against the envvars: section (which may produce Hide).
-        let disp = if matches!(event.hook_type, HookType::Native) {
-            let func = event.function.as_str();
-            if func == "getenv" || func == "secure_getenv" {
-                if let Some(name) = event.arguments.first().and_then(|a| a.display.as_deref()) {
-                    let envvar_decision = self.engine.evaluate_envvar(name);
-                    let envvar_disp = decision_to_disposition(envvar_decision);
-                    pick_stricter(disp, envvar_disp)
-                } else {
-                    disp
-                }
-            } else {
-                disp
-            }
-        } else {
-            disp
-        };
-
-        // Phase 3: File access evaluation
-        let disp = self.evaluate_file_phase(event, disp);
-
-        // Phase 4: Command triage (no-op for non-Exec/Bash)
-        self.evaluate_command_phase(event, disp)
+        // CLI-only: command analysis escalation (7-engine triage).
+        // Deterministic heuristic layer that escalates suspicious commands to Warn.
+        self.escalate_suspicious_command(event, disp)
     }
-
-    /// Phase 1: Evaluate function name against policy rules.
-    ///
-    /// Caches results for Python/Node/Native (deterministic per function name).
-    /// Exec/Bash/EnvVar are not cached — their names vary per call.
-    fn evaluate_function_phase(&self, event: &TraceEvent) -> EventDisposition {
-        let func = &event.function;
-
-        // Cache lookup (Python/Node/Native only)
-        if !matches!(
-            event.hook_type,
-            HookType::Exec | HookType::Bash | HookType::EnvVar
-        ) {
-            let key = (hook_type_discriminant(&event.hook_type), func.to_string());
-            if let Some(cached) = self.fn_cache.borrow().get(&key) {
-                return cached.clone();
-            }
-            let disp = self.compute_function_decision(event);
-            self.fn_cache.borrow_mut().insert(key, disp.clone());
-            return disp;
-        }
-
-        self.compute_function_decision(event)
-    }
-
-    /// Dispatch to the appropriate engine evaluation method based on hook type.
-    /// Returns the raw function-level disposition (no caching, no phase chaining).
-    fn compute_function_decision(&self, event: &TraceEvent) -> EventDisposition {
-        let func = &event.function;
-        let args: Vec<&str> = event
-            .arguments
-            .iter()
-            .filter_map(|a| a.display.as_deref())
-            .collect();
-
-        let decision = match event.hook_type {
-            HookType::Python => self.engine.evaluate_function(Runtime::Python, func, &args),
-            HookType::Nodejs => self.engine.evaluate_function(Runtime::Node, func, &args),
-            HookType::Native => self.engine.evaluate_native_function(func, &args),
-            HookType::Exec | HookType::Bash => {
-                let full_cmd = unwrap_shell_exec_args(func, &args).unwrap_or_else(|| {
-                    let cmd_args: Vec<&str> = args.get(1..).unwrap_or(&[]).to_vec();
-                    if cmd_args.is_empty() {
-                        func.to_string()
-                    } else {
-                        format!("{} {}", func, cmd_args.join(" "))
-                    }
-                });
-                self.engine.evaluate_execution(&full_cmd)
-            }
-            HookType::EnvVar => self.engine.evaluate_envvar(func),
-        };
-
-        decision_to_disposition(decision)
-    }
-}
-
-/// Check if a native function name is a networking symbol.
-/// Uses `networking_symbols.yaml` via the group macro accessor as single source of truth.
-fn is_networking_symbol(name: &str) -> bool {
-    super::templates::networking_symbols()
-        .iter()
-        .any(|s| s == name)
-}
-
-/// Check if NetworkInfo has hostname context (URL or domain).
-/// IP-only events can't match hostname-based allow rules, so blocking them
-/// based on "no allow match" would be incorrect.
-pub(super) fn has_hostname_context(info: &malwi_intercept::NetworkInfo) -> bool {
-    info.url.is_some() || info.domain.is_some()
 }
 
 // ── Disposition Utilities ──────────────────────────────────────
 
-/// Convert a PolicyDecision to an EventDisposition.
-pub(super) fn decision_to_disposition(decision: PolicyDecision) -> EventDisposition {
-    if decision.is_allowed() {
-        return EventDisposition::Suppress;
-    }
-
-    if decision.is_hidden() {
-        return EventDisposition::Hide;
-    }
-
-    // Denied — disposition depends on enforcement mode
-    let rule = decision
-        .matched_rule
-        .unwrap_or_else(|| "(implicit)".to_string());
-    let section = decision.section;
-
-    match decision.mode {
-        EnforcementMode::Block => EventDisposition::Block { rule, section },
-        EnforcementMode::Review => EventDisposition::Warn { rule, section },
-        EnforcementMode::Warn => EventDisposition::Warn { rule, section },
-        EnforcementMode::Log => EventDisposition::Display,
-        EnforcementMode::Noop => EventDisposition::Suppress,
-        EnforcementMode::Hide => EventDisposition::Hide,
+/// Convert a malwi_policy Outcome to an EventDisposition.
+fn outcome_to_disposition(outcome: malwi_policy::Outcome) -> EventDisposition {
+    match outcome {
+        malwi_policy::Outcome::Trace => EventDisposition::Display,
+        malwi_policy::Outcome::Block { rule, section } => EventDisposition::Block { rule, section },
+        malwi_policy::Outcome::Warn { rule, section } => EventDisposition::Warn { rule, section },
+        malwi_policy::Outcome::Suppress => EventDisposition::Suppress,
+        malwi_policy::Outcome::Hide => EventDisposition::Hide,
     }
 }
 
@@ -748,50 +507,6 @@ pub(super) fn pick_stricter_opt(
     match current {
         Some(c) => pick_stricter(c, new),
         None => new,
-    }
-}
-
-// ── Shell Utilities ────────────────────────────────────────────
-
-/// Unwrap shell wrappers in exec event arguments for policy evaluation.
-/// Given func="sh" and args=["sh", "-c", "curl -s https://evil.com"],
-/// returns Some("curl -s https://evil.com") with basename applied to the command.
-fn unwrap_shell_exec_args(func: &str, args: &[&str]) -> Option<String> {
-    const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
-
-    let shell_basename = std::path::Path::new(func).file_name()?.to_str()?;
-    if !SHELLS.contains(&shell_basename) {
-        return None;
-    }
-    let c_idx = args.iter().position(|a| *a == "-c")?;
-    let cmd_str = args.get(c_idx + 1)?;
-    if cmd_str.is_empty() {
-        return None;
-    }
-    // Replace the command path with its basename, keep the rest
-    let first_space = cmd_str.find(char::is_whitespace);
-    let cmd_path = match first_space {
-        Some(idx) => &cmd_str[..idx],
-        None => cmd_str,
-    };
-    let cmd_basename = std::path::Path::new(cmd_path).file_name()?.to_str()?;
-    match first_space {
-        Some(idx) => Some(format!("{}{}", cmd_basename, &cmd_str[idx..])),
-        None => Some(cmd_basename.to_string()),
-    }
-}
-
-// ── Internal Utilities ─────────────────────────────────────────
-
-/// Compact discriminant for HookType used as cache key.
-fn hook_type_discriminant(ht: &HookType) -> u8 {
-    match ht {
-        HookType::Native => 0,
-        HookType::Python => 1,
-        HookType::Nodejs => 2,
-        HookType::Exec => 3,
-        HookType::EnvVar => 4,
-        HookType::Bash => 5,
     }
 }
 
@@ -1230,7 +945,7 @@ commands:
 
     fn pypi_install_policy() -> ActivePolicy {
         ActivePolicy::from_yaml(
-            &crate::policy::templates::embedded_policy("pypi-install")
+            &malwi_policy::templates::embedded_policy("pypi-install")
                 .expect("pypi-install policy must exist"),
         )
         .expect("pypi-install policy must parse")
@@ -1491,8 +1206,8 @@ files:
         .unwrap();
 
         let configs = policy.derive_hook_configs(false);
-        let file_native = crate::policy::templates::file_functions_native();
-        let file_py = crate::policy::templates::file_functions_python();
+        let file_native = malwi_policy::templates::file_functions_native();
+        let file_py = malwi_policy::templates::file_functions_python();
 
         // All native file syscalls should be present
         for sym in file_native {
@@ -1515,7 +1230,7 @@ files:
             );
         }
         // Node.js fs wildcard
-        let node_prefix = crate::policy::templates::taxonomy::NODEJS_FILE_PREFIX;
+        let node_prefix = malwi_policy::templates::taxonomy::NODEJS_FILE_PREFIX;
         assert!(configs
             .iter()
             .any(|c| matches!(c.hook_type, HookType::Nodejs) && c.symbol.starts_with(node_prefix)));
@@ -1787,7 +1502,7 @@ network:
             ActivePolicy::from_yaml("version: 1\nfiles:\n  deny:\n    - \"/etc/passwd\"\n")
                 .unwrap();
         let configs = policy.derive_hook_configs(false);
-        let networking_syms: Vec<&str> = crate::policy::templates::networking_symbols()
+        let networking_syms: Vec<&str> = malwi_policy::templates::networking_symbols()
             .iter()
             .map(|s: &String| s.as_str())
             .collect();

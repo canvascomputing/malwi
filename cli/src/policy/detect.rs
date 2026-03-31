@@ -205,7 +205,7 @@ pub(crate) fn ensure_auto_policy(name: &str) -> Result<PathBuf> {
     let path = dir.join(format!("{}.yaml", name));
 
     if !path.exists() {
-        let yaml = super::templates::embedded_policy(name)
+        let yaml = malwi_policy::templates::embedded_policy(name)
             .ok_or_else(|| anyhow::anyhow!("No embedded policy template for '{}'", name))?;
         // Atomic write: temp file + rename prevents partial-read races
         // when parallel processes call ensure_auto_policy concurrently.
