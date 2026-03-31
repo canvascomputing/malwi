@@ -1,0 +1,54 @@
+# Network commands.
+# Commands that can transfer data to/from remote hosts.
+# Verified against macOS + common Linux installations.
+# HTTP/download
+- curl
+- wget
+- aria2c
+- fetch
+# SSH/SCP
+- ssh
+- scp
+- sftp
+- ssh-copy-id
+- ssh-keyscan
+# FTP
+- ftp
+- lftp
+# Raw sockets
+- nc
+- ncat
+- netcat
+- socat
+- telnet
+# Sync/transfer
+- rsync
+- rclone
+- smbutil
+- smbclient
+# TLS/crypto
+- openssl
+- stunnel
+# Mail (can exfiltrate data via SMTP)
+- sendmail
+- mail
+- mailx
+- mutt
+# DNS tools (can exfiltrate data via DNS queries)
+- dig
+- nslookup
+- host
+- drill
+- dnsrecon
+# Network scanning
+- nmap
+- masscan
+- zmap
+# Packet capture (can leak network data)
+- tcpdump
+- tshark
+# Text browsers (can make HTTP requests)
+- w3m
+- lynx
+- links
+- elinks

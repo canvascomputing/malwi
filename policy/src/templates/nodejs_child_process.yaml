@@ -1,0 +1,9 @@
+# Node.js child process functions.
+# Functions that spawn external processes or shell commands.
+- child_process.exec
+- child_process.execSync
+- child_process.execFile
+- child_process.execFileSync
+- child_process.spawn
+- child_process.spawnSync
+- child_process.fork

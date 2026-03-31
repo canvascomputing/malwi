@@ -1,0 +1,14 @@
+# Python process spawning functions.
+# Commands section enforces what actually runs. Child gets agent injected.
+# These are warned (not denied) for visibility into execution paths.
+- os.system
+- os.popen
+- os.execv
+- os.execve
+- os.execvp
+- os.execvpe
+- subprocess.call
+- subprocess.Popen
+- subprocess.run
+- subprocess.check_call
+- subprocess.check_output

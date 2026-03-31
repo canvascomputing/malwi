@@ -1,0 +1,11 @@
+# Interpreter commands.
+# General-purpose language interpreters that can execute arbitrary code.
+- python
+- python3
+- perl
+- ruby
+- node
+- java
+- lua
+- php
+- Rscript

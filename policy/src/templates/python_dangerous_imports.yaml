@@ -1,0 +1,10 @@
+# Python functions with no downstream catch.
+# These perform actions that bypass all other policy enforcement layers.
+# Denied (not warned) because no boundary enforcement can catch them.
+- ctypes.CDLL
+- ctypes.cdll.LoadLibrary
+- ctypes.WinDLL
+- getpass.getpass
+- keyring.get_password
+- keyring.set_password
+- webbrowser.open

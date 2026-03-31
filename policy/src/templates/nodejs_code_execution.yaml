@@ -1,0 +1,9 @@
+# Node.js code execution functions.
+# Functions that evaluate or compile arbitrary JavaScript code at runtime.
+- eval
+- vm.runInContext
+- vm.runInNewContext
+- vm.runInThisContext
+- vm.compileFunction
+- vm.createContext
+- vm.Script

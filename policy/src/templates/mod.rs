@@ -107,6 +107,38 @@ define_group!(
     "file_functions_native.yaml"
 );
 
+// Command category groups
+define_group!(
+    network_commands,
+    NETWORK_COMMANDS_DATA,
+    "network_commands.yaml"
+);
+define_group!(interpreters, INTERPRETERS_DATA, "interpreters.yaml");
+
+// Node.js function groups
+define_group!(
+    nodejs_code_execution,
+    NODEJS_CODE_EXECUTION_DATA,
+    "nodejs_code_execution.yaml"
+);
+define_group!(
+    nodejs_child_process,
+    NODEJS_CHILD_PROCESS_DATA,
+    "nodejs_child_process.yaml"
+);
+
+// Python function groups
+define_group!(
+    python_process_spawning,
+    PYTHON_PROCESS_SPAWNING_DATA,
+    "python_process_spawning.yaml"
+);
+define_group!(
+    python_dangerous_imports,
+    PYTHON_DANGEROUS_IMPORTS_DATA,
+    "python_dangerous_imports.yaml"
+);
+
 // Threat behavior groups
 define_group!(scripting, SCRIPTING_DATA, "scripting.yaml");
 define_group!(exfiltration, EXFILTRATION_DATA, "exfiltration.yaml");
@@ -412,16 +444,34 @@ pub fn npm_install() -> PolicyFile {
                     "http.get",
                     "https.get"
                 ],
-                deny: rules!["eval", "vm.runInContext", "vm.runInNewContext"],
+                warn: rules![nodejs_code_execution!(), nodejs_child_process!()],
                 ..Default::default()
             }),
         ),
         (
             "commands",
             ad(AllowDenySection {
-                allow: rules!["node", "sh", "bash", "git"],
+                allow: rules![
+                    // Exact tools observed from real npm installs
+                    // (bcrypt, sharp, esbuild, sqlite3, canvas)
+                    "sh",
+                    "node",
+                    "node-gyp",
+                    "node-gyp-build",
+                    "node-gyp-build-optional-packages",
+                    "prebuild-install",
+                    "npm",
+                    "git"
+                ],
                 deny: rules![
-                    "curl", "wget", "ssh", "nc", "ncat", "*sudo*", "python*", "perl", "ruby"
+                    network_commands!(),
+                    scripting!(),
+                    anti_tracing!(),
+                    privilege_escalation!(),
+                    debug_injection!(),
+                    container_escape!(),
+                    interpreters!(),
+                    "*sudo*"
                 ],
                 warn: rules![warn_baseline!()],
                 ..Default::default()
@@ -471,24 +521,8 @@ pub fn pypi_install() -> PolicyFile {
         (
             "python",
             ad(AllowDenySection {
-                deny: rules![
-                    "ctypes.CDLL",
-                    "ctypes.cdll.LoadLibrary",
-                    "ctypes.WinDLL",
-                    "getpass.getpass",
-                    "keyring.get_password",
-                    "keyring.set_password",
-                    "webbrowser.open"
-                ],
-                warn: rules![
-                    "os.system",
-                    "os.popen",
-                    "subprocess.call",
-                    "subprocess.Popen",
-                    "subprocess.run",
-                    "subprocess.check_call",
-                    "subprocess.check_output"
-                ],
+                deny: rules![python_dangerous_imports!()],
+                warn: rules![python_process_spawning!()],
                 ..Default::default()
             }),
         ),
@@ -496,14 +530,41 @@ pub fn pypi_install() -> PolicyFile {
             "commands",
             ad(AllowDenySection {
                 allow: rules![
-                    "rustc", "uname", "git", "uv",
-                    // python* needed for uv interpreter probing and pip build
-                    // isolation. Safe: child processes get agent injected via
-                    // DYLD/LD_PRELOAD with the same policy protections.
-                    "python*"
+                    "rustc",
+                    "uname",
+                    "git",
+                    "uv",
+                    // uv interpreter probing (exact observed pattern)
+                    "python* -I -B -c *get_interpreter_info*",
+                    // uv PEP 517 build backend invocation — uv embeds build
+                    // backend calls as inline imports. Two styles observed:
+                    //   "from setuptools.build_meta import __legacy__ as backend"
+                    //   "import flit_core.buildapi as backend"
+                    // Match exact module paths from known PEP 517 backends.
+                    "python* -c *setuptools.build_meta*",
+                    "python* -c *flit_core.buildapi*",
+                    "python* -c *hatchling.build*",
+                    "python* -c *pdm.backend*",
+                    "python* -c *maturin*",
+                    "python* -c *mesonpy*",
+                    "python* -c *scikit_build_core*",
+                    "python* -c *poetry.core*",
+                    // pip build isolation (child gets agent injected)
+                    "python* */pip/*",
+                    "python* */pyproject_hooks/*"
                 ],
                 deny: rules![
-                    "curl", "wget", "ssh", "nc", "ncat", "*sudo*", "sh", "bash", "perl", "ruby"
+                    network_commands!(),
+                    scripting!(),
+                    anti_tracing!(),
+                    privilege_escalation!(),
+                    debug_injection!(),
+                    container_escape!(),
+                    // Block dynamic Python code execution (the #1 attack vector).
+                    // Specific uv/pip patterns are allowlisted above.
+                    "python* -c *",
+                    "python* -e *",
+                    "*sudo*"
                 ],
                 warn: rules![warn_baseline!()],
                 ..Default::default()
@@ -557,15 +618,8 @@ pub fn comfyui() -> PolicyFile {
         (
             "python",
             ad(AllowDenySection {
-                deny: rules![
-                    "getpass.getpass",
-                    "keyring.get_password",
-                    "keyring.set_password",
-                    "ctypes.CDLL",
-                    "ctypes.cdll.LoadLibrary",
-                    "ctypes.WinDLL"
-                ],
-                warn: rules!["os.system", "os.popen"],
+                deny: rules![python_dangerous_imports!()],
+                warn: rules![python_process_spawning!()],
                 ..Default::default()
             }),
         ),
@@ -728,14 +782,7 @@ pub fn openclaw() -> PolicyFile {
                     "http.createServer",
                     "https.createServer"
                 ],
-                deny: rules![
-                    "eval",
-                    "vm.runInContext",
-                    "vm.runInNewContext",
-                    "vm.compileFunction",
-                    "child_process.exec",
-                    "child_process.execSync"
-                ],
+                warn: rules![nodejs_code_execution!(), nodejs_child_process!()],
                 ..Default::default()
             }),
         ),
@@ -2668,24 +2715,30 @@ mod tests {
     }
 
     #[test]
-    fn test_openclaw_nodejs_eval_blocked() {
+    fn test_openclaw_nodejs_eval_warned() {
         let engine = openclaw_engine();
 
+        // eval/vm/child_process are WARNED (not denied) — boundary enforcement
+        // (network allowlist, files deny, commands deny) catches the actual action.
         let d = engine.evaluate_function(Runtime::Node, "eval", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Block);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_function(Runtime::Node, "vm.runInContext", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_function(Runtime::Node, "vm.compileFunction", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_function(Runtime::Node, "child_process.exec", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
-        let d = engine.evaluate_function(Runtime::Node, "child_process.execSync", &[]);
+        let d = engine.evaluate_function(Runtime::Node, "child_process.spawn", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
