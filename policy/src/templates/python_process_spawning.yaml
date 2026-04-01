@@ -1,5 +1,6 @@
-# Python process spawning functions.
+# Python process spawning and native code loading functions.
 # Commands section enforces what actually runs. Child gets agent injected.
+# Native hooks (connect, open, socket) catch syscalls from loaded libraries.
 # These are warned (not denied) for visibility into execution paths.
 - os.system
 - os.popen
@@ -12,3 +13,8 @@
 - subprocess.run
 - subprocess.check_call
 - subprocess.check_output
+# ctypes: warned for visibility. Loaded libraries' syscalls ARE caught
+# by native hooks. ctypes.CDLL(None) is legitimate Python startup.
+- ctypes.CDLL.__init__
+- ctypes.cdll.LoadLibrary
+- ctypes.WinDLL.__init__

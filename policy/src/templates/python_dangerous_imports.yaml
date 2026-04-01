@@ -2,13 +2,10 @@
 # These perform actions that bypass all other policy enforcement layers.
 # Denied (not warned) because no boundary enforcement can catch them.
 #
-# ctypes: loads native code that bypasses all Python-level hooks.
-# Primary enforcement via PEP 578 audit event "ctypes.dlopen" which fires
-# before the actual dlopen() call. Secondary via profile hook on __init__.
-- ctypes.CDLL.__init__
-- ctypes.cdll.LoadLibrary
-- ctypes.WinDLL.__init__
-- ctypes.dlopen
+# NOTE: ctypes.CDLL is NOT here — loaded libraries' syscalls (connect,
+# open, socket) ARE caught by native hooks. ctypes is in
+# python_process_spawning.yaml (warn) for visibility.
+#
 # getpass: reads password from terminal — no file/network involved
 - getpass.getpass
 # keyring: accesses OS keychain via system API — not caught by file deny

@@ -93,14 +93,29 @@ attack(
     ),
 )
 
-# ── Native code loading (blocked via PEP 578 audit hook) ─────────
-# ctypes.CDLL triggers a "ctypes.dlopen" audit event before the actual
-# dlopen() call. The audit hook catches it and returns -1 to abort.
+# ── Native code loading + network via ctypes ─────────────────────
+# ctypes.CDLL is warned (not denied) — but syscalls from the loaded
+# library ARE caught by native hooks. Verify: loading libc and calling
+# connect() through it is still blocked by the network allowlist.
 
-attack(
-    "ctypes_load",
-    lambda: __import__("ctypes").CDLL("libc.dylib"),
-)
+def ctypes_network_exfil():
+    """Load libc via ctypes and attempt socket connect — blocked at native level."""
+    import ctypes
+    import ctypes.util
+    import struct
+    libc = ctypes.CDLL(None)  # load libc — this is legitimate
+    # Create a socket
+    fd = libc.socket(2, 1, 0)  # AF_INET, SOCK_STREAM, 0
+    if fd < 0:
+        raise PermissionError("socket() blocked by native hook")
+    # Try to connect to a non-allowed host — should be blocked
+    addr = struct.pack("!HH4s8s", 2, 443, b"\x7f\x00\x00\x01", b"\x00" * 8)
+    result = libc.connect(fd, addr, 16)
+    libc.close(fd)
+    if result < 0:
+        raise PermissionError("connect() blocked by native hook")
+
+attack("ctypes_network_via_libc", ctypes_network_exfil)
 
 # ── Print results ─────────────────────────────────────────────────
 

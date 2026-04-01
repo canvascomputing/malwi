@@ -301,8 +301,7 @@ pub fn default_policy() -> PolicyFile {
                     "keyring.get_password",
                     "keyring.set_password",
                     "ctypes.CDLL.__init__",
-                    "ctypes.cdll.LoadLibrary",
-                    "ctypes.dlopen"
+                    "ctypes.cdll.LoadLibrary"
                 ],
                 log: rules![
                     "socket.create_connection",
@@ -1593,10 +1592,10 @@ mod tests {
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Block);
 
-        // ctypes.CDLL → Block (from python: deny:)
+        // ctypes.CDLL → Warn (native hooks catch loaded library's syscalls)
         let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Block);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         // Unlisted function → allowed (no warn section, HTTP handled by network allowlist)
         let d = engine.evaluate_function(Runtime::Python, "json.loads", &[]);
@@ -1604,18 +1603,18 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_attack_e_ctypes_blocked() {
+    fn test_comfyui_attack_e_ctypes_warned() {
         let engine = comfyui_engine();
 
+        // ctypes is warned, not denied — loaded libraries' syscalls ARE
+        // caught by native hooks (connect, open, socket).
         let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-        assert_eq!(d.section_mode(), EnforcementMode::Block);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_function(Runtime::Python, "ctypes.cdll.LoadLibrary", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-
-        let d = engine.evaluate_function(Runtime::Python, "ctypes.WinDLL.__init__", &[]);
-        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
@@ -2384,6 +2383,7 @@ mod tests {
         let engine = pypi_install_engine();
         let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
     }
 
     #[test]
