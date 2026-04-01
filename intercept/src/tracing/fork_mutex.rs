@@ -29,21 +29,30 @@ impl<T> ForkSafeMutex<T> {
         }
     }
 
-    /// Acquire the lock, using a fork-safe strategy when appropriate.
+    /// Acquire the lock, non-blocking.
     ///
-    /// - Pre-fork: blocking `lock()` (handles poisoning).
-    /// - Post-fork: `try_lock()` to avoid deadlock from dead threads.
+    /// Returns `Err` if the lock is held by another thread or by the current
+    /// thread (reentrancy). This prevents deadlock in hook callbacks where
+    /// operations may trigger other hooks that acquire the same lock.
+    ///
+    /// # Why always non-blocking
+    ///
+    /// Hook callbacks fire inside the target process on the target's threads.
+    /// A blocking `lock()` would deadlock if:
+    /// - **Same-thread reentrancy**: the callback triggers code that re-enters
+    ///   and wants the same lock (e.g., getaddrinfo on_leave → DNS record →
+    ///   connect hook → DNS lookup).
+    /// - **Post-fork dead threads**: a thread that held the lock at fork time
+    ///   is now dead, leaving the mutex permanently locked.
+    ///
+    /// In both cases, `try_lock()` with graceful fallback is correct.
     pub fn lock(&self) -> Result<MutexGuard<'_, T>> {
-        if self.forked.load(Ordering::Relaxed) {
-            match self.inner.try_lock() {
-                Ok(guard) => Ok(guard),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    Err(anyhow::anyhow!("mutex held by dead thread (post-fork)"))
-                }
-                Err(std::sync::TryLockError::Poisoned(e)) => Ok(e.into_inner()),
-            }
-        } else {
-            Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()))
+        match self.inner.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => Err(anyhow::anyhow!(
+                "mutex contended (reentrant or cross-thread)"
+            )),
+            Err(std::sync::TryLockError::Poisoned(e)) => Ok(e.into_inner()),
         }
     }
 

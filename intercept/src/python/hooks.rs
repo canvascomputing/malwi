@@ -100,7 +100,11 @@ pub fn has_pending() -> bool {
 ///
 /// Called after profile hook registration.
 pub fn register_pending_hooks(filters: &[Filter]) {
-    let mut pending = PENDING_C_HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = match PENDING_C_HOOKS.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
 
     for filter in filters {
         let pattern = &filter.pattern;
@@ -183,7 +187,11 @@ pub unsafe fn try_resolve_pending() {
         }
     };
 
-    let mut pending = PENDING_C_HOOKS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = match PENDING_C_HOOKS.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
 
     // Iterate backwards to allow efficient removal
     let mut i = pending.len();
@@ -320,7 +328,11 @@ fn replace_interceptor(
     method_flags: i32,
     is_module_function: bool,
 ) -> bool {
-    let mut hooked = HOOKED_C_FUNCTIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut hooked = match HOOKED_C_FUNCTIONS.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
 
     if !hooked.insert(addr) {
         return true; // Already replaced
@@ -607,9 +619,11 @@ pub unsafe fn scan_modules_for_glob_hooks(filters: &[Filter]) {
         // Skip already-scanned modules
         let dict_addr = mod_dict as usize;
         {
-            let mut scanned = SCANNED_MODULE_DICTS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut scanned = match SCANNED_MODULE_DICTS.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => continue,
+            };
             if !scanned.insert(dict_addr) {
                 continue;
             }
@@ -782,9 +796,11 @@ unsafe fn scan_imported_module(module_obj: *mut c_void) {
     // Skip already-scanned modules
     let dict_addr = mod_dict as usize;
     {
-        let mut scanned = SCANNED_MODULE_DICTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut scanned = match SCANNED_MODULE_DICTS.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
         if !scanned.insert(dict_addr) {
             return;
         }
@@ -854,18 +870,12 @@ mod tests {
         ];
 
         // Get count before
-        let count_before = PENDING_C_HOOKS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let count_before = PENDING_C_HOOKS.try_lock().unwrap().len();
 
         register_pending_hooks(&glob_only_filters);
 
         // Count should not have increased — all patterns were ineligible
-        let count_after_globs = PENDING_C_HOOKS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let count_after_globs = PENDING_C_HOOKS.try_lock().unwrap().len();
         assert_eq!(
             count_before, count_after_globs,
             "Glob/multi-dot/invalid patterns should not be added to pending hooks"
@@ -879,10 +889,7 @@ mod tests {
 
         register_pending_hooks(&exact_filters);
 
-        let count_after_exact = PENDING_C_HOOKS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let count_after_exact = PENDING_C_HOOKS.try_lock().unwrap().len();
         assert_eq!(
             count_after_exact,
             count_after_globs + 2,

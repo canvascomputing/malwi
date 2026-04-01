@@ -178,6 +178,29 @@ Policies are YAML files with sections: `network`, `commands`, `files`, `envvars`
 
 **Command taxonomy** (`taxonomy.rs`) classifies commands into categories (Safe, Build, Text, Package, FileOperation, Threat) from per-category YAML files. OS-specific files (`commands_threat_macos.yaml`, `commands_safe_linux.yaml`) are included via `#[cfg(target_os)]`.
 
+## Hook Safety: Reentrancy and Locking
+
+Hook callbacks fire inside the target process on the target's threads. Any
+operation that acquires a lock during a callback risks deadlock if it triggers
+another hook (directly or via a syscall) that acquires the same lock.
+
+**Rule 1: Never block on a lock in a hook callback.** All mutexes used in hook
+callback paths MUST be non-blocking. `ForkSafeMutex::lock()` uses `try_lock()`
+internally — safe. Raw `std::sync::Mutex::lock()` in callback paths is
+FORBIDDEN — use `try_lock()` with graceful fallback.
+
+**Rule 2: Reentrancy guards prevent recursive hook entry.** Each runtime has a
+thread-local guard: Native `IN_HOOK` (`Cell<bool>`), Python `IN_PY_C_HOOK`.
+These prevent a callback from re-entering the same hook system, but do NOT
+prevent lock reentrancy within the callback.
+
+**Rule 3: Use channels for async work.** Event delivery uses `try_send()` on a
+bounded channel — non-blocking. Falls back to direct TCP via `ForkSafeMutex`.
+
+**Rule 4: ForkSafeMutex handles both reentrancy and fork.** Pre-fork and
+post-fork: `lock()` always uses `try_lock()` — never blocks. Post-fork:
+`mark_forked()` resets state for child process.
+
 ## Releasing
 
 ```bash
