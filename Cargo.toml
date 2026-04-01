@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.31"
+version = "0.0.32"
 edition = "2021"
 license = "MIT"
 authors = ["malwi-trace contributors"]
