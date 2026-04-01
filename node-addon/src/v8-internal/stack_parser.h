@@ -295,6 +295,26 @@ MalwiSourceLocation* malwi_get_top_source_location(void* isolate);
 __attribute__((visibility("default")))
 void malwi_free_source_location(MalwiSourceLocation* loc);
 
+// Classify a single V8 tagged value and return its type + extracted content.
+// Used by the Rust native callback hooks to decode FunctionCallbackInfo arguments.
+//
+// Parameters:
+//   tagged_value: Raw V8 tagged pointer (uintptr_t)
+//
+// Returns: Heap-allocated MalwiParameterInfo, or NULL on failure.
+//          Caller must free with malwi_free_parameter_info().
+//
+__attribute__((visibility("default")))
+MalwiParameterInfo* malwi_classify_tagged_value(uintptr_t tagged_value);
+
+// Free a parameter info result.
+//
+// Parameters:
+//   info: Result returned by malwi_classify_tagged_value(). May be NULL.
+//
+__attribute__((visibility("default")))
+void malwi_free_parameter_info(MalwiParameterInfo* info);
+
 #ifdef __cplusplus
 }
 #endif
