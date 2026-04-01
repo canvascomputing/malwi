@@ -689,7 +689,9 @@ pub fn comfyui() -> PolicyFile {
         (
             "envvars",
             ad(AllowDenySection {
-                allow: rules!["HF_HUB_*", "HF_TOKEN_PATH", "OAUTH_CLIENT_SECRET"],
+                // No allow rules — allowlist mode would implicitly deny ALL
+                // non-matching envvars (PATH, HOME, __PYVENV_LAUNCHER__),
+                // crashing Python during site.py initialization.
                 warn: rules![
                     "*_SECRET*",
                     "*_TOKEN",
@@ -2470,17 +2472,20 @@ mod tests {
     }
 
     #[test]
-    fn test_comfyui_hf_config_envvar_allowed() {
+    fn test_comfyui_hf_config_envvar_warned() {
         let engine = comfyui_engine();
 
-        // HF config flags match *TOKEN* deny but are overridden by explicit allow
+        // HF config flags match *_TOKEN* warn pattern — false positive but
+        // harmless. No allow rules to avoid implicit deny of all other envvars.
         let d = engine.evaluate_envvar("HF_HUB_DISABLE_IMPLICIT_TOKEN");
-        assert_eq!(d.action, PolicyAction::Allow);
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
         let d = engine.evaluate_envvar("HF_TOKEN_PATH");
-        assert_eq!(d.action, PolicyAction::Allow);
+        assert_eq!(d.action, PolicyAction::Deny);
+        assert_eq!(d.mode, EnforcementMode::Warn);
 
-        // HF_HUB_* glob allows other HF hub config flags
+        // HF_HUB_OFFLINE doesn't match any warn pattern — passes through
         let d = engine.evaluate_envvar("HF_HUB_OFFLINE");
         assert_eq!(d.action, PolicyAction::Allow);
     }
