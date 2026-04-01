@@ -16,7 +16,7 @@ mod network;
 
 // Re-export compiler types from malwi_policy (single source of truth)
 pub(self) use malwi_policy::compiler::compiled::{Category, EnforcementMode, Runtime, SectionKey};
-pub(self) use malwi_policy::compiler::engine::{PolicyDecision, PolicyEngine};
+pub(self) use malwi_policy::compiler::engine::PolicyEngine;
 
 // Re-export CLI policy types
 pub use active::{ActivePolicy, EventDisposition};

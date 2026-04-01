@@ -6,10 +6,9 @@
 //!   for runtime multi-representation matching.
 
 use super::compiled::{
-    Category, CompiledNetworkRule, CompiledPolicy, CompiledRule, CompiledSection, EnforcementMode,
-    Runtime, SectionKey,
+    Category, CompiledNetworkRule, CompiledPolicy, CompiledSection, EnforcementMode, Runtime,
+    SectionKey,
 };
-use super::pattern::CompiledPattern;
 use crate::resolved::{Decision, NetworkRule, NetworkRuleSet, Policy, Rule, RuleSet};
 use malwi_protocol::event::HookType;
 

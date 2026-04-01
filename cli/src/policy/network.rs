@@ -203,20 +203,6 @@ impl ParsedUrl {
             self.scheme, self.host, port_suffix, self.path
         )
     }
-
-    /// Return the URL without scheme for matching patterns that omit the scheme.
-    fn url_without_scheme(&self) -> String {
-        let default_port = match self.scheme.as_str() {
-            "http" | "ws" => Some(80),
-            "https" | "wss" => Some(443),
-            _ => None,
-        };
-        let port_suffix = match self.port {
-            Some(p) if Some(p) != default_port => format!(":{}", p),
-            _ => String::new(),
-        };
-        format!("{}{}{}", self.host, port_suffix, self.path)
-    }
 }
 
 /// Extract a network target from a known network command's arguments.

@@ -7,7 +7,7 @@
 use crate::decision::{combine_outcomes, Outcome};
 use crate::glob::{matches_glob, matches_glob_ci};
 use crate::resolved::{Decision, NetworkRule, NetworkRuleSet, Policy, RuleSet};
-use crate::util::{extract_file_path, is_networking_symbol, matches_network_host, to_tilde_path};
+use crate::util::{extract_file_path, is_networking_symbol, to_tilde_path};
 use malwi_protocol::event::{HookType, NetworkInfo, TraceEvent};
 
 // ── RuleSet Evaluation (simple sections) ─────────────────────────

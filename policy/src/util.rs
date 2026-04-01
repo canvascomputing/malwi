@@ -47,28 +47,6 @@ pub fn to_tilde_path(path: &str) -> Option<String> {
     path.strip_prefix(home).map(|rest| format!("~{rest}"))
 }
 
-/// Match a hostname against a network pattern, handling URL-like patterns.
-///
-/// Tries direct glob match first. If that fails and the pattern contains `/`,
-/// extracts the domain prefix (everything before the first `/`) and matches
-/// against that. This way `pypi.org/**` matches hostname `pypi.org`.
-pub fn matches_network_host(pattern: &str, hostname: &str) -> bool {
-    use crate::glob::matches_glob;
-
-    // Direct glob match
-    if matches_glob(pattern, hostname) {
-        return true;
-    }
-    // Try domain prefix of URL-like patterns
-    if let Some(slash_pos) = pattern.find('/') {
-        let domain_part = &pattern[..slash_pos];
-        if matches_glob(domain_part, hostname) {
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,22 +58,6 @@ mod tests {
         assert!(is_networking_symbol("getaddrinfo"));
         assert!(!is_networking_symbol("open"));
         assert!(!is_networking_symbol("malloc"));
-    }
-
-    #[test]
-    fn test_matches_network_host_direct() {
-        assert!(matches_network_host("pypi.org", "pypi.org"));
-        assert!(matches_network_host("*.pypi.org", "files.pypi.org"));
-        assert!(!matches_network_host("*.pypi.org", "evil.com"));
-    }
-
-    #[test]
-    fn test_matches_network_host_url_pattern() {
-        assert!(matches_network_host("pypi.org/**", "pypi.org"));
-        assert!(matches_network_host(
-            "*.pypi.org/simple/*",
-            "files.pypi.org"
-        ));
     }
 
     #[test]

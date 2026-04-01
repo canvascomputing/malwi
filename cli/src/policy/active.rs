@@ -351,6 +351,7 @@ impl ActivePolicy {
                     );
                     // Hide rules → native stat/lstat/access hooks for agent-side hide enforcement
                     if section.has_hide_rules() {
+                        #[allow(unused_mut)]
                         let mut hide_syms = vec!["stat", "lstat", "access"];
                         #[cfg(target_os = "macos")]
                         hide_syms.extend_from_slice(&["stat$INODE64", "lstat$INODE64"]);
@@ -496,17 +497,6 @@ pub(super) fn pick_stricter(a: EventDisposition, b: EventDisposition) -> EventDi
         b
     } else {
         a
-    }
-}
-
-/// Return the stricter of an optional and a new disposition.
-pub(super) fn pick_stricter_opt(
-    current: Option<EventDisposition>,
-    new: EventDisposition,
-) -> EventDisposition {
-    match current {
-        Some(c) => pick_stricter(c, new),
-        None => new,
     }
 }
 

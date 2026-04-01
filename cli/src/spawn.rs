@@ -191,7 +191,7 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
     debug!("Agent library: {}", agent_lib);
 
     // Resolve #!/usr/bin/env shebangs to bypass SIP restrictions
-    let (actual_program, mut actual_args): (String, Vec<String>) =
+    let (actual_program, actual_args): (String, Vec<String>) =
         if let Some((interpreter, script)) = resolve_env_shebang(program) {
             // Prepend the script path to the original args
             let mut new_args = vec![script];
@@ -244,7 +244,7 @@ pub fn spawn_with_injection(program: &str, args: &[String], url: &str) -> Result
 
     // Resolve #!/usr/bin/env shebangs (for consistency with macOS, though
     // Linux doesn't have SIP restrictions - still useful for other reasons)
-    let (actual_program, mut actual_args): (String, Vec<String>) =
+    let (actual_program, actual_args): (String, Vec<String>) =
         if let Some((interpreter, script)) = resolve_env_shebang(program) {
             let mut new_args = vec![script];
             new_args.extend(args.iter().cloned());

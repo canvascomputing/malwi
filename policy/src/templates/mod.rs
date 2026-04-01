@@ -260,30 +260,6 @@ macro_rules! rules {
 // Shared preset sections — reusable deny lists for common security patterns.
 // ---------------------------------------------------------------------------
 
-/// Standard file deny patterns: credential files, keyrings, browser data, etc.
-fn hardened_files_deny() -> Vec<Rule> {
-    rules![
-        credential_files!(),
-        keyrings!(),
-        persistence_files!(),
-        browser_data!(),
-        shell_profiles!(),
-    ]
-}
-
-/// Standard envvar deny patterns: sensitive envvars + anti-tracing envvars.
-fn hardened_envvars_deny() -> Vec<Rule> {
-    rules![sensitive_envvars!(), anti_tracing_envvars!()]
-}
-
-/// Standard dangerous symbols warn section.
-fn warn_dangerous_symbols() -> AllowDenySection {
-    AllowDenySection {
-        warn: rules![dangerous_symbols!()],
-        ..Default::default()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helper to build a PolicyFile from sections
 // ---------------------------------------------------------------------------
