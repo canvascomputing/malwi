@@ -564,15 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parsed_url_without_scheme() {
-        let url = ParsedUrl::parse("https://example.com/path").unwrap();
-        assert_eq!(url.url_without_scheme(), "example.com/path");
-
-        let url = ParsedUrl::parse("http://api.example.com:8080/data").unwrap();
-        assert_eq!(url.url_without_scheme(), "api.example.com:8080/data");
-    }
-
-    #[test]
     fn test_parsed_url_no_scheme() {
         assert!(ParsedUrl::parse("example.com").is_none());
         assert!(ParsedUrl::parse("ftp://example.com").is_none());

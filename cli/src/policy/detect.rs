@@ -204,15 +204,15 @@ pub(crate) fn ensure_auto_policy(name: &str) -> Result<PathBuf> {
     let dir = super::config::policies_dir()?;
     let path = dir.join(format!("{}.yaml", name));
 
-    if !path.exists() {
-        let yaml = malwi_policy::templates::embedded_policy(name)
-            .ok_or_else(|| anyhow::anyhow!("No embedded policy template for '{}'", name))?;
-        // Atomic write: temp file + rename prevents partial-read races
-        // when parallel processes call ensure_auto_policy concurrently.
-        let tmp = dir.join(format!(".{}.{}.yaml.tmp", name, std::process::id()));
-        std::fs::write(&tmp, &yaml)?;
-        std::fs::rename(&tmp, &path)?;
-    }
+    // Always regenerate from the embedded template so that on-disk policies
+    // stay in sync with the current binary (avoids stale files from older versions).
+    let yaml = malwi_policy::templates::embedded_policy(name)
+        .ok_or_else(|| anyhow::anyhow!("No embedded policy template for '{}'", name))?;
+    // Atomic write: temp file + rename prevents partial-read races
+    // when parallel processes call ensure_auto_policy concurrently.
+    let tmp = dir.join(format!(".{}.{}.yaml.tmp", name, std::process::id()));
+    std::fs::write(&tmp, &yaml)?;
+    std::fs::rename(&tmp, &path)?;
 
     Ok(path)
 }

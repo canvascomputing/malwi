@@ -1218,7 +1218,7 @@ fn test_uv_pip_install_auto_selects_pypi_install_policy() {
     // and arg contains "install". Use --system to avoid venv requirement and
     // --target to avoid polluting the real system Python.
     let output = cmd(&format!(
-        "x -f json -- {} pip install --system --no-deps --target {} {}",
+        "x -f json -- {} pip install --no-cache --system --no-deps --target {} {}",
         uv.display(),
         tmp_dir.display(),
         pkg_dir.display()

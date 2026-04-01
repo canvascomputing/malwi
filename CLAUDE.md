@@ -194,6 +194,7 @@ bash scripts/bump-version.sh 0.1.0
 make build                  # Build (includes cargo fmt)
 make test                   # Run all tests (~1000+ across unit + integration)
 make addon-install && make build  # Full build with Node.js addon
+make check-addons           # Verify prebuilt addons export all required FFI symbols
 ```
 
 Integration tests live in `cli/tests/integration/` with per-runtime files (`python_tests.rs`, `nodejs_tests.rs`, `bash_tests.rs`, `native_tests.rs`). Tests use multi-version macros:

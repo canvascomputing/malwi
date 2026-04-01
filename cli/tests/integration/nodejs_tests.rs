@@ -1266,8 +1266,6 @@ fn test_nodejs_object_args_show_properties() {
         )).timeout(secs(10)).run();
 
         let stdout = output.stdout();
-        let stderr = output.stderr();
-
         // Should have traced http.request with object argument
         assert!(
             stdout.contains("http.request"),

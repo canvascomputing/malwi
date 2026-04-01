@@ -1,4 +1,4 @@
-.PHONY: all build fmt format bump addon addon-install addon-all addon-node25 test clean fixtures sbom
+.PHONY: all build fmt format bump addon addon-install addon-all addon-node25 check-addons test clean fixtures sbom
 
 # Detect platform for addon installation
 UNAME_S := $(shell uname -s)
@@ -129,6 +129,9 @@ addon-node25:
 	@major=$$(echo $(NODE_TARGET) | cut -d. -f1); \
 	./scripts/build-addon.sh "$$(which node)" \
 		"node-addon/prebuilt/$(ADDON_PLATFORM)/node$$major" "$(LLVM_PATH)"
+
+check-addons:
+	@bash scripts/check-addon-symbols.sh
 
 fixtures:
 	$(MAKE) -C tests
