@@ -300,8 +300,9 @@ pub fn default_policy() -> PolicyFile {
                     "getpass.getpass",
                     "keyring.get_password",
                     "keyring.set_password",
-                    "ctypes.CDLL",
-                    "ctypes.cdll.LoadLibrary"
+                    "ctypes.CDLL.__init__",
+                    "ctypes.cdll.LoadLibrary",
+                    "ctypes.dlopen"
                 ],
                 log: rules![
                     "socket.create_connection",
@@ -1593,7 +1594,7 @@ mod tests {
         assert_eq!(d.section_mode(), EnforcementMode::Block);
 
         // ctypes.CDLL → Block (from python: deny:)
-        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL", &[]);
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Block);
 
@@ -1606,14 +1607,14 @@ mod tests {
     fn test_comfyui_attack_e_ctypes_blocked() {
         let engine = comfyui_engine();
 
-        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL", &[]);
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.section_mode(), EnforcementMode::Block);
 
         let d = engine.evaluate_function(Runtime::Python, "ctypes.cdll.LoadLibrary", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
 
-        let d = engine.evaluate_function(Runtime::Python, "ctypes.WinDLL", &[]);
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.WinDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
     }
 
@@ -2381,7 +2382,7 @@ mod tests {
     #[test]
     fn test_pypi_install_blocks_python_ctypes() {
         let engine = pypi_install_engine();
-        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL", &[]);
+        let d = engine.evaluate_function(Runtime::Python, "ctypes.CDLL.__init__", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
     }
 

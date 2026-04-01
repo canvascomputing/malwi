@@ -5,3 +5,4 @@
 - symlink
 - link
 - syscall
+- dlopen

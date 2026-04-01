@@ -230,31 +230,24 @@ impl Agent {
     }
 
     /// Evaluate an event against the agent-side policy (if loaded).
-    /// Also returns None in forked children — heap allocations in the policy's
-    /// glob patterns may be corrupted if the parent was allocating at fork time.
+    ///
+    /// Policy evaluation is safe in forked children: the Policy struct is
+    /// immutable after construction — check_event only reads pre-compiled
+    /// patterns via string comparisons, no heap allocations.
     pub fn evaluate_policy(
         &self,
         event: &malwi_protocol::TraceEvent,
     ) -> Option<malwi_policy::Outcome> {
-        if self.forked.load(Ordering::Acquire) {
-            return None;
-        }
         self.agent_policy.as_ref().map(|p| p.check_event(event))
     }
 
     /// Evaluate just the envvar section of agent-side policy.
     pub fn evaluate_envvar_policy(&self, name: &str) -> Option<malwi_policy::Outcome> {
-        if self.forked.load(Ordering::Acquire) {
-            return None;
-        }
         self.agent_policy.as_ref().map(|p| p.check_envvar(name))
     }
 
     /// Evaluate just the file section of agent-side policy.
     pub fn evaluate_file_policy(&self, path: &str) -> Option<malwi_policy::Outcome> {
-        if self.forked.load(Ordering::Acquire) {
-            return None;
-        }
         self.agent_policy.as_ref().map(|p| p.check_file(path))
     }
 
