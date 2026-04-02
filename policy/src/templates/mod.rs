@@ -139,6 +139,13 @@ define_group!(
     "python_dangerous_imports.yaml"
 );
 
+// Network pattern groups
+define_group!(
+    localhost_network,
+    LOCALHOST_NETWORK_DATA,
+    "localhost_network.yaml"
+);
+
 // Threat behavior groups
 define_group!(scripting, SCRIPTING_DATA, "scripting.yaml");
 define_group!(exfiltration, EXFILTRATION_DATA, "exfiltration.yaml");
@@ -628,15 +635,19 @@ pub fn comfyui() -> PolicyFile {
                     "pip show *",
                     "python -m pip *",
                     "python3 -m pip *",
+                    "Python -m pip *",
                     "uv pip *",
                     "uv sync *",
                     "uv run *",
                     "python3 -I *",
                     "python -I *",
+                    "Python -I *",
                     "python3 -c *",
                     "python -c *",
+                    "Python -c *",
                     "python3 --version",
                     "python --version",
+                    "Python --version",
                     "nvidia-smi",
                     "nvidia-smi *"
                 ],
@@ -654,6 +665,19 @@ pub fn comfyui() -> PolicyFile {
             "network",
             ad(AllowDenySection {
                 allow: rules![
+                    // Bare hostnames (for getaddrinfo/DNS resolution)
+                    "huggingface.co",
+                    "*.huggingface.co",
+                    "civitai.com",
+                    "*.civitai.com",
+                    "github.com",
+                    "*.githubusercontent.com",
+                    "codeload.github.com",
+                    "pypi.org",
+                    "*.pypi.org",
+                    "files.pythonhosted.org",
+                    "*.pythonhosted.org",
+                    // URL paths (for HTTP requests)
                     "huggingface.co/**",
                     "*.huggingface.co/**",
                     "civitai.com/**",
@@ -665,11 +689,9 @@ pub fn comfyui() -> PolicyFile {
                     "*.pypi.org/**",
                     "files.pythonhosted.org/**",
                     "*.pythonhosted.org/**",
-                    "127.0.0.1:*/**",
-                    "localhost:*/**",
-                    "0.0.0.0:*/**"
+                    // Localhost
+                    localhost_network!()
                 ],
-                protocols: vec!["https".into(), "http".into(), "wss".into(), "ws".into()],
                 ..Default::default()
             }),
         ),
@@ -843,10 +865,8 @@ pub fn openclaw() -> PolicyFile {
                     "*.discord.com/**",
                     "gateway.discord.gg/**",
                     "graph.facebook.com/**",
-                    "127.0.0.1:*/**",
-                    "localhost:*/**"
+                    localhost_network!()
                 ],
-                protocols: vec!["https".into(), "http".into(), "wss".into(), "ws".into()],
                 ..Default::default()
             }),
         ),
@@ -1114,13 +1134,6 @@ pub fn bash_install() -> PolicyFile {
                     "/proc/*/maps",
                     "/proc/*/mem"
                 ],
-                ..Default::default()
-            }),
-        ),
-        (
-            "network",
-            ad(AllowDenySection {
-                protocols: vec!["https".into(), "http".into()],
                 ..Default::default()
             }),
         ),
@@ -1527,13 +1540,6 @@ mod tests {
         let yaml = policy_to_yaml(&policy, "comfyui");
 
         let engine = PolicyEngine::from_yaml(&yaml).expect("comfyui YAML must compile");
-
-        // Verify protocols
-        assert_eq!(
-            engine.evaluate_protocol("https").action,
-            PolicyAction::Allow
-        );
-        assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Deny);
     }
 
     #[test]
@@ -1660,22 +1666,6 @@ mod tests {
 
         let d = engine.evaluate_execution("git pull origin main");
         assert_eq!(d.action, PolicyAction::Allow);
-    }
-
-    #[test]
-    fn test_comfyui_protocols_restricted() {
-        let engine = comfyui_engine();
-
-        assert_eq!(
-            engine.evaluate_protocol("https").action,
-            PolicyAction::Allow
-        );
-        assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
-        assert_eq!(engine.evaluate_protocol("wss").action, PolicyAction::Allow);
-        assert_eq!(engine.evaluate_protocol("ws").action, PolicyAction::Allow);
-
-        assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Deny);
-        assert_eq!(engine.evaluate_protocol("udp").action, PolicyAction::Deny);
     }
 
     #[test]
@@ -2082,20 +2072,6 @@ mod tests {
 
         let d = engine.evaluate_native_function("syscall", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_bash_install_protocols_restricted() {
-        let engine = bash_install_engine();
-
-        assert_eq!(
-            engine.evaluate_protocol("https").action,
-            PolicyAction::Allow
-        );
-        assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
-
-        assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Deny);
-        assert_eq!(engine.evaluate_protocol("udp").action, PolicyAction::Deny);
     }
 
     #[test]
@@ -2877,22 +2853,6 @@ mod tests {
 
         let d = engine.evaluate_http_url("https://evil.com/exfil", "evil.com/exfil");
         assert_eq!(d.action, PolicyAction::Deny);
-    }
-
-    #[test]
-    fn test_openclaw_protocols_restricted() {
-        let engine = openclaw_engine();
-
-        assert_eq!(
-            engine.evaluate_protocol("https").action,
-            PolicyAction::Allow
-        );
-        assert_eq!(engine.evaluate_protocol("http").action, PolicyAction::Allow);
-        assert_eq!(engine.evaluate_protocol("wss").action, PolicyAction::Allow);
-        assert_eq!(engine.evaluate_protocol("ws").action, PolicyAction::Allow);
-
-        assert_eq!(engine.evaluate_protocol("tcp").action, PolicyAction::Deny);
-        assert_eq!(engine.evaluate_protocol("udp").action, PolicyAction::Deny);
     }
 
     #[test]

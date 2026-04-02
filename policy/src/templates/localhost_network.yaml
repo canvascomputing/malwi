@@ -1,0 +1,10 @@
+# Localhost network patterns.
+# Both bare hostnames (for getaddrinfo/DNS) and URL-style (for HTTP requests).
+- localhost
+- "localhost:*/**"
+- 127.0.0.1
+- "127.0.0.1:*/**"
+- "0.0.0.0"
+- "0.0.0.0:*/**"
+- "::1"
+- "[::1]:*/**"
