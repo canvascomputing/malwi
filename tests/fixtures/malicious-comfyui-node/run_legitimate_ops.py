@@ -50,6 +50,45 @@ op("env_home", lambda: os.environ.get("HOME"))
 op("env_path", lambda: os.environ.get("PATH"))
 op("env_hf_hub_offline", lambda: os.environ.get("HF_HUB_OFFLINE"))
 
+# ── Subprocess spawning .py files (ComfyUI custom nodes) ─────────
+
+def test_subprocess_py_file():
+    """ComfyUI spawns Python subprocesses to run .py scripts."""
+    import subprocess
+    # Create a temp script
+    script = "/tmp/malwi-comfyui-child-test.py"
+    with open(script, "w") as f:
+        f.write("print('child ok')\n")
+    r = subprocess.run(
+        [sys.executable, script],
+        capture_output=True, text=True, timeout=5,
+    )
+    os.unlink(script)
+    if r.returncode != 0 or "child ok" not in r.stdout:
+        raise RuntimeError(f"exit={r.returncode}, out={r.stdout[:50]}")
+
+op("subprocess_py_file", test_subprocess_py_file)
+
+
+def test_subprocess_py_subdir():
+    """ComfyUI runs scripts in subdirectories (custom_nodes/)."""
+    import subprocess
+    subdir = "/tmp/malwi-comfyui-nodes-test"
+    os.makedirs(subdir, exist_ok=True)
+    script = os.path.join(subdir, "node.py")
+    with open(script, "w") as f:
+        f.write("print('node ok')\n")
+    r = subprocess.run(
+        [sys.executable, script],
+        capture_output=True, text=True, timeout=5,
+    )
+    os.unlink(script)
+    os.rmdir(subdir)
+    if r.returncode != 0 or "node ok" not in r.stdout:
+        raise RuntimeError(f"exit={r.returncode}, out={r.stdout[:50]}")
+
+op("subprocess_py_subdir", test_subprocess_py_subdir)
+
 # ── Cleanup ──────────────────────────────────────────────────────
 
 try:

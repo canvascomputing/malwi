@@ -649,7 +649,22 @@ pub fn comfyui() -> PolicyFile {
                     "python --version",
                     "Python --version",
                     "nvidia-smi",
-                    "nvidia-smi *"
+                    "nvidia-smi *",
+                    // Python .py script execution (ComfyUI subprocesses).
+                    // Visibility via python_process_spawning warn group
+                    // on the subprocess.Popen call that triggers these.
+                    "python *.py",
+                    "python *.py *",
+                    "python3 *.py",
+                    "python3 *.py *",
+                    "Python *.py",
+                    "Python *.py *",
+                    "python */*.py",
+                    "python */*.py *",
+                    "python3 */*.py",
+                    "python3 */*.py *",
+                    "Python */*.py",
+                    "Python */*.py *"
                 ],
                 ..Default::default()
             }),
@@ -1621,6 +1636,27 @@ mod tests {
         let d = engine.evaluate_function(Runtime::Python, "ctypes.cdll.LoadLibrary", &[]);
         assert_eq!(d.action, PolicyAction::Deny);
         assert_eq!(d.mode, EnforcementMode::Warn);
+    }
+
+    #[test]
+    fn test_comfyui_allows_python_py_scripts() {
+        let engine = comfyui_engine();
+
+        // Direct .py file
+        let d = engine.evaluate_execution("python3 main.py --cpu --port 8188");
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        // .py file in subdirectory
+        let d = engine.evaluate_execution("python3 custom_nodes/my_node.py");
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        // Capital P (Homebrew macOS)
+        let d = engine.evaluate_execution("Python main.py");
+        assert_eq!(d.action, PolicyAction::Allow);
+
+        // Non-.py command still blocked (curl not in allow)
+        let d = engine.evaluate_execution("curl https://canvascomputing.org");
+        assert_eq!(d.action, PolicyAction::Deny);
     }
 
     #[test]
