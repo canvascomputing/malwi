@@ -1,0 +1,19 @@
+# CLAUDE.md
+
+> Keep these files up to date when the project structure or conventions change.
+> Update `README.md` when the CLI surface changes.
+
+- malwi is an agentic malware scanner for source trees and software packages.
+- It dispatches LLM-driven security analysts at suspect matches and produces a JSON report.
+
+## Conventions
+
+The project's conventions are split across the following files. Read the one matching your task.
+
+- [agentdocs/project.md](agentdocs/project.md): vision and design philosophy.
+- [agentdocs/workflow.md](agentdocs/workflow.md): build, test, release commands.
+- [agentdocs/layout.md](agentdocs/layout.md): where code lives.
+- [agentdocs/architecture.md](agentdocs/architecture.md): rules that shape how code is organized.
+- [agentdocs/style.md](agentdocs/style.md): naming, comment, and README style.
+- [agentdocs/testing.md](agentdocs/testing.md): how tests are organized and written.
+- [agentdocs/this.md](agentdocs/this.md): how the agentdocs files themselves are written.
