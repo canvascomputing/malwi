@@ -2,74 +2,83 @@
 
 The invariants that shape how code fits together. Layout says where code lives; this file says why the seams are where they are.
 
-## Two phases, one ticket system
+## Two queues, one scan
 
-**A scan runs in two phases: discovery, then analysis. Both share one agentwerk `TicketSystem`.**
+**Every agent but the Reporter shares one `TicketQueue`. The Reporter gets its own.**
 
-- Discovery walks the scan directory, partitions files by extension, and runs the static grep pass on known extensions.
-- Analysis consumes the suspect lines discovery produced and the analyst pool decides each verdict.
-- A single `TicketSystem` carries the queue, the registered agents, the policies, and the interrupt signal across both phases.
-- The analyst pool is registered BEFORE discovery starts so tickets drain live the moment the first match returns.
+- Explorer, Seeker, Tracer, and Analyst pools all run on the scan queue, so a hit found late still drains through the same path.
+- `--max-turns` and `--max-time` bound only the scan queue.
+- `run_report_phase` builds a second, uncapped queue, so a time limit or a cancel never cuts the summary.
+- The Reporter's counters are folded into the totals with `with_report`, so the tally still covers the whole run.
 
-## Known vs unknown extensions
+## Evidence before verdict
 
-**File extensions split into two routing paths at startup.**
+**A verdict is never reached from a grep hit alone: reachability comes first.**
 
-- Known extensions resolve to a curated catalogue and grep synchronously on a blocking task.
-- Unknown extensions route to a per-extension `Threat Researcher` agent that produces the IoC patterns itself.
-- Each researcher hands its match bundle to an analyst via `WriteHandoverTool`; no host-side drainer is needed.
-- A file without an extension is dropped; an extension with no hits and no researcher is silently ignored.
+- Discovery and the Seeker both produce evidence, and both enqueue it on `TRACER_LABEL`.
+- The Tracer establishes how the flagged code is reached and hands its trace to `ANALYSIS_LABEL`.
+- The Analyst reads the real code behind the trace and returns the verdict object.
+- The handover is atomic: `FinishTool` closes the Tracer's ticket and opens the Analyst's in one call.
 
-## Per-extension Threat Researcher
+## Static first, agents alongside
 
-**One Threat Researcher agent per unknown extension, because `template_variable` binds per agent, not per ticket.**
+**Discovery greps synchronously; the pools are already running when it starts.**
 
-- The agent's `name` doubles as a label; the seed ticket is pinned by labelling it with that name.
-- The agent's role text contains a `{extension}` placeholder filled in at agent-build time.
-- A generic pool cannot carry different `{extension}` bindings on different tickets, so the per-extension agent is the right unit.
-- The agent terminates with `WriteHandoverTool`, atomically finishing its own ticket and spawning an analyst ticket.
+- `tickets.start()` runs before `Scanner::discover`, so the first cluster is claimed while the sweep is still walking.
+- Each catalogue splits into pattern, substring, and file passes, one `spawn_blocking` task each.
+- A file's hits within `CLUSTER_RADIUS` lines become one ticket, so an analyst sees a whole payload rather than one line of it.
+- Clusters are enqueued by lowest `rank` first, so the strongest evidence reaches the Analyst first.
 
-## Security Analyst pool
+## Knowledge is the shared surface
 
-**A fixed-size pool of identical analyst agents shares one label.**
+**Agents never call each other: they read and write pages in shared stores.**
 
-- Pool size is `--concurrency` (default 2); each worker is built by the same closure with a different name suffix.
-- Every analyst carries the same `ANALYSIS_LABEL`; tickets routed to that label are claimed by whichever worker is free.
-- The pool shares a `Knowledge` store rooted in the workspace directory; the store is cleared at the top of every run.
-- Each analyst writes its result with `WriteResultTool` (terminal) or escalates with `WriteHandoverTool` (rare).
+- `exploration/` carries the Explorer's overview and the Tracer's notes; both pools open the same store.
+- `searches/` carries what the Seeker already tried, so a refilled ticket does not repeat a search.
+- Both stores are seeded from `attack_patterns::copy_seed_into` before `Knowledge::load` indexes them.
+- The file map is written into both stores up front, so no agent has to glob the tree.
 
-## Cooperative cancellation
+## Only the Seeker refills
 
-**Three signals fold into one cancel: ctrl-c, `--max-time`, and the framework's own interrupt signal.**
+**Discovery is bounded; search is not.**
 
-- `operator_cancel` is set by a tokio task watching `tokio::signal::ctrl_c`; a second press hard-exits.
-- `time_up` is set by a tokio task sleeping for the configured deadline.
-- A relay task watches both atomics and calls `TicketSystem::cancel()` when either trips.
-- The driver inspects the two atomics after `finish().await` to set the exit code (`130` for cancel, `0` for time-up with partial summary).
+- `create_ticket_on_result` enqueues a new Seeker ticket whenever one finishes, unless the label is cancelled.
+- The Explorer is bounded to `--concurrency` seed tickets: an overview, not an exhaustive read.
+- The Tracer and the Analyst are demand-driven and never seed themselves.
+- The refill checks `is_label_cancelled` first, since a ticket on a cancelled label would never be claimed.
 
-## Workspace directory
+## Three ways to stop
 
-**One `.malwi/` directory holds knowledge, results, and ticket logs for the run.**
+**A wind-down, a policy stop, and an abort are distinct, and only the abort skips the report.**
 
-- The directory is created under the current working directory at startup.
-- `TicketSystem::dir(...)` points the system at it; `Knowledge::open(...)` opens the analyst store inside it.
-- Knowledge is cleared at the top of each run; results and ticket logs are append-only.
-- The directory is `.gitignore`d by default; operators commit it deliberately or never.
+- A first ctrl-c cancels the Explorer and Seeker labels; the backlog drains and the report is written.
+- A policy stop (time, turns, tokens) calls `TicketQueue::cancel` through `cancel_on_event`, and is recorded in `policy_stopped` so the driver can tell it from an abort.
+- A second ctrl-c exits `130` on the spot.
+- `--fail-fast` cancels the Seeker, Tracer, and Analyst labels on the first malicious result, then exits `2` after reporting.
 
 ## Report assembly
 
-**The JSON report is built from finished tickets after the loop drains.**
+**`build_analysis` reads finished analyst tickets; the Reporter phrases them.**
 
-- `report::build_analysis` reads `tickets.tickets()` and turns each `Done` analyst result into one finding.
-- `report::build_stats_json` lifts token, request, and timing counters off `Stats`.
-- The combined report is written to `.malwi/analysis.json` (or `--output PATH`) and summarized to stderr.
-- A zero-finding run still emits a JSON document with `status: "benign"` so downstream tooling has a stable shape.
+- One finding per `(path, line, column)`; a repeat upgrades the entry only if its verdict is more severe.
+- A result missing a valid `status` counts as `unparsed` and is named in the summary rather than dropped silently.
+- `render_findings_table` passes the findings to the Reporter, flagged `partial` when the pools were called off early.
+- `merge_reporter_verdict` folds the Reporter's `{summary, details}` over the tally; a missing field leaves the tally in place.
+
+## Schemas hold the contract
+
+**A result the report cannot use is rejected at `finish` time, not at report time.**
+
+- `schema_for_label(ANALYSIS_LABEL, ...)` makes every analyst ticket validate its verdict object.
+- The Reporter's ticket carries `reporter_result_schema` with length floors, so a skimped summary is retried.
+- `max_schema_retries(20)` raises the default, because a weaker model burns retries on replies with no tool call at all.
+- `OUTPUT_CONTRACT` is bound into every schema-carrying role, so the calling convention is stated once.
 
 ## One observer, one error path
 
-**`Event` reports state. `ProviderError`, `ToolError`, and the binary's CLI errors report failed contracts.**
+**`Event` reports state. Typed errors report failed contracts.**
 
-- State transitions exist only as agentwerk `Event` payloads streamed by the event handler.
-- An observable failure fires both the typed error and a matching `Event` (`RequestFailed`, `ToolCallFailed`, `PolicyViolated`).
-- A model-fixable failure (wrong arguments, schema mismatch) goes back to the model as a `ToolResult::Error`; it still fires `ToolCallFailed` but does not stop the run.
+- State transitions exist only as agentwerk `Event` payloads, rendered by `log_event`.
+- A model-fixable failure goes back to the model as a tool error; it fires `ToolCallFailed` but does not stop the run.
+- Every non-benign verdict is saved as a `Trajectory` under `trajectories/`, on every run.
 - The CLI's own errors print one line to stderr and exit non-zero; they do not pretend to be events.

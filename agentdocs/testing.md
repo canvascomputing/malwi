@@ -4,11 +4,11 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 ## Layers
 
-**Two layers: integration and inline.**
+**One layer: inline tests that run without a network.**
 
-- `crates/malwi/tests/` uses a real provider; bundled by `tests/integration.rs`.
-- Inline `#[cfg(test)] mod tests` lives next to the code it covers and runs without a network.
-- Fixtures (sample suspect files, expected findings) live under `crates/malwi/tests/fixtures/`.
+- Inline `#[cfg(test)] mod tests` lives next to the code it covers.
+- A test needing a model implements `Provider` inline, as `FinishMock` in `main.rs` does.
+- Fixtures (sample trees to scan) live under `crates/malwi/tests/fixtures/`.
 
 ## Purpose
 
@@ -23,7 +23,7 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 **The name states the behavior, not the method called.**
 
-- Accepted: `unknown_extension_routes_to_threat_researcher`, `zero_findings_emit_benign_report`.
+- Accepted: `cluster_hits_splits_distant_lines`, `reporter_verdict_is_claimed_by_label_and_merged`.
 - Rejected: `test_scan`, `test_report`, `test_extension`.
 - The body verifies what the name claims, with no surprise assertions.
 - The name is the first line of the documentation the test provides.
@@ -32,8 +32,8 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 **Tests exercise the public CLI and library surface the way operators hold it.**
 
-- Drive `scan_dir`, `report::build_analysis`, and CLI parsing through their public entry points.
-- Mock at trust boundaries (the LLM provider) using agentwerk's provider hooks, never at the subject under test.
+- Drive `Scanner::discover`, `build_analysis`, and `ModelTable::resolve_for` through their own entry points.
+- Mock at trust boundaries (the LLM provider), never at the subject under test.
 - Assert observable outcomes (report JSON, exit code, stderr summary), not call logs or internal ordering.
 - The arrange/act/assert shape mirrors how a real operator would invoke the binary.
 

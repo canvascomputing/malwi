@@ -1,12 +1,18 @@
 .PHONY: build test fmt clean update run bump doc hooks
 
+# Prefix for any recipe that runs the binary, so provider credentials in .env
+# reach it without being exported by hand. Sourced rather than `include`d,
+# because .env is shell, not make: quotes and `#` in a value would not survive
+# make's own parsing.
+dotenv = if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
 # Build the project (warnings are errors)
 build: fmt
 	RUSTFLAGS="-D warnings" cargo build
 
 # Run unit tests (warnings are errors) — inline `#[cfg(test)] mod tests` blocks
 test:
-	RUSTFLAGS="-D warnings" cargo test --workspace --lib
+	RUSTFLAGS="-D warnings" cargo test --workspace --bins
 
 # Build rustdoc (warnings are errors; broken intra-doc links fail)
 doc:
@@ -27,9 +33,11 @@ update:
 
 # Run the scanner against a directory
 # Usage: make run dir=./src args="--concurrency 4"
+# Exit 2 is the malicious-verdict signal under --fail-fast, not a build failure,
+# so it is tolerated; every other non-zero code still fails.
 run:
 ifdef dir
-	cargo run -p malwi -- $(dir) $(args)
+	@$(dotenv); cargo run -p malwi -- $(dir) $(args) || [ $$? -eq 2 ]
 else
 	@echo "Usage: make run dir=<path> args=\"--concurrency 4 --max-time 5m\""
 endif

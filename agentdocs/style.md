@@ -6,18 +6,18 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **A type lives next to the abstraction, owner, or protocol it belongs to.**
 
-- CLI argument parsing and help text live in `cli.rs`.
-- The directory walker and the static grep pass live in `scan.rs`.
-- The JSON assembler and the terminal summary live in `report.rs`.
-- Role prompts live in `roles/`, threat catalogues in `threats/`.
+- CLI argument parsing, the `--models` table, and help text live in `cli.rs`.
+- The directory walker, the catalogues, and the grep passes live in `scan.rs`.
+- The JSON assembler, the event renderer, and the terminal summary live in `report.rs`.
+- Role prompts live in `roles/`, indicator catalogues in `threats/`, incident pages in `knowledge/`.
 - A helper called from a single private function is inlined; a helper called from two siblings earns a free function in the same file.
 
 ## Name disambiguation
 
 **Names are disambiguated through content, not through redundant prefixes.**
 
-- Specific compound names stand alone: `ScanReport`, `Finding`, `Severity`.
-- Acronyms follow Rust API guidelines: `IocPattern`, not `IOCPattern`.
+- Specific compound names stand alone: `ScanTree`, `Hit`, `CompiledCatalogue`.
+- Acronyms follow Rust API guidelines: `IocEntry`, not `IOCEntry`.
 - Two structs may not share a bare name within one module; both stay qualified.
 - The binary is `malwi`; never `malwi-cli`, never `malwi_scanner`.
 
@@ -46,7 +46,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 - Human-readable strings MUST be named `message: String`, never `error`.
 - Wrapped underlying errors MUST be named `source`, as in `WriteFailed { source: io::Error }`.
-- Typed metadata uses descriptive names: `path`, `extension`, `line`, `severity`, `verdict`.
+- Typed metadata uses descriptive names: `path`, `line`, `column`, `category`, `status`.
 
 ## Time-typed fields
 
@@ -69,16 +69,16 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 **Counters use a bare plural noun. No `_count` suffix on fields or on methods that return a count.**
 
-- Report fields: `findings`, `files_walked`, `extensions_scanned`.
+- Report and struct fields: `findings`, `files`, `extensions`, `patterns`, `substrings`.
 - Event payloads follow suit: `usage` carries token counts, not a `token_count`.
-- Accessor methods mirror the field form: `Report::findings()` returns the slice.
+- Accessor methods mirror the field form: `Stats::input_tokens()` returns the count.
 - The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
 
 ## Builders
 
 **Builder methods are bare nouns. No `with_` prefix.**
 
-- Examples: `.dir()`, `.concurrency()`, `.output()`, `.briefing()`.
+- Examples: `.dir()`, `.label()`, `.knowledge()`, `.template()`.
 - The `with_` prefix is used only when a bare name clashes with a trait method.
 
 ## Constructors
@@ -133,14 +133,14 @@ Not allowed:
 - A comment is justified only to pin an architectural invariant the test guards.
 - A module-level `//!` describing the test file's scope is acceptable.
 
-## Threats and roles
+## Threats, roles, and knowledge
 
-**Files under `threats/` and `roles/` are prompts, not docs. They follow prompting conventions, not Rust conventions.**
+**Files under `threats/`, `roles/`, and `knowledge/` are model input, not docs. They follow prompting conventions, not Rust conventions.**
 
-- Each `threats/<lang>.md` opens with a one-line description, then the catalogue.
-- Each `roles/*.md` follows the role / context / task split of the [prompting guide](https://github.com/canvascomputing/prompting).
-- `{placeholder}` markers are bound through `Agent::template_variable(...)`; never inline a Rust format string.
-- Updating a pattern in `threats/` does not require a Rust code change.
+- Each `threats/<lang>.json` entry carries the prose an analyst reads verbatim in its `reason`.
+- Each `roles/*.md` follows the role / strengths / guidelines / output split of the [prompting guide](https://github.com/canvascomputing/prompting).
+- `{placeholder}` markers are bound through `Agent::template(...)`; never inline a Rust format string.
+- Adding an indicator or an incident page does not require a Rust code change, apart from listing a new page in `PAGES`.
 
 ## README structure
 

@@ -8,13 +8,16 @@ repository = "https://github.com/canvascomputing/malwi"
 readme = "../../README.md"
 keywords = ["malware", "security", "scanner", "agent", "llm"]
 categories = ["command-line-utilities", "development-tools"]
+# The synthetic sample tree runs a live beacon when imported: keep it out of
+# the published crate so nothing ships a payload with the scanner.
+exclude = ["tests/fixtures/**"]
 
 [[bin]]
 name = "malwi"
 path = "src/main.rs"
 
 [dependencies]
-agentwerk = "0.1"
+agentwerk = "0.1.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

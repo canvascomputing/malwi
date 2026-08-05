@@ -2,3 +2,7 @@
 
 # Default scan workspace created by every run.
 **/.malwi
+
+# Per-contributor provider credentials, sourced by `make run`.
+.env
+.env-local

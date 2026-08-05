@@ -1,0 +1,420 @@
+//! CLI argument parsing and help text.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use agentwerk::providers::{Model, ReasoningEffort};
+use serde_json::Value;
+
+pub(crate) struct CliArgs {
+    pub(crate) dir: PathBuf,
+    pub(crate) max_turns: Option<u32>,
+    pub(crate) max_time: Option<Duration>,
+    pub(crate) concurrency: usize,
+    pub(crate) output_file: Option<PathBuf>,
+    pub(crate) fail_fast: bool,
+    pub(crate) instruction: Option<String>,
+    pub(crate) models: Option<ModelTable>,
+}
+
+impl CliArgs {
+    pub(crate) fn parse() -> Self {
+        let args: Vec<String> = std::env::args().collect();
+        let mut dir: Option<PathBuf> = None;
+        let mut max_turns: Option<u32> = None;
+        let mut max_time: Option<Duration> = None;
+        let mut concurrency: usize = 2;
+        let mut output_file: Option<PathBuf> = None;
+        let mut fail_fast: bool = false;
+        let mut instruction: Option<String> = None;
+        let mut models: Option<ModelTable> = None;
+
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--max-turns" => {
+                    i += 1;
+                    max_turns = Some(
+                        args.get(i)
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or_else(|| bad_arg("--max-turns expects a positive number")),
+                    );
+                }
+                "--max-time" => {
+                    i += 1;
+                    max_time = Some(
+                        args.get(i)
+                            .and_then(|s| parse_duration(s))
+                            .unwrap_or_else(|| bad_arg("--max-time expects e.g. 90, 30s, 5m, 1h")),
+                    );
+                }
+                "--concurrency" => {
+                    i += 1;
+                    concurrency = args
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or_else(|| bad_arg("--concurrency expects a positive number"));
+                }
+                "--output" => {
+                    i += 1;
+                    output_file = Some(PathBuf::from(
+                        args.get(i)
+                            .map(String::as_str)
+                            .unwrap_or_else(|| bad_arg("--output expects a path")),
+                    ));
+                }
+                "--fail-fast" => {
+                    fail_fast = true;
+                }
+                "--instruction" => {
+                    i += 1;
+                    instruction = Some(
+                        args.get(i)
+                            .cloned()
+                            .unwrap_or_else(|| bad_arg("--instruction expects text")),
+                    );
+                }
+                "--models" => {
+                    i += 1;
+                    let path = Path::new(
+                        args.get(i)
+                            .map(String::as_str)
+                            .unwrap_or_else(|| bad_arg("--models expects a path")),
+                    );
+                    models = Some(ModelTable::load(path).unwrap_or_else(|e| bad_arg(&e)));
+                }
+                "-h" | "--help" => {
+                    Self::print_help();
+                    std::process::exit(0);
+                }
+                arg if arg.starts_with('-') => bad_arg(&format!("unknown flag: {arg}")),
+                _ => dir = Some(PathBuf::from(&args[i])),
+            }
+            i += 1;
+        }
+
+        Self {
+            dir: dir.unwrap_or_else(|| {
+                Self::print_help();
+                std::process::exit(1)
+            }),
+            max_turns,
+            max_time,
+            concurrency,
+            output_file,
+            fail_fast,
+            instruction,
+            models,
+        }
+    }
+
+    fn print_help() {
+        eprintln!(
+            "malwi. Identifies the project's purpose, scans for threat indicators\n\
+             (from a curated catalogue or via a Seeker searching the tree for threats),\n\
+             and dispatches suspect matches to an Analyst pool for deeper investigation.\n"
+        );
+        eprintln!("Usage: malwi <DIR> [OPTIONS]\n");
+        eprintln!("Options:");
+        eprintln!("      --concurrency <N>        Agent pool size per phase (default: 2)");
+        eprintln!("      --max-turns <N>          Per-queue turn limit (default: unlimited)");
+        eprintln!(
+            "      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)"
+        );
+        eprintln!(
+            "      --output <FILE>          Write analysis JSON to FILE (default: .malwi/analysis.json)"
+        );
+        eprintln!("      --fail-fast              Cancel the scan on the first malicious finding");
+        eprintln!(
+            "      --instruction <TEXT>     Append a custom instruction to every agent's prompt"
+        );
+        eprintln!(
+            "      --models <FILE>          One model per agent as JSON, keyed by ticket label,"
+        );
+        eprintln!(
+            "                               pool name, or agent name. A value is a model name or"
+        );
+        eprintln!(
+            "                               an object of model, reasoning, and context_window"
+        );
+        eprintln!(
+            "                               (default: every agent runs the model the environment"
+        );
+        eprintln!("                               names)");
+        eprintln!("  -h, --help                   Show this help\n");
+        eprintln!("Example:");
+        eprintln!("  malwi ./src");
+    }
+}
+
+/// The `--models` file, keyed by ticket label, pool, or single agent.
+#[derive(Debug)]
+pub(crate) struct ModelTable(BTreeMap<String, Model>);
+
+impl ModelTable {
+    fn load(path: &Path) -> Result<Self, String> {
+        let text = fs::read_to_string(path)
+            .map_err(|e| format!("--models: cannot read {}: {e}", path.display()))?;
+        Self::parse(&text).map_err(|e| format!("{e} (in {})", path.display()))
+    }
+
+    fn parse(text: &str) -> Result<Self, String> {
+        let entries: BTreeMap<String, Value> =
+            serde_json::from_str(text).map_err(|e| format!("--models: cannot parse JSON: {e}"))?;
+        entries
+            .iter()
+            .map(|(key, value)| model_from(key, value).map(|model| (key.clone(), model)))
+            .collect::<Result<_, _>>()
+            .map(Self)
+    }
+
+    /// One model per `(name, label)` agent. First match wins: name, pool, label.
+    ///
+    /// An uncovered agent and a key naming no agent are both errors, since the
+    /// file is the only model source and a typo has nothing to fall back to.
+    pub(crate) fn resolve_for(
+        &self,
+        roster: &[(String, &str)],
+    ) -> Result<BTreeMap<String, Model>, String> {
+        let mut resolved = BTreeMap::new();
+        let mut matched = BTreeSet::new();
+        let mut uncovered = Vec::new();
+        for (name, label) in roster {
+            let keys = [name.as_str(), pool_of(name), label];
+            matched.extend(keys.into_iter().filter(|key| self.0.contains_key(*key)));
+            match keys.into_iter().find(|key| self.0.contains_key(*key)) {
+                Some(key) => {
+                    resolved.insert(name.clone(), self.0[key].clone());
+                }
+                None => uncovered.push(format!("{name} ({label})")),
+            }
+        }
+
+        let unmatched: Vec<&str> = self
+            .0
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !matched.contains(key))
+            .collect();
+        let mut problems = Vec::new();
+        if !uncovered.is_empty() {
+            problems.push(format!("--models: no model for {}", uncovered.join(", ")));
+        }
+        if !unmatched.is_empty() {
+            problems.push(format!(
+                "--models: no agent matches {}\nvalid keys: {}, or one agent such as \"{}\"",
+                unmatched.join(", "),
+                valid_keys(roster).join(", "),
+                roster[0].0,
+            ));
+        }
+        if problems.is_empty() {
+            Ok(resolved)
+        } else {
+            Err(problems.join("\n"))
+        }
+    }
+}
+
+fn model_from(key: &str, value: &Value) -> Result<Model, String> {
+    if let Some(name) = value.as_str() {
+        return Ok(Model::from_name(name));
+    }
+    let Some(fields) = value.as_object() else {
+        return Err(format!(
+            "--models: {key} expects a model name or an object with a \"model\" field"
+        ));
+    };
+    if let Some(unknown) = fields
+        .keys()
+        .find(|k| !matches!(k.as_str(), "model" | "reasoning" | "context_window"))
+    {
+        return Err(format!(
+            "--models: {key} has unknown field \"{unknown}\"; accepted: model, reasoning, context_window"
+        ));
+    }
+    let name = fields
+        .get("model")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("--models: {key} needs a \"model\" field naming the model"))?;
+    let mut model = Model::from_name(name);
+    if let Some(value) = fields.get("reasoning") {
+        model = model.reasoning_effort(reasoning_from(key, value)?);
+    }
+    if let Some(value) = fields.get("context_window") {
+        let size = value.as_u64().filter(|n| *n > 0).ok_or_else(|| {
+            format!("--models: {key} expects \"context_window\" as a positive number of tokens")
+        })?;
+        model = model.context_window(size);
+    }
+    Ok(model)
+}
+
+fn reasoning_from(key: &str, value: &Value) -> Result<ReasoningEffort, String> {
+    match value.as_str() {
+        Some("off") => Ok(ReasoningEffort::Off),
+        Some("low") => Ok(ReasoningEffort::Low),
+        Some("medium") => Ok(ReasoningEffort::Medium),
+        Some("high") => Ok(ReasoningEffort::High),
+        _ => Err(format!(
+            "--models: {key} expects \"reasoning\" as off, low, medium, or high"
+        )),
+    }
+}
+
+/// `Analyst 2` belongs to pool `Analyst`.
+fn pool_of(name: &str) -> &str {
+    match name.rsplit_once(' ') {
+        Some((pool, number)) if number.chars().all(|c| c.is_ascii_digit()) => pool,
+        _ => name,
+    }
+}
+
+fn valid_keys<'a>(roster: &'a [(String, &'a str)]) -> Vec<&'a str> {
+    let mut keys: Vec<&str> = Vec::new();
+    for (name, label) in roster {
+        for key in [*label, pool_of(name)] {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+/// Parse `30`, `30s`, `5m`, or `1h` into a `Duration`. Bare numbers are seconds.
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, mult): (&str, u64) = match s.as_bytes().last().copied() {
+        Some(b's') => (&s[..s.len() - 1], 1),
+        Some(b'm') => (&s[..s.len() - 1], 60),
+        Some(b'h') => (&s[..s.len() - 1], 3600),
+        Some(b'0'..=b'9') => (s, 1),
+        _ => return None,
+    };
+    num.parse::<u64>()
+        .ok()
+        .map(|n| Duration::from_secs(n * mult))
+}
+
+fn bad_arg(msg: &str) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_supported_formats() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("  45s  "), Some(Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn rejects_invalid_input() {
+        assert!(parse_duration("").is_none());
+        assert!(parse_duration("   ").is_none());
+        assert!(parse_duration("5d").is_none());
+        assert!(parse_duration("90min").is_none());
+        assert!(parse_duration("abc").is_none());
+    }
+
+    fn roster() -> Vec<(String, &'static str)> {
+        vec![
+            ("Analyst 1".to_string(), "security_analysis"),
+            ("Analyst 2".to_string(), "security_analysis"),
+            ("Reporter".to_string(), "reporter"),
+        ]
+    }
+
+    fn resolve(json: &str) -> Result<BTreeMap<String, Model>, String> {
+        ModelTable::parse(json)?.resolve_for(&roster())
+    }
+
+    #[test]
+    fn a_bare_string_entry_is_the_model_name() {
+        let models = resolve(r#"{"Analyst": "gpt-5", "reporter": "gpt-4o"}"#).unwrap();
+        assert_eq!(models["Analyst 1"].name, "gpt-5");
+        assert_eq!(models["Reporter"].name, "gpt-4o");
+    }
+
+    #[test]
+    fn an_object_entry_carries_reasoning_and_context_window() {
+        let models = resolve(
+            r#"{
+                "Analyst": {"model": "gpt-5", "reasoning": "high"},
+                "reporter": {"model": "my-local-model", "context_window": 65536}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            models["Analyst 1"].get_reasoning_effort(),
+            ReasoningEffort::High
+        );
+        assert_eq!(models["Reporter"].get_context_window(), Some(65_536));
+    }
+
+    #[test]
+    fn an_agent_name_wins_over_its_pool_and_a_pool_over_its_label() {
+        let models = resolve(
+            r#"{
+                "Analyst 2": "gpt-4o",
+                "Analyst": "gpt-5",
+                "security_analysis": "mistral-medium-2508",
+                "reporter": "gpt-5"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(models["Analyst 2"].name, "gpt-4o");
+        assert_eq!(models["Analyst 1"].name, "gpt-5");
+    }
+
+    #[test]
+    fn a_key_every_agent_of_it_overrides_is_still_accepted() {
+        let models =
+            resolve(r#"{"Analyst": "gpt-5", "security_analysis": "gpt-4o", "reporter": "gpt-5"}"#);
+        assert!(models.is_ok(), "{:?}", models.unwrap_err());
+    }
+
+    #[test]
+    fn an_agent_no_key_covers_is_named_with_its_label() {
+        let error = resolve(r#"{"security_analysis": "gpt-5"}"#).unwrap_err();
+        assert!(error.contains("Reporter (reporter)"), "{error}");
+    }
+
+    #[test]
+    fn a_key_matching_no_agent_is_listed_with_the_valid_ones() {
+        let error = resolve(r#"{"security_analysis": "gpt-5", "reporting": "gpt-5"}"#).unwrap_err();
+        assert!(error.contains("reporting"), "{error}");
+        assert!(error.contains("Analyst"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_reasoning_word_names_the_accepted_ones() {
+        let error = ModelTable::parse(r#"{"Analyst": {"model": "gpt-5", "reasoning": "max"}}"#)
+            .unwrap_err();
+        assert!(error.contains("off, low, medium, or high"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_field_is_named() {
+        let error =
+            ModelTable::parse(r#"{"Analyst": {"model": "gpt-5", "effort": "high"}}"#).unwrap_err();
+        assert!(error.contains("effort"), "{error}");
+    }
+
+    #[test]
+    fn an_entry_without_a_model_field_is_rejected() {
+        let error = ModelTable::parse(r#"{"Analyst": {"reasoning": "high"}}"#).unwrap_err();
+        assert!(error.contains("model"), "{error}");
+    }
+}

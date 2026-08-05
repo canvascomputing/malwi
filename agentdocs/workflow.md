@@ -15,7 +15,7 @@ Commands used to build, test, release, and run the scanner.
 
 **Test layout and writing rules live in [testing.md](testing.md).**
 
-- `make test` runs `cargo test --workspace --lib` (every crate's inline `#[cfg(test)] mod tests`).
+- `make test` runs `cargo test --workspace --bins` (the binary's inline `#[cfg(test)] mod tests`).
 
 ## Release
 
@@ -39,5 +39,6 @@ Commands used to build, test, release, and run the scanner.
 
 - `make run dir=./src` scans `./src` with default settings.
 - `make run dir=./src args="--concurrency 4 --max-time 5m"` passes flags through.
+- `make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-fast"` scans the synthetic sample.
 - Configure an LLM provider first: see [Environment](../README.md#environment) in the README.
 - The full CLI reference lives in `malwi --help` and in the README.
