@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use agentwerk::event::{Event, EventKind, EventName};
+use agentwerk::event::{Event, EventKind, EventName, PolicyKind};
 use agentwerk::schemas::Schema;
 use agentwerk::{Stats, TicketQueue};
 use serde_json::{json, Value};
@@ -398,6 +398,21 @@ fn file_coverage<'a>(
     (scannable.intersection(&opened).count(), scannable.len())
 }
 
+/// True when a limit bounding the whole run was breached. `MaxSchemaRetries` is
+/// excluded: it's a per-ticket budget, so tripping it stops one ticket, not the run.
+pub(crate) fn is_run_wide_policy_stop(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::PolicyViolated {
+            policy: PolicyKind::Time
+                | PolicyKind::Turns
+                | PolicyKind::InputTokens
+                | PolicyKind::OutputTokens,
+            ..
+        }
+    )
+}
+
 pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
     let agent = &event.agent_name;
     let c = agent_color(agent);
@@ -410,6 +425,14 @@ pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
                 "tracing callers..."
             } else if agent.starts_with("Explorer") {
                 "exploring project..."
+            } else if agent.starts_with("Curator") {
+                "auditing the knowledge base..."
+            } else if agent.starts_with("Scout") {
+                "hunting public sources..."
+            } else if agent.starts_with("Editor") {
+                "drafting a page..."
+            } else if agent.starts_with("Verifier") {
+                "checking a page against its sources..."
             } else {
                 "investigating..."
             };
@@ -573,18 +596,33 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
         }
         "finish" => {
             let to = handover_label(input).unwrap_or("?");
-            let result = input
-                .get("result")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            format!("→ handover to {to}: {}", truncate(result, 80))
+            let result = match input.get("result") {
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
+            format!("→ handover to {to}: {}", truncate(&result, 80))
+        }
+        "brave_search" => {
+            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("searching the web for {}", truncate(query, 90))
+        }
+        "fetch_url" => {
+            let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            format!("opening {}", truncate(url, 90))
         }
         "manage_knowledge" => {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("?");
             let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("");
             match action {
+                // `description` is what the tool names the field; `summary` is
+                // kept as a fallback so an older payload still reads as a line.
                 "write" => {
-                    let summary = input.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                    let summary = input
+                        .get("description")
+                        .or_else(|| input.get("summary"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if summary.is_empty() {
                         format!("noting {slug}")
                     } else {
@@ -602,10 +640,29 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
 }
 
 /// Render the `→` completion line from a ticket's stored result: the Security
-/// Analyst verdict object `{ status, path, description }`, or a plain summary
-/// string from other agents. The result is already schema-validated, so a
+/// Analyst verdict object `{ status, path, description }`, the Curator's gap
+/// list, the Verifier's `{ slug, verdict, reason }`, or a plain summary string
+/// from other agents. Every schema-carrying result gets a shape of its own,
+/// since the fallback prints the whole object and a gap list dumped as JSON
+/// buries the run's own log. The result is already schema-validated, so a
 /// verdict the analyst JSON-encoded as a string arrives here decoded.
 fn finish_summary(result: &Value) -> String {
+    if let Some(gaps) = result.get("gaps").and_then(|v| v.as_array()) {
+        let topics: Vec<&str> = gaps
+            .iter()
+            .filter_map(|gap| gap.get("topic").and_then(|v| v.as_str()))
+            .collect();
+        return format!(
+            "→ {} gap(s): {}",
+            gaps.len(),
+            truncate(&topics.join("; "), 140)
+        );
+    }
+    if let Some(verdict) = result.get("verdict").and_then(|v| v.as_str()) {
+        let slug = result.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+        let reason = result.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+        return format!("→ {verdict} {slug}: {}", truncate(reason, 100));
+    }
     if let Some(verdict) = result.get("status").and_then(|v| v.as_str()) {
         let mut out = format!("→ {verdict}");
         if let Some(p) = result.get("path").and_then(|v| v.as_str()) {
@@ -626,16 +683,18 @@ fn finish_summary(result: &Value) -> String {
 }
 
 /// ANSI color code for an agent name. Each pool gets its own color so
-/// interleaved output from concurrent agents is easy to follow.
+/// interleaved output from concurrent agents is easy to follow, keyed on what
+/// the pool does rather than on its name: the pool that hunts is one color in
+/// both commands, the pool that writes another.
 fn agent_color(name: &str) -> &'static str {
-    if name.starts_with("Seeker") {
-        "\x1b[35m" // magenta
-    } else if name.starts_with("Tracer") {
-        "\x1b[36m" // cyan
-    } else if name.starts_with("Explorer") {
-        "\x1b[34m" // blue
+    if name.starts_with("Seeker") || name.starts_with("Scout") {
+        "\x1b[35m" // magenta (hunting)
+    } else if name.starts_with("Tracer") || name.starts_with("Editor") {
+        "\x1b[36m" // cyan (following a thread, writing it up)
+    } else if name.starts_with("Explorer") || name.starts_with("Curator") {
+        "\x1b[34m" // blue (surveying)
     } else {
-        "\x1b[32m" // green  (Analyst / default)
+        "\x1b[32m" // green (Analyst / Verifier / default: judging)
     }
 }
 
@@ -753,6 +812,61 @@ mod tests {
             "→ benign a.go"
         );
         assert_eq!(finish_summary(&json!("all clear")), "→ all clear");
+    }
+
+    /// Guards the research log: the audit's own result is the longest object
+    /// the run produces, and the fallback would print all of it as JSON.
+    #[test]
+    fn a_gap_list_logs_its_topics_rather_than_its_json() {
+        let gaps = json!({"gaps": [
+            {"topic": "source-build-only payloads", "why": "no page", "query": "a search"},
+            {"topic": "container base-layer tampering", "why": "no page", "query": "a search"},
+        ]});
+
+        let line = finish_summary(&gaps);
+
+        assert_eq!(
+            line,
+            "→ 2 gap(s): source-build-only payloads; container base-layer tampering"
+        );
+    }
+
+    #[test]
+    fn a_verdict_logs_the_page_it_judged_and_why() {
+        let verdict = json!({
+            "slug": "a-new-campaign",
+            "verdict": "rejected",
+            "reason": "the detectable signal describes a behaviour, not a string",
+        });
+
+        let line = finish_summary(&verdict);
+
+        assert_eq!(
+            line,
+            "→ rejected a-new-campaign: the detectable signal describes a behaviour, not a string"
+        );
+    }
+
+    #[test]
+    fn a_web_search_logs_its_query_rather_than_the_tool_arguments() {
+        let call = json!({"query": "PyPI sdist build hook malware 2026", "count": 5});
+
+        let line = tool_call_summary("brave_search", &call);
+
+        assert_eq!(
+            line,
+            "searching the web for PyPI sdist build hook malware 2026"
+        );
+    }
+
+    #[test]
+    fn a_fetch_logs_the_url_it_opened() {
+        let call = json!({"url": "https://example.test/advisory"});
+
+        assert_eq!(
+            tool_call_summary("fetch_url", &call),
+            "opening https://example.test/advisory"
+        );
     }
 
     #[test]

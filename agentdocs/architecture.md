@@ -29,13 +29,31 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - A file's hits within `CLUSTER_RADIUS` lines become one ticket, so an analyst sees a whole payload rather than one line of it.
 - Clusters are enqueued by lowest `rank` first, so the strongest evidence reaches the Analyst first.
 
+## Research fills the corpus it audits
+
+**`research` is the scanner pointed at its own blind spots, and it feeds the same pages the scan reads.**
+
+- A Curator runs alone on its own queue: nothing for the pools to claim exists until its gap list lands, so the fan-out is a driver step rather than a hook.
+- Scout, Editor, and Verifier pools share one queue, chained by `finish` handovers on `editing` and `verification`.
+- The gap list and every verdict carry a `Schema`, so a prose answer the driver cannot fan out is retried at `finish` time.
+- `--max-turns` and `--max-time` bound the audit queue and the research queue alike: an uncapped Curator would spend the budget its own pools need.
+
+## Verification gates installation
+
+**A page reaches the corpus only after an agent has checked it back against its own citations.**
+
+- The Editor writes drafts into the run's `Knowledge` store; only `research.rs` writes into the source tree.
+- The Verifier fetches a cited source before any verdict, and a page it rejects stays where it is.
+- A slug the binary already ships is refused: a run may add pages, never rewrite what the scanner already believes.
+- The installed front matter is rewritten from the store's page rather than carried over, so `type: AttackPattern` is the command's guarantee and not the model's.
+
 ## Knowledge is the shared surface
 
 **Agents never call each other: they read and write pages in shared stores.**
 
 - `exploration/` carries the Explorer's overview and the Tracer's notes; both pools open the same store.
 - `searches/` carries what the Seeker already tried, so a refilled ticket does not repeat a search.
-- Both stores are seeded from `attack_patterns::copy_seed_into` before `Knowledge::load` indexes them.
+- Both stores are seeded from `attacks::copy_seed_into` before `Knowledge::load` indexes them.
 - The file map is written into both stores up front, so no agent has to glob the tree.
 
 ## Only the Seeker refills

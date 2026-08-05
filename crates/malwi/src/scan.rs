@@ -9,7 +9,7 @@
 //! pools drain, the Reporter phrases the verdict on its own uncapped queue, so
 //! a `--max-time` stop never cuts the summary.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,19 +17,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentwerk::agents::Trajectory;
-use agentwerk::event::{Event, EventKind, PolicyKind};
-use agentwerk::providers::{model_from_env, provider_from_env, Model, Provider};
+use agentwerk::providers::{provider_from_env, Model, Provider};
 use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
 use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
-use crate::cli::{ModelTable, ScanArgs};
+use crate::cli::{agent_name, default_model, resolve_models, ScanArgs};
 use crate::discovery::{
     ScanTree, Scanner, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL,
 };
 use crate::report::{
-    analyst_result_schema, build_analysis, log_event, print_summary, render_findings_table,
-    reporter_result_schema,
+    analyst_result_schema, build_analysis, is_run_wide_policy_stop, log_event, print_summary,
+    render_findings_table, reporter_result_schema,
 };
 
 const SEEKER_AGENT: &str = include_str!("roles/seeker.md");
@@ -57,7 +56,7 @@ const REPORT_INPUT_LABELS: [&str; 4] = [ANALYSIS_LABEL, TRACER_LABEL, EXPLORER_L
 /// agent's `Output` section hand-writing its own wording, since a model
 /// that leaves a field JSON-encoded as a string (rather than emitting it as
 /// a native array or object) fails schema validation.
-const OUTPUT_CONTRACT: &str = "Call `finish` exactly once with the result fields as its top-level arguments. Emit each field as its native JSON type, never as a JSON-encoded string: an array field is a JSON array, not a string containing array syntax; a text field is plain text, not a string containing escaped JSON.";
+const OUTPUT_CONTRACT: &str = include_str!("roles/output_contract.md");
 
 /// Distinct searches a Seeker aims for per ticket before the pool refills it.
 /// Injected into the prompt so the target lives in one place.
@@ -124,7 +123,7 @@ pub(crate) async fn run(args: ScanArgs) {
     // Seed the attack-pattern pages before indexing: `Knowledge::load` builds its
     // index from whatever it finds on disk, so the seed must be in place first.
     let exploration_dir = format!("{WORK_DIR}/exploration");
-    if let Err(e) = crate::attack_patterns::copy_seed_into(std::path::Path::new(&exploration_dir)) {
+    if let Err(e) = crate::attacks::copy_seed_into(std::path::Path::new(&exploration_dir)) {
         eprintln!("cannot seed exploration knowledge: {e}");
         std::process::exit(1);
     }
@@ -137,7 +136,7 @@ pub(crate) async fn run(args: ScanArgs) {
     // Tracer gets. The Seeker records each query it runs here, so a refilled ticket
     // reads the index and skips shapes already tried.
     let searches_dir = format!("{WORK_DIR}/searches");
-    if let Err(e) = crate::attack_patterns::copy_seed_into(std::path::Path::new(&searches_dir)) {
+    if let Err(e) = crate::attacks::copy_seed_into(std::path::Path::new(&searches_dir)) {
         eprintln!("cannot seed search knowledge: {e}");
         std::process::exit(1);
     }
@@ -237,7 +236,7 @@ pub(crate) async fn run(args: ScanArgs) {
                 .role(ANALYST_AGENT.trim())
                 .template("instruction", &instruction_section)
                 .template("verdicts", ANALYST_VERDICTS.trim())
-                .template("output_contract", OUTPUT_CONTRACT)
+                .template("output_contract", OUTPUT_CONTRACT.trim())
                 .label(ANALYSIS_LABEL)
                 .dir(scan_dir.to_path_buf())
                 .knowledge(&analyst_knowledge)
@@ -438,20 +437,6 @@ pub(crate) async fn run(args: ScanArgs) {
     }
 }
 
-fn agent_name(pool: &str, index: usize) -> String {
-    format!("{pool} {}", index + 1)
-}
-
-/// What every agent runs without `--models`: the model the environment names,
-/// resolved the same way the provider itself is.
-fn default_model() -> Model {
-    let name = model_from_env().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    });
-    Model::from_name(&name)
-}
-
 /// Every agent the run builds, with its label. The Reporter works alone, so it
 /// carries no member number.
 fn roster(concurrency: usize) -> Vec<(String, &'static str)> {
@@ -461,26 +446,6 @@ fn roster(concurrency: usize) -> Vec<(String, &'static str)> {
         .collect();
     agents.push((REPORTER_NAME.to_string(), REPORTER_LABEL));
     agents
-}
-
-/// One model per agent name. A `--models` file covers the whole roster or the
-/// run stops here.
-fn resolve_models(
-    table: Option<&ModelTable>,
-    roster: &[(String, &str)],
-    default: impl FnOnce() -> Model,
-) -> BTreeMap<String, Model> {
-    let Some(table) = table else {
-        let default = default();
-        return roster
-            .iter()
-            .map(|(name, _)| (name.clone(), default.clone()))
-            .collect();
-    };
-    table.resolve_for(roster).unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    })
 }
 
 /// Block until the Reporter's inputs are ready. Polls rather than calling
@@ -532,7 +497,7 @@ async fn run_report_phase(
             .model(model)
             .role(REPORTER_AGENT.trim())
             .template("instruction", instruction)
-            .template("output_contract", OUTPUT_CONTRACT)
+            .template("output_contract", OUTPUT_CONTRACT.trim())
             .template("verdicts", ANALYST_VERDICTS.trim())
             .label(REPORTER_LABEL)
             .knowledge(knowledge)
@@ -586,21 +551,6 @@ fn merge_reporter_verdict(tickets: &TicketQueue, analysis: &mut Value) {
     if let Some(d) = result.get("details") {
         analysis["details"] = d.clone();
     }
-}
-
-/// True when a limit bounding the whole run was breached. `MaxSchemaRetries` is
-/// excluded: it's a per-ticket budget, so tripping it stops one ticket, not the run.
-fn is_run_wide_policy_stop(event: &Event) -> bool {
-    matches!(
-        event.kind,
-        EventKind::PolicyViolated {
-            policy: PolicyKind::Time
-                | PolicyKind::Turns
-                | PolicyKind::InputTokens
-                | PolicyKind::OutputTokens,
-            ..
-        }
-    )
 }
 
 /// True when a schema-validated result object carries `status: "malicious"`.

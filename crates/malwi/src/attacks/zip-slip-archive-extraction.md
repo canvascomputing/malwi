@@ -22,17 +22,24 @@ later runs turns the write into code execution: a shell startup file, an interpr
 hook, an `authorized_keys`, a cron or service unit, or a binary already on the PATH
 
 ## Detectable signal
-an extraction call with nothing between opening the archive and writing it that inspects the
-member names, and nothing before the open that checks the archive against a digest or a
-signature. By language:
-- Python: `.extractall(...)` on a `zipfile.ZipFile` or `tarfile`, `shutil.unpack_archive(...)`
-- JavaScript: `extractAllTo(...)` (adm-zip), `unzipper.Extract(...)`, `tar.x(...)`,
-  `decompress(...)`
-- Go: an `archive/zip` or `archive/tar` reader loop calling `filepath.Join(dest, header.Name)`
-- Java: `ZipInputStream` with `ZipEntry.getName()` passed to a `File` or `Path`
-- Rust: `zip::ZipArchive::extract(...)`, `tar::Archive::unpack(...)`
-- C/C++: `libarchive` `archive_read_extract`, or a `minizip` loop writing `filename_inzip`
+The shape, which catches a variant sharing no text with this incident:
+- an extraction call with nothing between opening the archive and writing it that inspects the
+  member names, and nothing before the open that checks the archive against a digest or signature.
+  The absence of the guard is the finding, so name what is missing: no rejection of a `..`
+  component, no canonicalised path compared against the destination, no symlink check
+- more generally, any loop that joins attacker-supplied names to a base directory and writes the
+  result: archive members, multipart upload filenames, manifest entries, cache keys
+- by language, the extraction calls to look for:
+  - Python: `.extractall(...)` on a `zipfile.ZipFile` or `tarfile`, `shutil.unpack_archive(...)`
+  - JavaScript: `extractAllTo(...)` (adm-zip), `unzipper.Extract(...)`, `tar.x(...)`, `decompress(...)`
+  - Go: an `archive/zip` or `archive/tar` reader loop calling `filepath.Join(dest, header.Name)`
+  - Java: `ZipInputStream` with `ZipEntry.getName()` passed to a `File` or `Path`
+  - Rust: `zip::ZipArchive::extract(...)`, `tar::Archive::unpack(...)`
+  - C/C++: `libarchive` `archive_read_extract`, or a `minizip` loop writing `filename_inzip`
 
-The absence of the guard is the finding, so name what is missing: no rejection of a `..`
-component, no canonicalised path compared against the destination, no symlink check. An
-extraction that does carry one of those is not this pattern.
+There is no literal to grep here: this is a missing check rather than an added payload, and an
+extraction that does carry one of those guards is not this pattern.
+
+## Sources
+- https://github.com/snyk/zip-slip-vulnerability
+- https://snyk.io/blog/zip-slip-vulnerability/

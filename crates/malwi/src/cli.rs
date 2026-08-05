@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agentwerk::providers::{Model, ReasoningEffort};
+use agentwerk::providers::{model_from_env, Model, ReasoningEffort};
 use serde_json::Value;
 
 /// What the operator asked malwi to do.
@@ -26,9 +26,18 @@ pub(crate) struct ScanArgs {
     pub(crate) models: Option<ModelTable>,
 }
 
-/// Options of `malwi research <QUESTION>`.
+/// Options of `malwi research [TOPIC]`.
 pub(crate) struct ResearchArgs {
-    pub(crate) question: String,
+    /// What to steer the hunt towards. Without it the run audits the whole
+    /// knowledge base and picks its own gaps.
+    pub(crate) steer: Option<String>,
+    pub(crate) max_gaps: usize,
+    pub(crate) max_turns: Option<u32>,
+    pub(crate) max_time: Option<Duration>,
+    pub(crate) concurrency: usize,
+    pub(crate) knowledge_dir: Option<PathBuf>,
+    pub(crate) output_file: Option<PathBuf>,
+    pub(crate) models: Option<ModelTable>,
 }
 
 /// Why parsing produced no command to run.
@@ -152,19 +161,90 @@ fn parse_scan(args: &[String]) -> Result<ScanArgs, CliExit> {
     })
 }
 
-/// Every remaining word is the question, so quoting it is optional.
+/// Every word outside a flag is part of the topic, so quoting it is optional.
+/// No topic at all is legal: the run then audits the whole knowledge base.
 fn parse_research(args: &[String]) -> Result<ResearchArgs, CliExit> {
-    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
-        return Err(CliExit::HelpRequested(research_help()));
+    let mut words: Vec<&str> = Vec::new();
+    let mut max_gaps: usize = 5;
+    let mut max_turns: Option<u32> = None;
+    let mut max_time: Option<Duration> = None;
+    let mut concurrency: usize = 2;
+    let mut knowledge_dir: Option<PathBuf> = None;
+    let mut output_file: Option<PathBuf> = None;
+    let mut models: Option<ModelTable> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max-gaps" => {
+                i += 1;
+                max_gaps = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| rejected("--max-gaps expects a positive number"))?;
+            }
+            "--max-turns" => {
+                i += 1;
+                max_turns = Some(
+                    args.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| rejected("--max-turns expects a positive number"))?,
+                );
+            }
+            "--max-time" => {
+                i += 1;
+                max_time = Some(
+                    args.get(i)
+                        .and_then(|s| parse_duration(s))
+                        .ok_or_else(|| rejected("--max-time expects e.g. 90, 30s, 5m, 1h"))?,
+                );
+            }
+            "--concurrency" => {
+                i += 1;
+                concurrency = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| rejected("--concurrency expects a positive number"))?;
+            }
+            "--knowledge" => {
+                i += 1;
+                knowledge_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| rejected("--knowledge expects a path"))?,
+                ));
+            }
+            "--output" => {
+                i += 1;
+                output_file = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| rejected("--output expects a path"))?,
+                ));
+            }
+            "--models" => {
+                i += 1;
+                let path = args
+                    .get(i)
+                    .map(Path::new)
+                    .ok_or_else(|| rejected("--models expects a path"))?;
+                models = Some(ModelTable::load(path).map_err(CliExit::ArgumentRejected)?);
+            }
+            "-h" | "--help" => return Err(CliExit::HelpRequested(research_help())),
+            arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
+            word => words.push(word),
+        }
+        i += 1;
     }
-    if let Some(flag) = args.iter().find(|arg| arg.starts_with('-')) {
-        return Err(rejected(&format!("unknown flag: {flag}")));
-    }
-    if args.is_empty() {
-        return Err(CliExit::ArgumentRejected(research_help()));
-    }
+
     Ok(ResearchArgs {
-        question: args.join(" "),
+        steer: (!words.is_empty()).then(|| words.join(" ")),
+        max_gaps,
+        max_turns,
+        max_time,
+        concurrency,
+        knowledge_dir,
+        output_file,
+        models,
     })
 }
 
@@ -175,7 +255,7 @@ Usage: malwi <COMMAND> [OPTIONS]
 
 Commands:
   scan       Scan a directory and write a JSON verdict
-  research   Answer a security question (not yet implemented)
+  research   Find gaps in the attack-pattern knowledge and fill them from public sources
 
 Options:
   -h, --help   Show this help
@@ -211,16 +291,72 @@ Example:
 }
 
 fn research_help() -> String {
-    "malwi research. Answers a security question from public sources. Not yet implemented.
+    "malwi research. Audits the attack-pattern knowledge for incidents it does not
+cover, hunts each gap through web search and page fetches, drafts a page per
+incident, and installs the ones that survive verification. A source checkout
+takes the new pages directly, so the next build ships them.
 
-Usage: malwi research <QUESTION>
+Usage: malwi research [TOPIC] [OPTIONS]
+
+A TOPIC steers the hunt towards one area. Without one the run picks its own gaps.
 
 Options:
-  -h, --help   Show this help
+      --max-gaps <N>           Gaps to research in one run (default: 5)
+      --concurrency <N>        Agent pool size per phase (default: 2)
+      --max-turns <N>          Per-queue turn limit (default: unlimited)
+      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)
+      --knowledge <DIR>        Install new pages here (default: the source tree
+                               when run from a checkout, else .malwi/attacks)
+      --output <FILE>          Write the research JSON to FILE (default: .malwi/research/research.json)
+      --models <FILE>          One model per agent as JSON, keyed by ticket label,
+                               pool name, or agent name. A value is a model name or
+                               an object of model, reasoning, and context_window
+                               (default: every agent runs the model the environment
+                               names)
+  -h, --help                   Show this help
 
-Example:
-  malwi research \"how did the shai-hulud npm worm spread\""
+Environment:
+  BRAVE_API_KEY   Required. Web search runs through the Brave Search API.
+
+Examples:
+  malwi research
+  malwi research npm registry attacks 2026 --max-gaps 3"
         .to_string()
+}
+
+/// One agent of a pool: `Analyst 2` is the second Analyst.
+pub(crate) fn agent_name(pool: &str, index: usize) -> String {
+    format!("{pool} {}", index + 1)
+}
+
+/// What every agent runs without `--models`: the model the environment names,
+/// resolved the same way the provider itself is.
+pub(crate) fn default_model() -> Model {
+    let name = model_from_env().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    Model::from_name(&name)
+}
+
+/// One model per agent name. A `--models` file covers the whole roster or the
+/// run stops here.
+pub(crate) fn resolve_models(
+    table: Option<&ModelTable>,
+    roster: &[(String, &str)],
+    default: impl FnOnce() -> Model,
+) -> BTreeMap<String, Model> {
+    let Some(table) = table else {
+        let default = default();
+        return roster
+            .iter()
+            .map(|(name, _)| (name.clone(), default.clone()))
+            .collect();
+    };
+    table.resolve_for(roster).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
 }
 
 /// The `--models` file, keyed by ticket label, pool, or single agent.
@@ -234,7 +370,7 @@ impl ModelTable {
         Self::parse(&text).map_err(|e| format!("{e} (in {})", path.display()))
     }
 
-    fn parse(text: &str) -> Result<Self, String> {
+    pub(crate) fn parse(text: &str) -> Result<Self, String> {
         let entries: BTreeMap<String, Value> =
             serde_json::from_str(text).map_err(|e| format!("--models: cannot parse JSON: {e}"))?;
         entries
@@ -427,11 +563,31 @@ mod tests {
     }
 
     #[test]
-    fn research_joins_its_words_into_one_question() {
-        let Ok(Command::Research(args)) = parse("research how did shai-hulud spread") else {
+    fn research_joins_its_words_into_one_steer() {
+        let Ok(Command::Research(args)) = parse("research npm registry attacks --max-gaps 3")
+        else {
             panic!("research should parse");
         };
-        assert_eq!(args.question, "how did shai-hulud spread");
+        assert_eq!(args.steer.as_deref(), Some("npm registry attacks"));
+        assert_eq!(args.max_gaps, 3);
+    }
+
+    /// Guards the autonomous audit: a bare `research` is a run, not a usage error.
+    #[test]
+    fn research_without_words_steers_nowhere() {
+        let Ok(Command::Research(args)) = parse("research") else {
+            panic!("research should parse without a topic");
+        };
+        assert_eq!(args.steer, None);
+        assert_eq!(args.max_gaps, 5);
+    }
+
+    #[test]
+    fn an_unknown_research_flag_is_named() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("research --deep") else {
+            panic!("--deep is not a flag");
+        };
+        assert!(message.contains("--deep"), "{message}");
     }
 
     #[test]

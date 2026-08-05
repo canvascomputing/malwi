@@ -1,0 +1,1 @@
+Call `finish` exactly once with the result fields as its top-level arguments. Emit each field as its native JSON type, never as a JSON-encoded string: an array field is a JSON array, not a string containing array syntax; a text field is plain text, not a string containing escaped JSON.
