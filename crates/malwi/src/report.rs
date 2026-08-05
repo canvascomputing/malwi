@@ -10,7 +10,7 @@ use agentwerk::schemas::Schema;
 use agentwerk::{Stats, TicketQueue};
 use serde_json::{json, Value};
 
-use crate::scan::{ScanTree, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL};
+use crate::discovery::{ScanTree, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL};
 
 /// Build the analysis JSON from completed analyst tickets. Top-level
 /// `status` is the worst across findings (`malicious` > `exploitable`

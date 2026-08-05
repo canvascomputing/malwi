@@ -1,1296 +1,751 @@
-//! Walks the tree, greps it against the curated indicator catalogues, and turns
-//! each cluster of hits into one piece of evidence for the Tracer.
+//! The `scan` command: finds IoC matches and routes each through reachability
+//! analysis to an Analyst. Curated extensions scan synchronously against their
+//! catalogues and hand their matches to a Tracer. In parallel, Seekers search
+//! the tree continuously with regex `grep` queries; an interesting hit also
+//! hands over to a Tracer. The Tracer establishes how the flagged code could be
+//! reached and hands that analysis to an Analyst for the verdict. A pool of
+//! Explorers captures the project's intent alongside, so analysis has that context.
+//! Explorers, Seekers, Tracers, and Analysts share one `TicketQueue`; once the
+//! pools drain, the Reporter phrases the verdict on its own uncapped queue, so
+//! a `--max-time` stop never cuts the summary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-use serde::Deserialize;
+use agentwerk::agents::Trajectory;
+use agentwerk::event::{Event, EventKind, PolicyKind};
+use agentwerk::providers::{model_from_env, provider_from_env, Model, Provider};
+use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
+use serde_json::{json, Value};
 
-use agentwerk::agents::knowledge::Page;
-use agentwerk::codegrep::{self, Conf, Pattern};
-use agentwerk::{Knowledge, Ticket, TicketQueue};
+use crate::cli::{ModelTable, ScanArgs};
+use crate::discovery::{
+    ScanTree, Scanner, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL,
+};
+use crate::report::{
+    analyst_result_schema, build_analysis, log_event, print_summary, render_findings_table,
+    reporter_result_schema,
+};
 
-use super::report::scanner;
+const SEEKER_AGENT: &str = include_str!("roles/seeker.md");
+const ANALYST_AGENT: &str = include_str!("roles/analyst.md");
+const ANALYST_VERDICTS: &str = include_str!("roles/verdicts.md");
+const TRACER_AGENT: &str = include_str!("roles/tracer.md");
+const EXPLORER_AGENT: &str = include_str!("roles/explorer.md");
+const REPORTER_AGENT: &str = include_str!("roles/reporter.md");
+const REPORTER_LABEL: &str = "reporter";
+const REPORTER_NAME: &str = "Reporter";
 
-const IOC_JAVASCRIPT: &str = include_str!("threats/javascript.json");
-const IOC_PYTHON: &str = include_str!("threats/python.json");
-const IOC_RUST: &str = include_str!("threats/rust.json");
-const IOC_CPP: &str = include_str!("threats/cpp.json");
-const IOC_GO: &str = include_str!("threats/go.json");
-const IOC_HASKELL: &str = include_str!("threats/haskell.json");
+/// Pool name and the label its tickets carry, shared by the built agents and
+/// the `--models` roster so the two cannot disagree.
+const POOLS: [(&str, &str); 4] = [
+    ("Analyst", ANALYSIS_LABEL),
+    ("Seeker", SEEKER_LABEL),
+    ("Tracer", TRACER_LABEL),
+    ("Explorer", EXPLORER_LABEL),
+];
 
-pub(crate) const SEEKER_LABEL: &str = "seeking";
-pub(crate) const ANALYSIS_LABEL: &str = "security_analysis";
-pub(crate) const TRACER_LABEL: &str = "tracing";
-pub(crate) const EXPLORER_LABEL: &str = "exploration";
+const REPORT_INPUT_LABELS: [&str; 4] = [ANALYSIS_LABEL, TRACER_LABEL, EXPLORER_LABEL, SEEKER_LABEL];
 
-/// Size limit on files entering the grep sweep; skips bundles,
-/// minified assets, and binary blobs.
-const MAX_GREP_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Shared `finish` calling convention, substituted into every agent
+/// whose ticket carries a `Schema`. One source of truth instead of each
+/// agent's `Output` section hand-writing its own wording, since a model
+/// that leaves a field JSON-encoded as a string (rather than emitting it as
+/// a native array or object) fails schema validation.
+const OUTPUT_CONTRACT: &str = "Call `finish` exactly once with the result fields as its top-level arguments. Emit each field as its native JSON type, never as a JSON-encoded string: an array field is a JSON array, not a string containing array syntax; a text field is plain text, not a string containing escaped JSON.";
 
-/// Length limit on a single rendered source line in an analyst ticket.
-/// Minified-file matches can be megabytes, so every excerpt and code-snippet
-/// line is truncated to this before it reaches the ticket.
-const MAX_EXCERPT_LEN: usize = 200;
+/// Distinct searches a Seeker aims for per ticket before the pool refills it.
+/// Injected into the prompt so the target lives in one place.
+const SEARCHES_PER_TICKET: u32 = 10;
 
-/// Lines of surrounding source shown on each side of a matched line in the
-/// ticket's code snippet, so the analyst reads the real context (comments,
-/// guards, adjacent calls) without re-opening the file.
-const SNIPPET_CONTEXT: usize = 3;
+/// The scanner's working folder: tickets, knowledge stores, and the analysis
+/// output all live here. Named for the project and wiped at the start of every
+/// run so nothing carries over from a prior scan.
+const WORK_DIR: &str = ".malwi";
 
-/// Hits within this many lines of each other in the same file are
-/// bundled into one analyst ticket. `0` disables clustering.
-pub(crate) const CLUSTER_RADIUS: usize = 20;
+pub(crate) async fn run(args: ScanArgs) {
+    let concurrency = args.concurrency.max(1);
+    let roster = roster(concurrency);
+    let models = resolve_models(args.models.as_ref(), &roster, default_model);
+    let provider = provider_from_env().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
 
-/// File paths per `file-map-NN` knowledge page.
-const FILE_MAP_PAGE_SIZE: usize = 30;
-
-/// Limit on file-map pages, so the injected index stays bounded on a large tree.
-const FILE_MAP_MAX_PAGES: usize = 40;
-
-/// `Pattern` queries run codegrep against file contents. `Substring`
-/// queries do a byte-substring search and are reserved for credential
-/// prefixes embedded inside larger word tokens where codegrep cannot
-/// reach. `File` queries match against relative paths.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum IocKind {
-    Pattern,
-    Substring,
-    File,
-}
-
-/// One catalogue entry: category, query, kind, and the prose reason the
-/// analyst sees verbatim.
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct IocEntry {
-    pub category: String,
-    pub query: String,
-    #[serde(rename = "type")]
-    pub kind: IocKind,
-    pub reason: String,
-    /// Explicit priority value stored in the JSON catalogue. Lower ranks are
-    /// higher-signal indicators processed first, so a `--fail-fast` run
-    /// reaches a malicious verdict from the strongest evidence first.
-    pub rank: usize,
-}
-
-/// One match. Code hits carry the line span and excerpt; file hits
-/// leave those fields `None` and only carry the matched path.
-#[derive(Clone, Debug)]
-pub(crate) struct Hit {
-    pub path: PathBuf,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
-    pub line_length: Option<usize>,
-    pub excerpt: Option<String>,
-    pub entry: IocEntry,
-}
-
-pub(crate) struct ScanTree {
-    pub files: usize,
-    pub extensions: Vec<String>,
-    /// Relative paths grouped by dotted extension (`.go`), each list sorted.
-    /// Written into the Tracer's knowledge as a file map so it need not glob.
-    pub files_by_ext: BTreeMap<String, Vec<String>>,
-}
-
-impl ScanTree {
-    /// Walk `root` recursively and collect every distinct file extension.
-    pub(crate) fn collect(root: &Path) -> ScanTree {
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        let mut files_by_ext: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut files: usize = 0;
-        let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let entries = match fs::read_dir(&dir) {
-                Ok(it) => it,
-                Err(e) => {
-                    eprintln!("warn: cannot read {}: {e}", dir.display());
-                    continue;
-                }
-            };
-            for entry in entries.flatten() {
-                let meta = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(e) => {
-                        eprintln!("warn: cannot stat {}: {e}", entry.path().display());
-                        continue;
-                    }
-                };
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
-                let path = entry.path();
-                if meta.is_dir() {
-                    stack.push(path);
-                } else if meta.is_file() {
-                    files += 1;
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        let dotted = format!(".{ext}");
-                        set.insert(dotted.clone());
-                        let rel = path
-                            .strip_prefix(root)
-                            .unwrap_or(&path)
-                            .to_string_lossy()
-                            .into_owned();
-                        files_by_ext.entry(dotted).or_default().push(rel);
-                    }
-                }
-            }
+    // Probe the config before any work: a wrong key, model, or endpoint fails
+    // here with a clear message instead of failing every ticket downstream.
+    let mut probed = BTreeSet::new();
+    for model in models.values() {
+        if !probed.insert(model.name.as_str()) {
+            continue;
         }
-        for paths in files_by_ext.values_mut() {
-            paths.sort();
-        }
-        ScanTree {
-            files,
-            extensions: set.into_iter().collect(),
-            files_by_ext,
+        if let Err(error) = provider.verify(&model.name).await {
+            eprintln!(
+                "cannot reach model '{}': {error}\n\
+                 check the API key and endpoint for the configured provider, \
+                 and the model names in --models.",
+                model.name,
+            );
+            std::process::exit(1);
         }
     }
-}
 
-/// Write the tree's files into `store` as numbered `file-map-NN` pages,
-/// `FILE_MAP_PAGE_SIZE` paths each, grouped by extension so a Tracer reads the map
-/// instead of globbing. Capped at `FILE_MAP_MAX_PAGES`; a larger tree is logged as
-/// truncated. Returns the number of pages written.
-pub(crate) fn write_file_map(
-    store: &Knowledge,
-    files_by_ext: &BTreeMap<String, Vec<String>>,
-) -> usize {
-    let total: usize = files_by_ext.values().map(Vec::len).sum();
-    let entries: Vec<(&str, &str)> = files_by_ext
-        .iter()
-        .flat_map(|(ext, paths)| paths.iter().map(move |p| (ext.as_str(), p.as_str())))
-        .collect();
+    let scan_dir = fs::canonicalize(&args.dir).unwrap_or_else(|e| {
+        eprintln!("cannot resolve directory '{}': {e}", args.dir.display());
+        std::process::exit(1);
+    });
 
-    let mut pages = 0;
-    for chunk in entries.chunks(FILE_MAP_PAGE_SIZE).take(FILE_MAP_MAX_PAGES) {
-        pages += 1;
-        let first = chunk.first().map(|(e, _)| *e).unwrap_or("");
-        let last = chunk.last().map(|(e, _)| *e).unwrap_or("");
-        let range = if first == last {
-            first.to_string()
-        } else {
-            format!("{first} to {last}")
+    let scan = ScanTree::collect(&scan_dir);
+    if scan.extensions.is_empty() {
+        eprintln!(
+            "no files with extensions found under {} ({} file(s) walked)",
+            scan_dir.display(),
+            scan.files,
+        );
+        std::process::exit(1);
+    }
+
+    let files_walked = scan.files;
+
+    // Start every run from a clean working folder: no tickets, knowledge, or
+    // results carried over from a prior scan.
+    let _ = fs::remove_dir_all(WORK_DIR);
+
+    let analyst_knowledge = Knowledge::load(WORK_DIR).unwrap_or_else(|e| {
+        eprintln!("cannot open analyst knowledge: {e}");
+        std::process::exit(1);
+    });
+
+    // Seed the attack-pattern pages before indexing: `Knowledge::load` builds its
+    // index from whatever it finds on disk, so the seed must be in place first.
+    let exploration_dir = format!("{WORK_DIR}/exploration");
+    if let Err(e) = crate::attack_patterns::copy_seed_into(std::path::Path::new(&exploration_dir)) {
+        eprintln!("cannot seed exploration knowledge: {e}");
+        std::process::exit(1);
+    }
+    let exploration_knowledge = Knowledge::load(&exploration_dir).unwrap_or_else(|e| {
+        eprintln!("cannot open exploration knowledge: {e}");
+        std::process::exit(1);
+    });
+
+    // Run-scoped writable store, seeded with the same attack-pattern pages the
+    // Tracer gets. The Seeker records each query it runs here, so a refilled ticket
+    // reads the index and skips shapes already tried.
+    let searches_dir = format!("{WORK_DIR}/searches");
+    if let Err(e) = crate::attack_patterns::copy_seed_into(std::path::Path::new(&searches_dir)) {
+        eprintln!("cannot seed search knowledge: {e}");
+        std::process::exit(1);
+    }
+    let seeker_knowledge = Knowledge::load(&searches_dir).unwrap_or_else(|e| {
+        eprintln!("cannot open search knowledge: {e}");
+        std::process::exit(1);
+    });
+
+    // Write the tree's files into both worker stores as a paginated map, before
+    // any agent starts, so Tracers and Seekers read it instead of re-globbing.
+    crate::discovery::write_file_map(&exploration_knowledge, &scan.files_by_ext);
+    crate::discovery::write_file_map(&seeker_knowledge, &scan.files_by_ext);
+
+    eprintln!("malwi scan: {}\n", scan_dir.display());
+
+    let tickets = TicketQueue::new();
+    tickets.dir(WORK_DIR);
+    // The default of 10 is tight for a weaker model that frequently replies with
+    // no tool call at all: a ticket can burn its whole retry budget on that alone,
+    // failing via MaxSchemaRetries before it ever reaches a real finding.
+    tickets.max_schema_retries(20);
+    tickets.schema_for_label(ANALYSIS_LABEL, analyst_result_schema());
+    if let Some(n) = args.max_turns {
+        tickets.max_turns(n);
+    }
+    if let Some(d) = args.max_time {
+        tickets.max_time(d);
+    }
+    let log_tickets = Arc::clone(&tickets);
+    tickets.on_event(move |e| log_event(e, &log_tickets));
+
+    // A policy trip alone never flips `is_cancelled()`, so `--max-time` would
+    // otherwise just abandon tickets `InProgress` forever.
+    tickets.cancel_on_event(is_run_wide_policy_stop);
+
+    // A policy stop (time/turns/tokens) is a graceful end, not an abort: unlike a
+    // ctrl-c cancel it must still produce the report. Record it so the abort check
+    // can tell the two apart, since both flip `is_cancelled()`.
+    let policy_stopped = Arc::new(AtomicBool::new(false));
+    let policy_flag = Arc::clone(&policy_stopped);
+    tickets.on_event(move |e| {
+        if is_run_wide_policy_stop(e) {
+            policy_flag.store(true, Ordering::Relaxed);
+        }
+    });
+
+    // Fail-fast records the first malicious verdict and calls off the Seeker,
+    // Tracer, and Analyst pools; the Explorer and Reporter still run so the
+    // report is whole.
+    let malicious_found = Arc::new(AtomicBool::new(false));
+    if args.fail_fast {
+        let trip = Arc::clone(&malicious_found);
+        tickets.on_result(move |_, result| {
+            if is_malicious_verdict(result) {
+                trip.store(true, Ordering::Relaxed);
+            }
+        });
+        for label in [SEEKER_LABEL, TRACER_LABEL, ANALYSIS_LABEL] {
+            tickets.cancel_label_on_result(label, |_, result| is_malicious_verdict(result));
+        }
+    }
+
+    // Capture the messages of any ticket that lands a malicious or exploitable
+    // verdict as a training example under trajectories/, on every run (not just
+    // fail-fast). Benign dismissals are skipped.
+    let trajectory_queue = Arc::clone(&tickets);
+    tickets.on_result(move |ticket, result| {
+        if !is_finding_verdict(result) {
+            return;
+        }
+        let Some(agent) = ticket.assignee.as_deref() else {
+            return;
         };
-        // Repeat the extension header each time it changes, so a page is scannable.
-        let mut content = String::new();
-        let mut current = "";
-        for (ext, path) in chunk {
-            if *ext != current {
-                content.push_str(&format!("## {ext}\n"));
-                current = ext;
-            }
-            content.push_str(path);
-            content.push('\n');
-        }
-        if let Err(e) = store.pages().save(Page {
-            slug: format!("file-map-{pages:02}"),
-            kind: "FileMap".into(),
-            description: format!("files {range} ({} entries)", chunk.len()),
-            content,
-            tags: vec!["file-map".into()],
-        }) {
-            scanner(format!("file map: page {pages} not written: {e}"));
-            pages -= 1;
-            break;
-        }
-    }
+        let model = trajectory_queue.model_for_agent(agent);
+        let _ = Trajectory::from_ticket(agent, model.as_deref(), ticket).save(WORK_DIR);
+    });
 
-    let covered = (pages * FILE_MAP_PAGE_SIZE).min(total);
-    if covered < total {
-        scanner(format!(
-            "file map: covered first {covered} of {total} files"
-        ));
-    }
-    pages
-}
-
-/// Map a file extension to a curated IoC catalogue (technology name +
-/// JSON). Extensions not in the table are covered only indirectly,
-/// through whatever threats the Seeker pool turns up.
-pub(crate) fn known_extension_to_catalogue(ext: &str) -> Option<(&'static str, &'static str)> {
-    match ext {
-        ".js" | ".jsx" | ".ts" | ".tsx" | ".mjs" | ".cjs" | ".mts" | ".cts" => {
-            Some(("JavaScript", IOC_JAVASCRIPT))
-        }
-        ".py" | ".pyw" | ".pyx" | ".pyi" => Some(("Python", IOC_PYTHON)),
-        ".rs" => Some(("Rust", IOC_RUST)),
-        ".c" | ".cc" | ".cpp" | ".cxx" | ".c++" | ".h" | ".hh" | ".hpp" | ".hxx" | ".h++"
-        | ".m" | ".mm" => Some(("C/C++", IOC_CPP)),
-        ".go" => Some(("Go", IOC_GO)),
-        ".hs" | ".lhs" => Some(("Haskell", IOC_HASKELL)),
-        _ => None,
-    }
-}
-
-/// Deserialize a catalogue JSON blob shipped via `include_str!`. Panics
-/// on malformed input; the catalogues are compile-time assets, not user
-/// data.
-pub(crate) fn load_catalogue(json: &str) -> Vec<IocEntry> {
-    serde_json::from_str(json).expect("catalogue is well-formed JSON")
-}
-
-/// Entries grouped by kind, with pattern queries pre-parsed once. Panics
-/// if any pattern entry fails to parse so a malformed query trips at
-/// load time, not at first hit.
-pub(crate) struct CompiledCatalogue {
-    pub patterns: Vec<(IocEntry, Pattern)>,
-    pub substrings: Vec<IocEntry>,
-    pub files: Vec<IocEntry>,
-}
-
-pub(crate) fn compile_catalogue(json: &str) -> CompiledCatalogue {
-    let conf = Conf::default_multiline();
-    let mut patterns = Vec::new();
-    let mut substrings = Vec::new();
-    let mut files = Vec::new();
-    for entry in load_catalogue(json) {
-        match entry.kind {
-            IocKind::Pattern => {
-                let pattern = Pattern::parse(&entry.query, &conf).unwrap_or_else(|e| {
-                    panic!("malformed catalogue pattern {:?}: {e}", entry.query)
-                });
-                patterns.push((entry, pattern));
-            }
-            IocKind::Substring => substrings.push(entry),
-            IocKind::File => files.push(entry),
-        }
-    }
-    CompiledCatalogue {
-        patterns,
-        substrings,
-        files,
-    }
-}
-
-/// Walk `root` and substring-match every `*<ext>` file's contents
-/// against the given queries, flushing each file's hits via `on_file`
-/// as soon as the file is fully scanned. Analyst tickets can drain
-/// mid-sweep instead of waiting for the entire pass to finish.
-pub(crate) fn find_substrings(
-    root: &Path,
-    ext: &str,
-    entries: &[IocEntry],
-    mut on_file: impl FnMut(&str, Vec<Hit>),
-) -> usize {
-    let mut count: usize = 0;
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let read = match fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for dirent in read.flatten() {
-            let path = dirent.path();
-            let meta = match dirent.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.file_type().is_symlink() {
-                continue;
-            }
-            if meta.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !meta.is_file() {
-                continue;
-            }
-            let path_str = match path.to_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            if !path_str.ends_with(ext) {
-                continue;
-            }
-            if meta.len() > MAX_GREP_FILE_BYTES {
-                continue;
-            }
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let mut file_hits: Vec<Hit> = Vec::new();
-            for (idx, line) in content.lines().enumerate() {
-                for ie in entries {
-                    if let Some(byte_pos) = line.find(&ie.query) {
-                        file_hits.push(Hit {
-                            path: path.clone(),
-                            line: Some(idx + 1),
-                            column: Some(byte_pos + 1),
-                            line_length: Some(line.len()),
-                            excerpt: Some(truncate(line, MAX_EXCERPT_LEN)),
-                            entry: ie.clone(),
-                        });
-                    }
-                }
-            }
-            if !file_hits.is_empty() {
-                count += file_hits.len();
-                on_file(&content, file_hits);
-            }
-        }
-    }
-    count
-}
-
-/// Walk `root` and run each pre-compiled codegrep pattern against
-/// every `*<ext>` file's contents, flushing each file's hits via
-/// `on_file` once the file is fully scanned. Line/column are derived
-/// from the match's byte offset; `excerpt` holds the matched substring
-/// with newlines escaped.
-pub(crate) fn find_patterns(
-    root: &Path,
-    ext: &str,
-    entries: &[(IocEntry, Pattern)],
-    mut on_file: impl FnMut(&str, Vec<Hit>),
-) -> usize {
-    let mut count: usize = 0;
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let read = match fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for dirent in read.flatten() {
-            let path = dirent.path();
-            let meta = match dirent.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.file_type().is_symlink() {
-                continue;
-            }
-            if meta.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !meta.is_file() {
-                continue;
-            }
-            let path_str = match path.to_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            if !path_str.ends_with(ext) {
-                continue;
-            }
-            if meta.len() > MAX_GREP_FILE_BYTES {
-                continue;
-            }
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let line_starts = compute_line_starts(&content);
-            // Every pattern in one catalogue shares the `Conf` `compile_catalogue`
-            // built it with, so tokenizing once per file and reusing the tokens
-            // across all patterns is exact, not an approximation: `search`
-            // itself would recompute the same tokens on every one of these calls.
-            let tokens = codegrep::tokenize_target(&content, entries[0].1.conf());
-            let mut file_hits: Vec<Hit> = Vec::new();
-            for (entry, pattern) in entries {
-                for m in codegrep::search_tokens(pattern, &tokens, &content) {
-                    let (line, column, line_length) = locate(&line_starts, &content, m.loc.start);
-                    file_hits.push(Hit {
-                        path: path.clone(),
-                        line: Some(line),
-                        column: Some(column),
-                        line_length: Some(line_length),
-                        excerpt: Some(truncate(&m.loc.substring, MAX_EXCERPT_LEN)),
-                        entry: entry.clone(),
-                    });
-                }
-            }
-            if !file_hits.is_empty() {
-                count += file_hits.len();
-                on_file(&content, file_hits);
-            }
-        }
-    }
-    count
-}
-
-/// Byte offsets where each line starts. `line_starts[0]` is always `0`.
-fn compute_line_starts(content: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (i, b) in content.bytes().enumerate() {
-        if b == b'\n' {
-            starts.push(i + 1);
-        }
-    }
-    starts
-}
-
-/// Map a byte offset to a 1-based (line, column, line_length) triple.
-/// Column counts characters (not bytes) inside the matched line.
-/// `line_length` is the byte length of the line containing the match
-/// start, excluding the trailing newline.
-fn locate(line_starts: &[usize], content: &str, byte_offset: usize) -> (usize, usize, usize) {
-    let clamped = byte_offset.min(content.len());
-    let line_idx = match line_starts.binary_search(&clamped) {
-        Ok(i) => i,
-        Err(i) => i.saturating_sub(1),
+    let instruction_section = match args.instruction.as_deref() {
+        None => String::new(),
+        Some(text) => format!("Additional instructions:\n\n{text}"),
     };
-    let line_start = line_starts[line_idx];
-    let line_end = if line_idx + 1 < line_starts.len() {
-        line_starts[line_idx + 1].saturating_sub(1)
+
+    // The Explorer only sketches an overview, so each ticket is one tight pass:
+    // one file-map page, at most three high-level reads, one short page, done.
+    let explorer_time_budget = "an overview only: read at most 3 high-level files \
+        (a README or the entry point), then write one short page"
+        .to_string();
+
+    // Every pool shares one queue; labels route each ticket to its agent.
+    for i in 0..concurrency {
+        let name = agent_name("Analyst", i);
+        tickets.agent(
+            Agent::new()
+                .provider(Arc::clone(&provider))
+                .model(models[&name].clone())
+                .name(name)
+                .role(ANALYST_AGENT.trim())
+                .template("instruction", &instruction_section)
+                .template("verdicts", ANALYST_VERDICTS.trim())
+                .template("output_contract", OUTPUT_CONTRACT)
+                .label(ANALYSIS_LABEL)
+                .dir(scan_dir.to_path_buf())
+                .knowledge(&analyst_knowledge)
+                .tool(ReadFileTool)
+                .tool(ListDirectoryTool)
+                .tool(GrepTool)
+                .build(),
+        );
+    }
+
+    // Continuous discovery, refilled after every ticket.
+    for i in 0..concurrency {
+        let name = agent_name("Seeker", i);
+        tickets.agent(
+            // Every ticket ends in a handover; seeker.md is what enforces it.
+            Agent::new()
+                .provider(Arc::clone(&provider))
+                .model(models[&name].clone())
+                .name(name)
+                .role(SEEKER_AGENT.trim())
+                .template("instruction", &instruction_section)
+                .template("searches_per_ticket", SEARCHES_PER_TICKET.to_string())
+                .label(SEEKER_LABEL)
+                .dir(scan_dir.to_path_buf())
+                .knowledge(&seeker_knowledge)
+                .tool(GrepTool)
+                .build(),
+        );
+    }
+
+    // Demand-driven reachability. Shares exploration_knowledge to read the
+    // Explorer's pages and record its own alongside.
+    for i in 0..concurrency {
+        let name = agent_name("Tracer", i);
+        tickets.agent(
+            // Every ticket ends in a handover; tracer.md is what enforces it.
+            Agent::empty()
+                .provider(Arc::clone(&provider))
+                .model(models[&name].clone())
+                .name(name)
+                .role(TRACER_AGENT.trim())
+                .template("instruction", &instruction_section)
+                .label(TRACER_LABEL)
+                .dir(scan_dir.to_path_buf())
+                .knowledge(&exploration_knowledge)
+                .tool(ReadFileTool)
+                .tool(ListDirectoryTool)
+                .tool(GlobTool)
+                .tool(GrepTool)
+                .tool(FinishTool)
+                .build(),
+        );
+    }
+
+    // Bounded overview into exploration_knowledge; no handoff.
+    for i in 0..concurrency {
+        let name = agent_name("Explorer", i);
+        tickets.agent(
+            Agent::new()
+                .provider(Arc::clone(&provider))
+                .model(models[&name].clone())
+                .name(name)
+                .role(EXPLORER_AGENT.trim())
+                .template("instruction", &instruction_section)
+                .template("explorer_time_budget", &explorer_time_budget)
+                .label(EXPLORER_LABEL)
+                .dir(scan_dir.to_path_buf())
+                .knowledge(&exploration_knowledge)
+                .tool(ReadFileTool)
+                .tool(ListDirectoryTool)
+                .tool(GlobTool)
+                .build(),
+        );
+    }
+    let exploration_body = "Open file-map-01 with manage_knowledge to see the layout, then read \
+         at most three high-level files (a README or the main entry point) to sketch what the \
+         project is and does, and write one short overview page. Overview only, not an exhaustive read.";
+    for _ in 0..concurrency {
+        tickets.ticket(Ticket::new(exploration_body).label(EXPLORER_LABEL));
+    }
+
+    // Seed the discovery pool so the Seeker searches from the start.
+    let search_body = "Choose an untested pattern and search for it: a past-incident technique \
+         whose file type appears in the file map (open its page for the marker and grep it), or a \
+         common dangerous call for a language in the tree. Skip patterns already recorded in knowledge.";
+    for _ in 0..concurrency {
+        tickets.ticket(Ticket::new(search_body).label(SEEKER_LABEL));
+    }
+
+    // Only the Seeker refills: the Explorer's overview is bounded to its seed
+    // tickets and the Tracer is demand-driven.
+    {
+        let weak = Arc::downgrade(&tickets);
+        let search_body = search_body.to_string();
+        tickets.create_ticket_on_result(move |done, _| {
+            if !done.has_label(SEEKER_LABEL) {
+                return None;
+            }
+            // A ticket carrying a cancelled label is never claimed.
+            if weak.upgrade()?.is_label_cancelled(SEEKER_LABEL) {
+                return None;
+            }
+            Some(Ticket::new(search_body.clone()).label(SEEKER_LABEL))
+        });
+    }
+
+    install_ctrl_c_handler(Arc::clone(&tickets));
+
+    let scanner = Scanner::new(&scan_dir);
+
+    // One run, kept live across both phases: Explorers, Seekers, Tracers, and
+    // Analysts work concurrently while the Reporter waits idle for its ticket.
+    tickets.start();
+    let per_tech = scanner.discover(&tickets, &scan).await;
+    let total_hits: usize = per_tech.iter().map(|(_, n)| n).sum();
+    if total_hits == 0 {
+        crate::report::scanner(format!("{files_walked} files → 0 hits"));
     } else {
-        content.len()
+        let techs: Vec<&str> = per_tech.iter().map(|(t, _)| *t).collect();
+        crate::report::scanner(format!(
+            "{files_walked} files → {total_hits} hits ({}) → reachability",
+            techs.join(", "),
+        ));
+    }
+
+    // Wait for the findings, the project summary, and any Seeker ticket to finish.
+    // The pools drain on their own; under --max-time the cap is the backstop.
+    wait_for_report_inputs(&tickets).await;
+    // A hard second-press ctrl-c aborts; a policy stop (time/turns/tokens) and a
+    // wind-down are graceful and fall through to write the report below.
+    if tickets.is_cancelled() && !policy_stopped.load(Ordering::Relaxed) {
+        eprintln!("\ncancelled.");
+        std::process::exit(130);
+    }
+
+    let mut analysis = build_analysis(&tickets, &scan_dir, files_walked);
+
+    // Stop every pool, including any Seeker still searching, before the report
+    // phase: the Reporter runs on its own queue, out of the cap's reach.
+    tickets.cancel();
+    tickets.finish().await;
+
+    // Report phase: the Explorer pool has finished, so its summaries are on disk,
+    // and the findings are already in `analysis`.
+    let has_findings = analysis["findings"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty());
+    let has_exploration = !exploration_knowledge.index().is_empty();
+    // Coverage is partial when the pools were called off early (time cap,
+    // ctrl-c, fail-fast) rather than drained; the Reporter scopes an
+    // all-clear accordingly.
+    let partial_coverage =
+        policy_stopped.load(Ordering::Relaxed) || tickets.is_label_cancelled(SEEKER_LABEL);
+    let report_tickets = if has_findings || has_exploration {
+        let report_tickets = run_report_phase(
+            Arc::clone(&provider),
+            models[REPORTER_NAME].clone(),
+            &exploration_knowledge,
+            render_findings_table(&analysis, partial_coverage),
+            &instruction_section,
+            Path::new(WORK_DIR),
+            &scan_dir,
+        )
+        .await;
+        merge_reporter_verdict(&report_tickets, &mut analysis);
+        Some(report_tickets)
+    } else {
+        None
     };
-    let column = content[line_start..clamped].chars().count() + 1;
-    let line_length = line_end - line_start;
-    (line_idx + 1, column, line_length)
+
+    let stats = tickets.stats();
+    let report_stats = report_tickets.as_ref().map(|r| r.stats());
+    let report_input = report_stats.as_ref().map_or(0, |s| s.input_tokens());
+    let report_output = report_stats.as_ref().map_or(0, |s| s.output_tokens());
+    analysis["input_tokens"] = json!(stats.input_tokens() + report_input);
+    analysis["output_tokens"] = json!(stats.output_tokens() + report_output);
+    analysis["stats"] = serde_json::to_value(stats).expect("Stats serializes");
+
+    let analysis_file = args
+        .output_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("{WORK_DIR}/analysis.json")));
+    let json_str = serde_json::to_string_pretty(&analysis).expect("serializable");
+    fs::write(&analysis_file, json_str).expect("write analysis.json");
+
+    print_summary(
+        &tickets,
+        report_tickets.as_deref(),
+        &analysis,
+        &analysis_file,
+        &scan,
+        &scan_dir,
+    );
+
+    // Surface a malicious verdict through the exit status for `--fail-fast` callers.
+    if args.fail_fast && malicious_found.load(Ordering::Relaxed) {
+        std::process::exit(2);
+    }
 }
 
-/// Walk `root` and emit one `Hit` per (file, entry) whose `query` is a
-/// substring of the file's path relative to `root`. Reads paths only;
-/// no contents, no extension filter, no size limit.
-pub(crate) fn find_paths(root: &Path, entries: &[IocEntry], mut on_hit: impl FnMut(Hit)) -> usize {
-    let mut count: usize = 0;
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let read = match fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for dirent in read.flatten() {
-            let path = dirent.path();
-            let meta = match dirent.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.file_type().is_symlink() {
-                continue;
-            }
-            if meta.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !meta.is_file() {
-                continue;
-            }
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            let relative_str = match relative.to_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            for ie in entries {
-                if relative_str.contains(&ie.query) {
-                    on_hit(Hit {
-                        path: path.clone(),
-                        line: None,
-                        column: None,
-                        line_length: None,
-                        excerpt: None,
-                        entry: ie.clone(),
-                    });
-                    count += 1;
-                }
-            }
-        }
-    }
-    count
+fn agent_name(pool: &str, index: usize) -> String {
+    format!("{pool} {}", index + 1)
 }
 
-/// Render an Analyst ticket body: source, line/column, a code snippet (or the
-/// bare excerpt when the source is unavailable), the IoC briefing, and the
-/// sibling listing. `source` is the file's content, threaded from the grep pass
-/// so the snippet is sliced without re-reading; `None` for path-only hits.
-pub(crate) fn render_ticket_body(hit: &Hit, technology: &str, source: Option<&str>) -> String {
-    let mut body = format!("technology: {technology}\nsource: {}\n", hit.path.display());
-    if let (Some(line), Some(column), Some(line_length)) = (hit.line, hit.column, hit.line_length) {
-        body.push_str(&format!(
-            "line: {line}\ncolumn: {column}\nline_length: {line_length}\n"
-        ));
-    }
-    let snippet = hit
-        .line
-        .and_then(|line| source.and_then(|source| code_snippet(source, &[line])));
-    match snippet {
-        Some(snippet) => body.push_str(&format!("\n--- code ---\n{snippet}")),
-        None => {
-            if let Some(excerpt) = &hit.excerpt {
-                body.push_str(&format!("excerpt: {excerpt}\n"));
-            }
-        }
-    }
-    body.push_str(&format!(
-        "\n--- IoC briefing ---\n\
-         category: {category}\n\
-         indicator: {indicator}\n\n\
-         reason:\n\
-         {reason}\n",
-        category = hit.entry.category,
-        indicator = hit.entry.query,
-        reason = hit.entry.reason,
-    ));
-    if let Some(siblings) = sibling_listing(&hit.path) {
-        body.push_str(&format!("\nfiles in this folder: {siblings}\n"));
-    }
-    body
+/// What every agent runs without `--models`: the model the environment names,
+/// resolved the same way the provider itself is.
+fn default_model() -> Model {
+    let name = model_from_env().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    Model::from_name(&name)
 }
 
-/// Immediate entries of `path`'s parent directory, sorted, sub-directories
-/// marked with a trailing `/`, capped. Embedding it in the ticket lets the
-/// analyst read real filenames in the package instead of guessing. `None` when
-/// the directory cannot be read (e.g. synthetic paths in tests).
-fn sibling_listing(path: &Path) -> Option<String> {
-    let mut names: Vec<String> = fs::read_dir(path.parent()?)
-        .ok()?
-        .flatten()
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.path().is_dir() {
-                format!("{name}/")
-            } else {
-                name
-            }
-        })
+/// Every agent the run builds, with its label. The Reporter works alone, so it
+/// carries no member number.
+fn roster(concurrency: usize) -> Vec<(String, &'static str)> {
+    let mut agents: Vec<(String, &'static str)> = POOLS
+        .iter()
+        .flat_map(|(pool, label)| (0..concurrency).map(move |i| (agent_name(pool, i), *label)))
         .collect();
-    if names.is_empty() {
-        return None;
-    }
-    names.sort();
-    names.truncate(50);
-    Some(names.join(", "))
+    agents.push((REPORTER_NAME.to_string(), REPORTER_LABEL));
+    agents
 }
 
-/// Render a bundle ticket body for a cluster of code hits in one file. Each
-/// hit contributes its line/column and IoC briefing; one merged code snippet
-/// spanning every matched line closes the body, so the analyst sees all the
-/// flagged lines in their shared context without opening the file. When the
-/// snippet cannot be built, each hit falls back to its bare excerpt. File hits
-/// don't cluster, so callers only pass code hits here.
-pub(crate) fn render_bundle_body(hits: &[Hit], technology: &str, source: Option<&str>) -> String {
-    let lines: Vec<usize> = hits.iter().filter_map(|h| h.line).collect();
-    let snippet = source.and_then(|source| code_snippet(source, &lines));
-    let mut body = format!("technology: {technology}\nhits: {}\n", hits.len());
-    for hit in hits {
-        // A blank line separates hits; each hit carries no internal blank line,
-        // so a `source:` after a blank is an unambiguous record boundary.
-        body.push('\n');
-        body.push_str(&format!("source: {}\n", hit.path.display()));
-        if let (Some(line), Some(column), Some(line_length)) =
-            (hit.line, hit.column, hit.line_length)
-        {
-            body.push_str(&format!(
-                "line: {line}\ncolumn: {column}\nline_length: {line_length}\n"
-            ));
-        }
-        if snippet.is_none() {
-            if let Some(excerpt) = &hit.excerpt {
-                body.push_str(&format!("excerpt: {excerpt}\n"));
-            }
-        }
-        body.push_str(&format!(
-            "category: {category}\n\
-             indicator: {indicator}\n\
-             reason: {reason}\n",
-            category = hit.entry.category,
-            indicator = hit.entry.query,
-            reason = hit.entry.reason,
-        ));
-    }
-    if let Some(snippet) = snippet {
-        body.push_str(&format!("\n--- code ---\n{snippet}"));
-    }
-    if let Some(siblings) = hits.first().and_then(|h| sibling_listing(&h.path)) {
-        body.push_str(&format!("\nfiles in this folder: {siblings}\n"));
-    }
-    body
-}
-
-/// A line-numbered slice of `source` covering every line in `lines` (1-based)
-/// plus [`SNIPPET_CONTEXT`] lines on each side, with matched lines flagged `>`.
-/// Each rendered line is truncated to [`MAX_EXCERPT_LEN`] so a minified blob
-/// cannot enlarge the ticket. `None` when no line falls inside `source`.
-fn code_snippet(source: &str, lines: &[usize]) -> Option<String> {
-    let all: Vec<&str> = source.lines().collect();
-    let marked: BTreeSet<usize> = lines.iter().copied().filter(|&n| n >= 1).collect();
-    let first = *marked.iter().next()?;
-    let last = *marked.iter().next_back()?;
-    let start = first.saturating_sub(SNIPPET_CONTEXT).max(1);
-    let end = (last + SNIPPET_CONTEXT).min(all.len());
-    if start > end {
-        return None;
-    }
-    let width = end.to_string().len();
-    let mut out = String::new();
-    for number in start..=end {
-        let flag = if marked.contains(&number) { '>' } else { ' ' };
-        let text = truncate(all[number - 1], MAX_EXCERPT_LEN);
-        out.push_str(&format!("{flag} {number:>width$} | {text}\n"));
-    }
-    Some(out)
-}
-
-/// Group code hits in one file into clusters by line proximity.
-/// `cluster_radius == 0` produces singletons. Input is sorted by line.
-pub(crate) fn cluster_hits(mut hits: Vec<Hit>, cluster_radius: usize) -> Vec<Vec<Hit>> {
-    hits.sort_by_key(|h| h.line.expect("code hits carry a line"));
-    let mut clusters: Vec<Vec<Hit>> = Vec::new();
-    for hit in hits {
-        let extend = match clusters.last() {
-            Some(cur) => {
-                let last_line = cur
-                    .last()
-                    .expect("cluster never empty")
-                    .line
-                    .expect("code hits carry a line");
-                let hit_line = hit.line.expect("code hits carry a line");
-                cluster_radius > 0 && hit_line.saturating_sub(last_line) <= cluster_radius
-            }
-            None => false,
-        };
-        if extend {
-            clusters.last_mut().unwrap().push(hit);
-        } else {
-            clusters.push(vec![hit]);
-        }
-    }
-    clusters
-}
-
-/// Cluster one file's hits and render one `(priority, body)` per cluster. The
-/// priority is the cluster's strongest indicator (its lowest IoC rank), so the
-/// caller can enqueue the most diagnostic matches first.
-fn file_clusters(
-    file_hits: Vec<Hit>,
-    tech: &str,
-    cluster_radius: usize,
-    source: &str,
-) -> Vec<(usize, String)> {
-    cluster_hits(file_hits, cluster_radius)
-        .into_iter()
-        .map(|cluster| {
-            let priority = cluster
-                .iter()
-                .map(|h| h.entry.rank)
-                .min()
-                .unwrap_or(usize::MAX);
-            let body = if cluster.len() == 1 {
-                render_ticket_body(&cluster[0], tech, Some(source))
-            } else {
-                render_bundle_body(&cluster, tech, Some(source))
-            };
-            (priority, body)
-        })
-        .collect()
-}
-
-/// Owns the scan directory and clustering radius. `discover` routes
-/// extensions to their catalogues, runs the pattern/substring/file
-/// passes, and enqueues one analyst ticket per cluster.
-pub(crate) struct Scanner<'a> {
-    scan_dir: &'a Path,
-    cluster_radius: usize,
-}
-
-impl<'a> Scanner<'a> {
-    pub(crate) fn new(scan_dir: &'a Path) -> Self {
-        Self {
-            scan_dir,
-            cluster_radius: CLUSTER_RADIUS,
-        }
-    }
-
-    /// Route each extension to its catalogue, spawn one blocking task per
-    /// pass (codegrep patterns, substring, file-path), cluster hits by file,
-    /// and enqueue one analyst ticket per cluster. Returns hit counts grouped
-    /// by technology (alphabetical, only techs with > 0 hits).
-    pub(crate) async fn discover(
-        &self,
-        tickets: &Arc<TicketQueue>,
-        scan: &ScanTree,
-    ) -> Vec<(&'static str, usize)> {
-        let known_pairs: Vec<(String, &'static str, &'static str)> = scan
-            .extensions
+/// One model per agent name. A `--models` file covers the whole roster or the
+/// run stops here.
+fn resolve_models(
+    table: Option<&ModelTable>,
+    roster: &[(String, &str)],
+    default: impl FnOnce() -> Model,
+) -> BTreeMap<String, Model> {
+    let Some(table) = table else {
+        let default = default();
+        return roster
             .iter()
-            .filter_map(|ext| {
-                known_extension_to_catalogue(ext).map(|(tech, cat)| (ext.clone(), tech, cat))
-            })
+            .map(|(name, _)| (name.clone(), default.clone()))
             .collect();
-        if known_pairs.is_empty() {
-            return Vec::new();
+    };
+    table.resolve_for(roster).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    })
+}
+
+/// Block until the Reporter's inputs are ready. Polls rather than calling
+/// [`TicketQueue::finish`], which would wait on the entire queue. A called-off
+/// pool's tickets stay pending forever, so they are skipped.
+async fn wait_for_report_inputs(tickets: &TicketQueue) {
+    loop {
+        if tickets.is_cancelled() {
+            return;
         }
-
-        // Synchronous grep is fast; collect every `(priority, body)` first, then
-        // enqueue lowest-rank (strongest-evidence) tickets first so the reachability
-        // and analyst pools, and a `--fail-fast` stop, reach a malicious verdict
-        // sooner.
-        let collected: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut handles = Vec::with_capacity(known_pairs.len() * 3);
-        let mut file_pass_dispatched: BTreeSet<&'static str> = BTreeSet::new();
-
-        for (ext, tech, catalogue) in known_pairs {
-            let CompiledCatalogue {
-                patterns,
-                substrings,
-                files,
-            } = compile_catalogue(catalogue);
-
-            if !patterns.is_empty() {
-                let scan_dir = self.scan_dir.to_path_buf();
-                let collected = Arc::clone(&collected);
-                let ext_for_task = ext.clone();
-                let cluster_radius = self.cluster_radius;
-                let handle = tokio::task::spawn_blocking(move || {
-                    let count =
-                        find_patterns(&scan_dir, &ext_for_task, &patterns, |source, file_hits| {
-                            let clusters = file_clusters(file_hits, tech, cluster_radius, source);
-                            collected.lock().unwrap().extend(clusters);
-                        });
-                    (tech, count)
-                });
-                handles.push(handle);
-            }
-
-            if !substrings.is_empty() {
-                let scan_dir = self.scan_dir.to_path_buf();
-                let collected = Arc::clone(&collected);
-                let ext_for_task = ext.clone();
-                let cluster_radius = self.cluster_radius;
-                let handle = tokio::task::spawn_blocking(move || {
-                    let count = find_substrings(
-                        &scan_dir,
-                        &ext_for_task,
-                        &substrings,
-                        |source, file_hits| {
-                            let clusters = file_clusters(file_hits, tech, cluster_radius, source);
-                            collected.lock().unwrap().extend(clusters);
-                        },
-                    );
-                    (tech, count)
-                });
-                handles.push(handle);
-            }
-
-            if !files.is_empty() && file_pass_dispatched.insert(tech) {
-                let scan_dir = self.scan_dir.to_path_buf();
-                let collected = Arc::clone(&collected);
-                let handle = tokio::task::spawn_blocking(move || {
-                    let count = find_paths(&scan_dir, &files, |hit| {
-                        let body = render_ticket_body(&hit, tech, None);
-                        collected.lock().unwrap().push((hit.entry.rank, body));
-                    });
-                    (tech, count)
-                });
-                handles.push(handle);
-            }
+        let pending = !tickets
+            .find_tickets(|t| {
+                t.is_pending()
+                    && REPORT_INPUT_LABELS
+                        .iter()
+                        .any(|label| t.has_label(label) && !tickets.is_label_cancelled(label))
+            })
+            .is_empty();
+        if !pending {
+            return;
         }
-
-        let mut per_tech: std::collections::BTreeMap<&'static str, usize> =
-            std::collections::BTreeMap::new();
-        for handle in handles {
-            match handle.await {
-                Ok((tech, count)) => {
-                    *per_tech.entry(tech).or_insert(0) += count;
-                }
-                Err(e) => scanner(format!("✗ discovery task panicked: {e}")),
-            }
-        }
-
-        let mut clusters = Arc::try_unwrap(collected)
-            .expect("all discovery tasks joined")
-            .into_inner()
-            .unwrap();
-        clusters.sort_by_key(|(priority, _)| *priority);
-        for (_, body) in clusters {
-            tickets.ticket(Ticket::new(body).label(TRACER_LABEL));
-        }
-
-        per_tech.into_iter().filter(|(_, n)| *n > 0).collect()
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    let s = s.replace('\n', " ");
-    if s.chars().count() <= max {
-        return s;
+/// Run the Reporter on its own `TicketQueue`, so nothing that stopped the scan
+/// (time limit, cancel) can stop the report. No max time: the schema-retry budget
+/// bounds a Reporter that never finishes its ticket.
+async fn run_report_phase(
+    provider: Arc<dyn Provider>,
+    model: Model,
+    knowledge: &Arc<Knowledge>,
+    findings_table: String,
+    instruction: &str,
+    dir: &Path,
+    scan_dir: &Path,
+) -> Arc<TicketQueue> {
+    let report_tickets = TicketQueue::new();
+    report_tickets.dir(dir);
+    // Same allowance as the scan queue: a weaker model can burn the default
+    // budget on replies with no tool call.
+    report_tickets.max_schema_retries(20);
+    let log_tickets = Arc::clone(&report_tickets);
+    report_tickets.on_event(move |e| log_event(e, &log_tickets));
+    report_tickets.agent(
+        Agent::new()
+            .name(REPORTER_NAME)
+            .provider(provider)
+            .model(model)
+            .role(REPORTER_AGENT.trim())
+            .template("instruction", instruction)
+            .template("output_contract", OUTPUT_CONTRACT)
+            .template("verdicts", ANALYST_VERDICTS.trim())
+            .label(REPORTER_LABEL)
+            .knowledge(knowledge)
+            // Read-only access to the scanned tree so the Reporter can quote the
+            // exact cited line as a code excerpt instead of inventing one.
+            .dir(scan_dir.to_path_buf())
+            .tool(ReadFileTool)
+            .build(),
+    );
+    report_tickets.ticket(
+        Ticket::new(findings_table)
+            .label(REPORTER_LABEL)
+            .schema(reporter_result_schema()),
+    );
+    report_tickets.finish().await;
+    report_tickets
+}
+
+/// Call off the Explorer and Seeker pools on the first ctrl-c, letting the
+/// in-flight backlog drain into a report. A second press forces an exit in case
+/// the drain itself wedges.
+fn install_ctrl_c_handler(tickets: Arc<TicketQueue>) {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        eprintln!(
+            "\n[ctrl-c] winding down: no new work, finishing in-flight analysis then reporting. \
+             Press again to force exit."
+        );
+        tickets.cancel_label(EXPLORER_LABEL);
+        tickets.cancel_label(SEEKER_LABEL);
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        eprintln!("\n[ctrl-c] hard exit on second press.");
+        tickets.cancel();
+        std::process::exit(130);
+    });
+}
+
+/// Read the Reporter's `{summary, details}` off its finished ticket and fold it
+/// into the analysis. Missing fields leave the `build_analysis` tally in place.
+fn merge_reporter_verdict(tickets: &TicketQueue, analysis: &mut Value) {
+    let Some(result) = tickets.results_for_label(REPORTER_LABEL).pop() else {
+        return;
+    };
+    if let Some(s) = result.get("summary") {
+        analysis["summary"] = s.clone();
     }
-    let cut: String = s.chars().take(max).collect();
-    format!("{cut}…")
+    if let Some(d) = result.get("details") {
+        analysis["details"] = d.clone();
+    }
+}
+
+/// True when a limit bounding the whole run was breached. `MaxSchemaRetries` is
+/// excluded: it's a per-ticket budget, so tripping it stops one ticket, not the run.
+fn is_run_wide_policy_stop(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::PolicyViolated {
+            policy: PolicyKind::Time
+                | PolicyKind::Turns
+                | PolicyKind::InputTokens
+                | PolicyKind::OutputTokens,
+            ..
+        }
+    )
+}
+
+/// True when a schema-validated result object carries `status: "malicious"`.
+fn is_malicious_verdict(result: &Value) -> bool {
+    result.get("status").and_then(|v| v.as_str()) == Some("malicious")
+}
+
+/// True when a result carries a non-benign verdict (`malicious` or
+/// `exploitable`): the analyst reached an actual finding, not a dismissal.
+fn is_finding_verdict(result: &Value) -> bool {
+    matches!(
+        result.get("status").and_then(|v| v.as_str()),
+        Some("malicious") | Some("exploitable")
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use agentwerk::providers::types::{
+        ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage,
+    };
+    use agentwerk::providers::{ModelRequest, Provider, ProviderResult};
+
     use super::*;
 
     #[test]
-    fn deserializes_every_real_catalogue_into_well_formed_entries() {
-        let catalogues: &[(&str, &str, usize)] = &[
-            ("javascript", IOC_JAVASCRIPT, 30),
-            ("python", IOC_PYTHON, 30),
-            ("rust", IOC_RUST, 30),
-            ("cpp", IOC_CPP, 30),
-            ("go", IOC_GO, 30),
-            ("haskell", IOC_HASKELL, 20),
-        ];
-        for (name, source, min_entries) in catalogues {
-            let entries = load_catalogue(source);
-            assert!(
-                entries.len() >= *min_entries,
-                "{name} catalogue should produce at least {min_entries} entries, got {}",
-                entries.len()
-            );
-            for e in &entries {
-                assert!(
-                    !e.category.is_empty(),
-                    "{name}: category empty for query {}",
-                    e.query
-                );
-                assert!(!e.query.is_empty(), "{name}: query empty");
-                assert!(
-                    !e.reason.is_empty(),
-                    "{name}: reason empty for query {}",
-                    e.query
-                );
-                assert!(
-                    e.reason.len() >= 40,
-                    "{name}: reason too short for query {} ({} chars)",
-                    e.query,
-                    e.reason.len()
-                );
-            }
-        }
+    fn malicious_verdict_reads_status_from_validated_result() {
+        assert!(is_malicious_verdict(
+            &json!({"status": "malicious", "path": "a.py"})
+        ));
+        assert!(!is_malicious_verdict(&json!({"status": "benign"})));
+        assert!(!is_malicious_verdict(&json!({"path": "a.py"})));
+        assert!(!is_malicious_verdict(&json!("a plain summary")));
     }
 
     #[test]
-    fn every_pattern_entry_in_every_catalogue_parses_as_a_codegrep_pattern() {
-        let catalogues: &[(&str, &str)] = &[
-            ("javascript", IOC_JAVASCRIPT),
-            ("python", IOC_PYTHON),
-            ("rust", IOC_RUST),
-            ("cpp", IOC_CPP),
-            ("go", IOC_GO),
-            ("haskell", IOC_HASKELL),
-        ];
-        let conf = Conf::default_multiline();
-        for (name, source) in catalogues {
-            for entry in load_catalogue(source) {
-                if !matches!(entry.kind, IocKind::Pattern) {
-                    continue;
-                }
-                Pattern::parse(&entry.query, &conf).unwrap_or_else(|e| {
-                    panic!(
-                        "{name}: pattern entry {:?} does not parse: {e}",
-                        entry.query
-                    )
-                });
-            }
-        }
-    }
-
-    #[test]
-    fn fast_path_extension_lookup_covers_all_six_languages() {
-        let must_route = [
-            (".js", "JavaScript"),
-            (".ts", "JavaScript"),
-            (".py", "Python"),
-            (".rs", "Rust"),
-            (".cpp", "C/C++"),
-            (".c", "C/C++"),
-            (".h", "C/C++"),
-            (".go", "Go"),
-            (".hs", "Haskell"),
-        ];
-        for (ext, expected_tech) in must_route {
-            let (tech, _cat) = known_extension_to_catalogue(ext)
-                .unwrap_or_else(|| panic!("{ext} should fast-path to a catalogue"));
-            assert_eq!(tech, expected_tech, "{ext} routed to wrong technology");
-        }
-        assert!(known_extension_to_catalogue(".unknown").is_none());
-        assert!(known_extension_to_catalogue(".json").is_none());
-    }
-
-    fn code_hit_fixture() -> Hit {
-        Hit {
-            path: PathBuf::from("src/installer.js"),
-            line: Some(87),
-            column: Some(12),
-            line_length: Some(80),
-            excerpt: Some("fetch('https://discord.com/api/webhooks/123/xyz', ...)".into()),
-            entry: IocEntry {
-                category: "Webhook exfiltration sinks".into(),
-                query: "discord.com/api/webhooks/".into(),
-                kind: IocKind::Substring,
-                reason:
-                    "Discord webhook URL prefix.\n\nA full URL of this form accepts arbitrary HTTP POSTs."
-                        .into(),
-                rank: 0,
-            },
-        }
-    }
-
-    fn file_hit_fixture() -> Hit {
-        Hit {
-            path: PathBuf::from("node_modules/widget/setup_bun.js"),
-            line: None,
-            column: None,
-            line_length: None,
-            excerpt: None,
-            entry: IocEntry {
-                category: "Worm and loader file names".into(),
-                query: "setup_bun.js".into(),
-                kind: IocKind::File,
-                reason: "Stage-one loader for the Shai-Hulud 2.0 self-replicating npm worm.".into(),
-                rank: 0,
-            },
-        }
-    }
-
-    #[test]
-    fn renders_code_ticket_body_with_full_reason() {
-        let hit = code_hit_fixture();
-        let body = render_ticket_body(&hit, "JavaScript", None);
-        assert!(body.contains("technology: JavaScript"));
-        assert!(body.contains("source: src/installer.js"));
-        assert!(body.contains("line: 87"));
-        assert!(body.contains("column: 12"));
-        assert!(body.contains("line_length: 80"));
-        assert!(body.contains("--- IoC briefing ---"));
-        assert!(body.contains("category: Webhook exfiltration sinks"));
-        assert!(body.contains("indicator: discord.com/api/webhooks/"));
-        assert!(body.contains("Discord webhook URL prefix."));
-        assert!(body.contains("A full URL of this form accepts arbitrary HTTP POSTs."));
-    }
-
-    #[test]
-    fn renders_file_ticket_body_without_line_or_column() {
-        let hit = file_hit_fixture();
-        let body = render_ticket_body(&hit, "JavaScript", None);
-        assert!(body.contains("technology: JavaScript"));
-        assert!(body.contains("source: node_modules/widget/setup_bun.js"));
-        assert!(
-            !body.contains("line:"),
-            "file hits should not emit a line field"
-        );
-        assert!(
-            !body.contains("column:"),
-            "file hits should not emit a column field"
-        );
-        assert!(
-            !body.contains("excerpt:"),
-            "file hits should not emit an excerpt field"
-        );
-        assert!(body.contains("--- IoC briefing ---"));
-        assert!(body.contains("category: Worm and loader file names"));
-        assert!(body.contains("indicator: setup_bun.js"));
-        assert!(body.contains("Stage-one loader"));
-    }
-
-    fn code_fixture_hit(line: usize) -> Hit {
-        Hit {
-            path: PathBuf::from("requests/__init__.py"),
-            line: Some(line),
-            column: Some(1),
-            line_length: Some(80),
-            excerpt: Some(format!("payload line {line}")),
-            entry: IocEntry {
-                category: "Backdoor".into(),
-                query: "os.system(".into(),
-                kind: IocKind::Substring,
-                reason: "Top-level shell exec on import.".into(),
-                rank: 0,
-            },
-        }
-    }
-
-    #[test]
-    fn cluster_hits_groups_adjacent_lines() {
-        let clusters = cluster_hits(
-            vec![
-                code_fixture_hit(187),
-                code_fixture_hit(188),
-                code_fixture_hit(189),
-                code_fixture_hit(190),
-            ],
-            CLUSTER_RADIUS,
-        );
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].len(), 4);
-    }
-
-    #[test]
-    fn cluster_hits_splits_distant_lines() {
-        let clusters = cluster_hits(
-            vec![code_fixture_hit(50), code_fixture_hit(500)],
-            CLUSTER_RADIUS,
-        );
-        assert_eq!(clusters.len(), 2);
-        assert_eq!(clusters[0].len(), 1);
-        assert_eq!(clusters[1].len(), 1);
-        assert_eq!(clusters[0][0].line, Some(50));
-        assert_eq!(clusters[1][0].line, Some(500));
-    }
-
-    #[test]
-    fn cluster_hits_respects_threshold_boundary() {
-        let joined = cluster_hits(vec![code_fixture_hit(100), code_fixture_hit(120)], 20);
-        assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].len(), 2);
-
-        let split = cluster_hits(vec![code_fixture_hit(100), code_fixture_hit(121)], 20);
-        assert_eq!(split.len(), 2);
-    }
-
-    #[test]
-    fn cluster_hits_with_zero_gap_returns_singletons() {
-        let clusters = cluster_hits(
-            vec![
-                code_fixture_hit(10),
-                code_fixture_hit(11),
-                code_fixture_hit(12),
-            ],
-            0,
-        );
-        assert_eq!(clusters.len(), 3);
-        assert!(clusters.iter().all(|c| c.len() == 1));
-    }
-
-    #[test]
-    fn cluster_hits_sorts_unsorted_input() {
-        let clusters = cluster_hits(
-            vec![
-                code_fixture_hit(190),
-                code_fixture_hit(187),
-                code_fixture_hit(189),
-            ],
-            CLUSTER_RADIUS,
-        );
-        assert_eq!(clusters.len(), 1);
-        let lines: Vec<Option<usize>> = clusters[0].iter().map(|h| h.line).collect();
-        assert_eq!(lines, vec![Some(187), Some(189), Some(190)]);
-    }
-
-    #[test]
-    fn renders_bundle_body_with_two_code_hits() {
-        let hits = vec![code_fixture_hit(187), code_fixture_hit(190)];
-        let body = render_bundle_body(&hits, "Python", None);
-        assert!(body.starts_with("technology: Python\nhits: 2\n"));
-        // Blank line before each source: is the only record boundary; a hit
-        // carries no internal blank line, so both records survive splitting on "\n\n".
-        assert!(body.contains("\n\nsource: requests/__init__.py"));
-        assert_eq!(body.matches("\n\n").count(), 2);
-        assert!(body.contains("line: 187"));
-        assert!(body.contains("line: 190"));
-        assert!(body.contains("category: Backdoor"));
-        assert!(body.contains("indicator: os.system("));
-        assert!(body.contains("Top-level shell exec on import."));
-    }
-
-    #[test]
-    fn code_snippet_flags_matched_lines_and_shows_context() {
-        let source = "import os\n\n# comment\nos.system(\"x\")\nprint(1)\n";
-        let snippet = code_snippet(source, &[4]).expect("line 4 is in range");
-        // The matched line is flagged; the preceding comment is visible context.
-        assert!(snippet.contains("> 4 | os.system(\"x\")"));
-        assert!(snippet.contains("  3 | # comment"));
-        assert!(snippet.contains("  1 | import os"));
-    }
-
-    #[test]
-    fn code_snippet_truncates_a_minified_line() {
-        let long = "x".repeat(MAX_EXCERPT_LEN + 500);
-        let source = format!("a\n{long}\nb\n");
-        let snippet = code_snippet(&source, &[2]).expect("line 2 is in range");
-        assert!(snippet.contains('…'), "over-long line is truncated");
-        assert!(
-            !snippet.contains(&long),
-            "the full blob never reaches the ticket"
-        );
-    }
-
-    #[test]
-    fn code_snippet_is_none_when_no_line_is_in_range() {
-        assert!(code_snippet("one\ntwo\n", &[99]).is_none());
-        assert!(code_snippet("", &[1]).is_none());
-    }
-
-    #[test]
-    fn code_ticket_body_embeds_a_snippet_instead_of_the_bare_excerpt() {
-        let mut hit = code_hit_fixture();
-        hit.line = Some(2);
-        hit.column = Some(1);
-        let source =
-            "import requests\nfetch('https://discord.com/api/webhooks/123/xyz')\nprint(1)\n";
-        let body = render_ticket_body(&hit, "JavaScript", Some(source));
-        assert!(body.contains("--- code ---"));
-        assert!(body.contains("> 2 | fetch("));
-        assert!(
-            !body.contains("excerpt:"),
-            "the snippet supersedes the standalone excerpt line"
-        );
-    }
-
-    #[test]
-    fn bundle_body_merges_all_matched_lines_into_one_snippet() {
-        let source = (1..=12)
-            .map(|n| format!("line {n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let hits = vec![code_fixture_hit(3), code_fixture_hit(9)];
-        let body = render_bundle_body(&hits, "Python", Some(&source));
+    fn roster_holds_every_pool_member_and_the_reporter() {
+        let roster = roster(2);
+        let names: Vec<&str> = roster.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
-            body.matches("--- code ---").count(),
-            1,
-            "one merged snippet"
+            names,
+            [
+                "Analyst 1",
+                "Analyst 2",
+                "Seeker 1",
+                "Seeker 2",
+                "Tracer 1",
+                "Tracer 2",
+                "Explorer 1",
+                "Explorer 2",
+                "Reporter",
+            ]
         );
-        assert!(body.contains(">  3 | line 3"));
-        assert!(body.contains(">  9 | line 9"));
-        assert!(
-            body.contains("   6 | line 6"),
-            "the gap between hits is shown"
-        );
-        assert!(
-            !body.contains("excerpt:"),
-            "per-hit excerpts are dropped once the snippet is present"
-        );
+        assert_eq!(roster.last().unwrap().1, REPORTER_LABEL);
     }
 
     #[test]
-    fn find_patterns_fires_on_call_but_not_on_assignment_to_same_name() {
-        let tmp =
-            std::env::temp_dir().join(format!("agentwerk_findpatterns_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
-        fs::write(
-            tmp.join("payload.js"),
-            "const execSync = wrapper;\nexecSync('rm -rf /tmp/x');\n",
-        )
-        .unwrap();
-
-        let entry = IocEntry {
-            category: "Process execution".into(),
-            query: "execSync(....)".into(),
-            kind: IocKind::Pattern,
-            reason: "Synchronous shell command execution.".into(),
-            rank: 0,
-        };
-        let conf = Conf::default_multiline();
-        let pattern = Pattern::parse(&entry.query, &conf).expect("pattern parses");
-        let entries = vec![(entry, pattern)];
-
-        let mut hits: Vec<Hit> = Vec::new();
-        let count = find_patterns(&tmp, ".js", &entries, |_source, file_hits| {
-            hits.extend(file_hits)
-        });
-        assert_eq!(count, 1, "should fire only on the call");
-        assert_eq!(hits[0].line, Some(2), "match starts on line 2");
-        let excerpt = hits[0].excerpt.as_deref().unwrap();
-        assert!(
-            excerpt.starts_with("execSync("),
-            "excerpt should begin with the call: {excerpt:?}"
-        );
-
-        let _ = fs::remove_dir_all(&tmp);
+    fn without_a_models_file_every_agent_runs_the_environment_model() {
+        let roster = roster(2);
+        let models = resolve_models(None, &roster, || Model::from_name("model-from-env"));
+        assert_eq!(models.len(), roster.len());
+        assert!(models.values().all(|m| m.name == "model-from-env"));
     }
 
     #[test]
-    fn find_paths_matches_filename_substring_anywhere_in_tree() {
-        let tmp = std::env::temp_dir().join(format!("agentwerk_findpaths_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(tmp.join("node_modules/widget")).unwrap();
-        fs::create_dir_all(tmp.join("src")).unwrap();
-        fs::write(tmp.join("node_modules/widget/setup_bun.js"), "// payload").unwrap();
-        fs::write(tmp.join("src/main.rs"), "fn main() {}").unwrap();
-
-        let entries = vec![IocEntry {
-            category: "Worm".into(),
-            query: "setup_bun.js".into(),
-            kind: IocKind::File,
-            reason: "loader".into(),
-            rank: 0,
-        }];
-
-        let mut hits = Vec::new();
-        let count = find_paths(&tmp, &entries, |h| hits.push(h));
-        assert_eq!(count, 1);
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].line.is_none());
-        assert!(hits[0]
-            .path
-            .to_string_lossy()
-            .ends_with("node_modules/widget/setup_bun.js"));
-
-        let _ = fs::remove_dir_all(&tmp);
+    fn finding_verdict_matches_malicious_and_exploitable_but_not_benign() {
+        assert!(is_finding_verdict(
+            &json!({"status": "malicious", "path": "a.py"})
+        ));
+        assert!(is_finding_verdict(
+            &json!({"status": "exploitable", "path": "a.py"})
+        ));
+        assert!(!is_finding_verdict(&json!({"status": "benign"})));
+        assert!(!is_finding_verdict(&json!({"path": "a.py"})));
+        assert!(!is_finding_verdict(&json!("a plain summary")));
     }
 
-    #[test]
-    fn load_catalogue_reads_rank_from_json() {
-        for (name, source) in [
-            ("javascript", IOC_JAVASCRIPT),
-            ("python", IOC_PYTHON),
-            ("rust", IOC_RUST),
-            ("cpp", IOC_CPP),
-            ("go", IOC_GO),
-            ("haskell", IOC_HASKELL),
-        ] {
-            let entries = load_catalogue(source);
-            assert!(
-                entries.iter().enumerate().all(|(i, e)| e.rank == i),
-                "{name}: ranks must match their position so the catalogue is consistently ordered",
-            );
+    /// Finishes whatever ticket it is given by echoing a fixed `result`.
+    struct FinishMock(Value);
+
+    impl Provider for FinishMock {
+        fn respond(
+            &self,
+            _request: ModelRequest,
+            _on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+            let result = self.0.clone();
+            Box::pin(async move {
+                Ok(ModelResponse {
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "finish".into(),
+                        input: json!({ "result": result }),
+                    }],
+                    status: ResponseStatus::ToolUse,
+                    usage: TokenUsage::default(),
+                    model: "mock".into(),
+                })
+            })
         }
     }
 
-    #[test]
-    fn file_clusters_priority_is_the_strongest_indicator_rank() {
-        // Two adjacent hits in one file with different ranks; the cluster takes
-        // the lowest (strongest) rank so it is enqueued ahead of weaker matches.
-        let mut weak = code_fixture_hit(10);
-        weak.entry.rank = 7;
-        let mut strong = code_fixture_hit(11);
-        strong.entry.rank = 2;
-
-        let clusters = file_clusters(vec![weak, strong], "Python", CLUSTER_RADIUS, "");
-        assert_eq!(clusters.len(), 1, "adjacent hits cluster into one ticket");
-        assert_eq!(
-            clusters[0].0, 2,
-            "priority is the lowest rank in the cluster"
-        );
-    }
-
-    #[test]
-    fn write_file_map_paginates_by_thirty_grouped_by_extension() {
-        let dir = std::env::temp_dir().join(format!("file_map_{}", std::process::id()));
+    // The report phase: a `reporter`-labelled schema ticket, drained on its own
+    // queue, and its `{summary, details}` folded into the analysis. Reproduces
+    // the report phase of `main` without a live model.
+    #[tokio::test]
+    async fn reporter_verdict_is_claimed_by_label_and_merged() {
+        let dir = std::env::temp_dir().join(format!("scanner_reporter_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let store = Knowledge::load(&dir).unwrap();
 
-        // 65 files across three extensions: .go (40), .html (20), .woff2 (5).
-        let mut files_by_ext: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        files_by_ext.insert(
-            ".go".into(),
-            (0..40).map(|i| format!("go/f{i}.go")).collect(),
+        // Long enough to clear the schema length floors.
+        let summary = "acme-widget hides a credential-stealing loader. ".repeat(5);
+        let details = "lib/telemetry.js decodes and executes a shell payload. ".repeat(25);
+        let provider: Arc<dyn Provider> = Arc::new(FinishMock(json!({
+            "summary": summary,
+            "details": details,
+        })));
+        let knowledge = Knowledge::load(&dir).expect("knowledge opens");
+        let report_tickets = run_report_phase(
+            provider,
+            Model::from_name("mock"),
+            &knowledge,
+            "worst_status: malicious\nfindings: 1\n".to_string(),
+            "",
+            &dir,
+            &dir,
+        )
+        .await;
+
+        let mut analysis = json!({
+            "status": "malicious",
+            "summary": "1 malicious finding across 1 of 3 files",
+            "findings": [],
+        });
+        merge_reporter_verdict(&report_tickets, &mut analysis);
+
+        assert_eq!(
+            analysis["summary"],
+            json!(summary),
+            "reporter summary should replace the build_analysis tally",
         );
-        files_by_ext.insert(
-            ".html".into(),
-            (0..20).map(|i| format!("web/p{i}.html")).collect(),
-        );
-        files_by_ext.insert(
-            ".woff2".into(),
-            (0..5).map(|i| format!("fonts/f{i}.woff2")).collect(),
-        );
-
-        let pages = write_file_map(&store, &files_by_ext);
-        assert_eq!(pages, 3, "ceil(65/30) = 3 pages");
-
-        let index = store.index();
-        for slug in ["file-map-01", "file-map-02", "file-map-03"] {
-            assert!(index.contains(slug), "index should list {slug}: {index}");
-        }
-
-        // First page opens on the alphabetically-first extension.
-        let page1 = store.pages().load("file-map-01").unwrap();
-        assert!(page1.content.starts_with("## .go\n"), "{}", page1.content);
+        assert_eq!(analysis["details"], json!(details));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

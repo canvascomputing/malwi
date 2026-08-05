@@ -7,7 +7,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 **A type lives next to the abstraction, owner, or protocol it belongs to.**
 
 - CLI argument parsing, the `--models` table, and help text live in `cli.rs`.
-- The directory walker, the catalogues, and the grep passes live in `scan.rs`.
+- The directory walker, the catalogues, and the grep passes live in `discovery.rs`.
 - The JSON assembler, the event renderer, and the terminal summary live in `report.rs`.
 - Role prompts live in `roles/`, indicator catalogues in `threats/`, incident pages in `knowledge/`.
 - A helper called from a single private function is inlined; a helper called from two siblings earns a free function in the same file.

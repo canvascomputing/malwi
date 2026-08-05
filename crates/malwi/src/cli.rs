@@ -8,7 +8,14 @@ use std::time::Duration;
 use agentwerk::providers::{Model, ReasoningEffort};
 use serde_json::Value;
 
-pub(crate) struct CliArgs {
+/// What the operator asked malwi to do.
+pub(crate) enum Command {
+    Scan(ScanArgs),
+    Research(ResearchArgs),
+}
+
+/// Options of `malwi scan <DIR>`.
+pub(crate) struct ScanArgs {
     pub(crate) dir: PathBuf,
     pub(crate) max_turns: Option<u32>,
     pub(crate) max_time: Option<Duration>,
@@ -19,134 +26,201 @@ pub(crate) struct CliArgs {
     pub(crate) models: Option<ModelTable>,
 }
 
-impl CliArgs {
+/// Options of `malwi research <QUESTION>`.
+pub(crate) struct ResearchArgs {
+    pub(crate) question: String,
+}
+
+/// Why parsing produced no command to run.
+#[derive(Debug)]
+enum CliExit {
+    /// The operator asked for help; the payload is the help text.
+    HelpRequested(String),
+    /// The arguments name no runnable command. The payload is one line, or a
+    /// whole help text when the operator gave nothing to correct.
+    ArgumentRejected(String),
+}
+
+impl Command {
     pub(crate) fn parse() -> Self {
-        let args: Vec<String> = std::env::args().collect();
-        let mut dir: Option<PathBuf> = None;
-        let mut max_turns: Option<u32> = None;
-        let mut max_time: Option<Duration> = None;
-        let mut concurrency: usize = 2;
-        let mut output_file: Option<PathBuf> = None;
-        let mut fail_fast: bool = false;
-        let mut instruction: Option<String> = None;
-        let mut models: Option<ModelTable> = None;
-
-        let mut i = 1;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--max-turns" => {
-                    i += 1;
-                    max_turns = Some(
-                        args.get(i)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or_else(|| bad_arg("--max-turns expects a positive number")),
-                    );
-                }
-                "--max-time" => {
-                    i += 1;
-                    max_time = Some(
-                        args.get(i)
-                            .and_then(|s| parse_duration(s))
-                            .unwrap_or_else(|| bad_arg("--max-time expects e.g. 90, 30s, 5m, 1h")),
-                    );
-                }
-                "--concurrency" => {
-                    i += 1;
-                    concurrency = args
-                        .get(i)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or_else(|| bad_arg("--concurrency expects a positive number"));
-                }
-                "--output" => {
-                    i += 1;
-                    output_file = Some(PathBuf::from(
-                        args.get(i)
-                            .map(String::as_str)
-                            .unwrap_or_else(|| bad_arg("--output expects a path")),
-                    ));
-                }
-                "--fail-fast" => {
-                    fail_fast = true;
-                }
-                "--instruction" => {
-                    i += 1;
-                    instruction = Some(
-                        args.get(i)
-                            .cloned()
-                            .unwrap_or_else(|| bad_arg("--instruction expects text")),
-                    );
-                }
-                "--models" => {
-                    i += 1;
-                    let path = Path::new(
-                        args.get(i)
-                            .map(String::as_str)
-                            .unwrap_or_else(|| bad_arg("--models expects a path")),
-                    );
-                    models = Some(ModelTable::load(path).unwrap_or_else(|e| bad_arg(&e)));
-                }
-                "-h" | "--help" => {
-                    Self::print_help();
-                    std::process::exit(0);
-                }
-                arg if arg.starts_with('-') => bad_arg(&format!("unknown flag: {arg}")),
-                _ => dir = Some(PathBuf::from(&args[i])),
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        match parse_args(&args) {
+            Ok(command) => command,
+            Err(CliExit::HelpRequested(help)) => {
+                eprintln!("{help}");
+                std::process::exit(0);
             }
-            i += 1;
-        }
-
-        Self {
-            dir: dir.unwrap_or_else(|| {
-                Self::print_help();
-                std::process::exit(1)
-            }),
-            max_turns,
-            max_time,
-            concurrency,
-            output_file,
-            fail_fast,
-            instruction,
-            models,
+            Err(CliExit::ArgumentRejected(message)) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
         }
     }
+}
 
-    fn print_help() {
-        eprintln!(
-            "malwi. Identifies the project's purpose, scans for threat indicators\n\
-             (from a curated catalogue or via a Seeker searching the tree for threats),\n\
-             and dispatches suspect matches to an Analyst pool for deeper investigation.\n"
-        );
-        eprintln!("Usage: malwi <DIR> [OPTIONS]\n");
-        eprintln!("Options:");
-        eprintln!("      --concurrency <N>        Agent pool size per phase (default: 2)");
-        eprintln!("      --max-turns <N>          Per-queue turn limit (default: unlimited)");
-        eprintln!(
-            "      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)"
-        );
-        eprintln!(
-            "      --output <FILE>          Write analysis JSON to FILE (default: .malwi/analysis.json)"
-        );
-        eprintln!("      --fail-fast              Cancel the scan on the first malicious finding");
-        eprintln!(
-            "      --instruction <TEXT>     Append a custom instruction to every agent's prompt"
-        );
-        eprintln!(
-            "      --models <FILE>          One model per agent as JSON, keyed by ticket label,"
-        );
-        eprintln!(
-            "                               pool name, or agent name. A value is a model name or"
-        );
-        eprintln!(
-            "                               an object of model, reasoning, and context_window"
-        );
-        eprintln!(
-            "                               (default: every agent runs the model the environment"
-        );
-        eprintln!("                               names)");
-        eprintln!("  -h, --help                   Show this help\n");
-        eprintln!("Example:");
-        eprintln!("  malwi ./src");
+fn parse_args(args: &[String]) -> Result<Command, CliExit> {
+    match args.first().map(String::as_str) {
+        None => Err(CliExit::ArgumentRejected(top_help())),
+        Some("-h" | "--help") => Err(CliExit::HelpRequested(top_help())),
+        Some("scan") => parse_scan(&args[1..]).map(Command::Scan),
+        Some("research") => parse_research(&args[1..]).map(Command::Research),
+        Some(other) => Err(CliExit::ArgumentRejected(format!(
+            "unknown command: {other}\n\n{}",
+            top_help()
+        ))),
     }
+}
+
+fn parse_scan(args: &[String]) -> Result<ScanArgs, CliExit> {
+    let mut dir: Option<PathBuf> = None;
+    let mut max_turns: Option<u32> = None;
+    let mut max_time: Option<Duration> = None;
+    let mut concurrency: usize = 2;
+    let mut output_file: Option<PathBuf> = None;
+    let mut fail_fast: bool = false;
+    let mut instruction: Option<String> = None;
+    let mut models: Option<ModelTable> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max-turns" => {
+                i += 1;
+                max_turns = Some(
+                    args.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| rejected("--max-turns expects a positive number"))?,
+                );
+            }
+            "--max-time" => {
+                i += 1;
+                max_time = Some(
+                    args.get(i)
+                        .and_then(|s| parse_duration(s))
+                        .ok_or_else(|| rejected("--max-time expects e.g. 90, 30s, 5m, 1h"))?,
+                );
+            }
+            "--concurrency" => {
+                i += 1;
+                concurrency = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| rejected("--concurrency expects a positive number"))?;
+            }
+            "--output" => {
+                i += 1;
+                output_file = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| rejected("--output expects a path"))?,
+                ));
+            }
+            "--fail-fast" => {
+                fail_fast = true;
+            }
+            "--instruction" => {
+                i += 1;
+                instruction = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| rejected("--instruction expects text"))?,
+                );
+            }
+            "--models" => {
+                i += 1;
+                let path = args
+                    .get(i)
+                    .map(Path::new)
+                    .ok_or_else(|| rejected("--models expects a path"))?;
+                models = Some(ModelTable::load(path).map_err(CliExit::ArgumentRejected)?);
+            }
+            "-h" | "--help" => return Err(CliExit::HelpRequested(scan_help())),
+            arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
+            _ => dir = Some(PathBuf::from(&args[i])),
+        }
+        i += 1;
+    }
+
+    Ok(ScanArgs {
+        dir: dir.ok_or_else(|| CliExit::ArgumentRejected(scan_help()))?,
+        max_turns,
+        max_time,
+        concurrency,
+        output_file,
+        fail_fast,
+        instruction,
+        models,
+    })
+}
+
+/// Every remaining word is the question, so quoting it is optional.
+fn parse_research(args: &[String]) -> Result<ResearchArgs, CliExit> {
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Err(CliExit::HelpRequested(research_help()));
+    }
+    if let Some(flag) = args.iter().find(|arg| arg.starts_with('-')) {
+        return Err(rejected(&format!("unknown flag: {flag}")));
+    }
+    if args.is_empty() {
+        return Err(CliExit::ArgumentRejected(research_help()));
+    }
+    Ok(ResearchArgs {
+        question: args.join(" "),
+    })
+}
+
+fn top_help() -> String {
+    "malwi. An agentic malware scanner for source trees and software packages.
+
+Usage: malwi <COMMAND> [OPTIONS]
+
+Commands:
+  scan       Scan a directory and write a JSON verdict
+  research   Answer a security question (not yet implemented)
+
+Options:
+  -h, --help   Show this help
+
+Run `malwi <COMMAND> --help` for a command's own options."
+        .to_string()
+}
+
+fn scan_help() -> String {
+    "malwi scan. Identifies the project's purpose, scans for threat indicators
+(from a curated catalogue or via a Seeker searching the tree for threats),
+and dispatches suspect matches to an Analyst pool for deeper investigation.
+
+Usage: malwi scan <DIR> [OPTIONS]
+
+Options:
+      --concurrency <N>        Agent pool size per phase (default: 2)
+      --max-turns <N>          Per-queue turn limit (default: unlimited)
+      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)
+      --output <FILE>          Write analysis JSON to FILE (default: .malwi/analysis.json)
+      --fail-fast              Cancel the scan on the first malicious finding
+      --instruction <TEXT>     Append a custom instruction to every agent's prompt
+      --models <FILE>          One model per agent as JSON, keyed by ticket label,
+                               pool name, or agent name. A value is a model name or
+                               an object of model, reasoning, and context_window
+                               (default: every agent runs the model the environment
+                               names)
+  -h, --help                   Show this help
+
+Example:
+  malwi scan ./src"
+        .to_string()
+}
+
+fn research_help() -> String {
+    "malwi research. Answers a security question from public sources. Not yet implemented.
+
+Usage: malwi research <QUESTION>
+
+Options:
+  -h, --help   Show this help
+
+Example:
+  malwi research \"how did the shai-hulud npm worm spread\""
+        .to_string()
 }
 
 /// The `--models` file, keyed by ticket label, pool, or single agent.
@@ -302,14 +376,73 @@ fn parse_duration(s: &str) -> Option<Duration> {
         .map(|n| Duration::from_secs(n * mult))
 }
 
-fn bad_arg(msg: &str) -> ! {
-    eprintln!("{msg}");
-    std::process::exit(1);
+fn rejected(message: &str) -> CliExit {
+    CliExit::ArgumentRejected(message.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(line: &str) -> Result<Command, CliExit> {
+        let args: Vec<String> = line.split_whitespace().map(String::from).collect();
+        parse_args(&args)
+    }
+
+    #[test]
+    fn scan_takes_the_directory_and_its_flags() {
+        let Ok(Command::Scan(args)) = parse("scan ./src --concurrency 4 --max-time 5m --fail-fast")
+        else {
+            panic!("scan should parse");
+        };
+        assert_eq!(args.dir, PathBuf::from("./src"));
+        assert_eq!(args.concurrency, 4);
+        assert_eq!(args.max_time, Some(Duration::from_secs(300)));
+        assert!(args.fail_fast);
+    }
+
+    /// Guards the strict-subcommand rule: a path is not an implicit scan.
+    #[test]
+    fn a_directory_without_a_command_is_rejected() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("./src") else {
+            panic!("a bare path names no command");
+        };
+        assert!(message.contains("unknown command: ./src"), "{message}");
+    }
+
+    #[test]
+    fn scan_without_a_directory_shows_its_help() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("scan") else {
+            panic!("scan needs a directory");
+        };
+        assert!(message.contains("malwi scan <DIR>"), "{message}");
+    }
+
+    #[test]
+    fn an_unknown_scan_flag_is_named() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("scan ./src --deep") else {
+            panic!("--deep is not a flag");
+        };
+        assert!(message.contains("--deep"), "{message}");
+    }
+
+    #[test]
+    fn research_joins_its_words_into_one_question() {
+        let Ok(Command::Research(args)) = parse("research how did shai-hulud spread") else {
+            panic!("research should parse");
+        };
+        assert_eq!(args.question, "how did shai-hulud spread");
+    }
+
+    #[test]
+    fn help_is_not_an_error() {
+        for line in ["--help", "scan --help", "research --help"] {
+            assert!(
+                matches!(parse(line), Err(CliExit::HelpRequested(_))),
+                "{line}"
+            );
+        }
+    }
 
     #[test]
     fn parses_supported_formats() {

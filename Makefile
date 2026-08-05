@@ -37,7 +37,7 @@ update:
 # so it is tolerated; every other non-zero code still fails.
 run:
 ifdef dir
-	@$(dotenv); cargo run -p malwi -- $(dir) $(args) || [ $$? -eq 2 ]
+	@$(dotenv); cargo run -p malwi -- scan $(dir) $(args) || [ $$? -eq 2 ]
 else
 	@echo "Usage: make run dir=<path> args=\"--concurrency 4 --max-time 5m\""
 endif

@@ -6,7 +6,7 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 
 **malwi does one job: scan a directory, return a JSON verdict.**
 
-- One binary, one entry point: `malwi <DIR>`.
+- One binary, one verb per capability: `malwi scan <DIR>` is the scanner, `malwi research <QUESTION>` the researcher.
 - Input is a path on disk; output is a JSON report at `.malwi/analysis.json` or at `--output`.
 - The tool exits cleanly on cancel, time-up, and policy trip; partial results survive.
 - No daemon, no plugin system, no shell integration.

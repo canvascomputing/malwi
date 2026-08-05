@@ -14,11 +14,21 @@ Where code lives and the rules that govern placement.
 
 **Each top-level source file is one concern the operator observes directly.**
 
-- `main.rs` parses the arguments, builds both `TicketQueue`s and every agent, drives the scan, and writes the report.
-- `scan.rs` walks the tree, compiles the catalogues, runs the grep passes, and enqueues the tickets they produce.
+- `main.rs` parses the command and hands it the rest of the arguments; it holds nothing else.
+- `cli.rs` defines the command dispatch, each command's argument parser, the `--models` table, and the help texts.
+- `discovery.rs` walks the tree, compiles the catalogues, runs the grep passes, and enqueues the tickets they produce.
 - `report.rs` turns finished tickets into the analysis JSON, renders the event stream, and prints the summary.
-- `cli.rs` defines the argument parser, the `--models` table, and the help text.
 - `attack_patterns.rs` seeds the past-incident pages into a `Knowledge` store.
+
+## Commands
+
+**Every command is one verb on the binary and one file named for that verb.**
+
+- `scan.rs` is `malwi scan <DIR>`: it builds both `TicketQueue`s and every agent, drives the scan, and writes the report.
+- `research.rs` is `malwi research <QUESTION>`: it answers a security question from public sources.
+- A command file exposes one `run` taking that command's parsed arguments, so `main.rs` stays a dispatch table.
+- A bare path is not a command: `malwi ./src` is rejected, never an implicit scan.
+- IMPORTANT: `scan.rs` is the command, `discovery.rs` the machinery it drives; new scanning mechanics belong in `discovery.rs`.
 
 ## The `roles/` directory
 
@@ -51,7 +61,8 @@ Where code lives and the rules that govern placement.
 
 **Tests live next to the code they cover.**
 
-- Inline `#[cfg(test)] mod tests` for unit coverage of `scan.rs`, `report.rs`, `cli.rs`, `main.rs`, `attack_patterns.rs`.
+- Inline `#[cfg(test)] mod tests` for unit coverage of `discovery.rs`, `report.rs`, `cli.rs`, `scan.rs`, `attack_patterns.rs`.
+- `cli.rs` parses a `&[String]` into a command, so argument handling is tested without spawning the binary.
 - Sample trees to scan live under `crates/malwi/tests/fixtures/`.
 - `tests/fixtures/python-malware/` is synthetic, and exists so a scan deterministically reaches a `malicious` verdict.
 
