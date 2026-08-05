@@ -5,7 +5,6 @@
 //! against its own citations. Only an accepted page is installed, so a run that
 //! finds nothing trustworthy leaves the corpus exactly as it was.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +17,7 @@ use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
 use crate::attacks;
-use crate::cli::{agent_name, default_model, resolve_models, ResearchArgs};
+use crate::cli::{agent_name, default_model, resolve_models, verify_models, ResearchArgs};
 use crate::osint::{
     brave_key_from_env, brave_search_tool, gap_schema, verdict_schema, PAGE_FORMAT,
 };
@@ -72,23 +71,7 @@ pub(crate) async fn run(args: ResearchArgs) {
         std::process::exit(1);
     });
 
-    // Probe the config before any work: a wrong key, model, or endpoint fails
-    // here with a clear message instead of failing every ticket downstream.
-    let mut probed = BTreeSet::new();
-    for model in models.values() {
-        if !probed.insert(model.name.as_str()) {
-            continue;
-        }
-        if let Err(error) = provider.verify(&model.name).await {
-            eprintln!(
-                "cannot reach model '{}': {error}\n\
-                 check the API key and endpoint for the configured provider, \
-                 and the model names in --models.",
-                model.name,
-            );
-            std::process::exit(1);
-        }
-    }
+    verify_models(provider.as_ref(), &models).await;
 
     let _ = fs::remove_dir_all(WORK_DIR);
 

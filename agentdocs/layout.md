@@ -17,6 +17,7 @@ Where code lives and the rules that govern placement.
 
 - `main.rs` parses the command and hands it the rest of the arguments; it holds nothing else.
 - `cli.rs` defines the command dispatch, each command's argument parser, the `--models` table, and the help texts.
+- `cli.rs` also probes the resolved roster: every command verifies its models through `verify_models` before doing any work.
 - `discovery.rs` walks the tree, compiles the catalogues, runs the grep passes, and enqueues the tickets they produce.
 - `report.rs` turns finished tickets into the analysis JSON, renders the event stream, and prints the summary.
 - `osint.rs` holds the web-search tool, the page format, and the schemas the research chain is held to.

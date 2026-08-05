@@ -9,7 +9,6 @@
 //! pools drain, the Reporter phrases the verdict on its own uncapped queue, so
 //! a `--max-time` stop never cuts the summary.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +21,7 @@ use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFi
 use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
-use crate::cli::{agent_name, default_model, resolve_models, ScanArgs};
+use crate::cli::{agent_name, default_model, resolve_models, verify_models, ScanArgs};
 use crate::discovery::{
     ScanTree, Scanner, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL,
 };
@@ -76,23 +75,7 @@ pub(crate) async fn run(args: ScanArgs) {
         std::process::exit(1);
     });
 
-    // Probe the config before any work: a wrong key, model, or endpoint fails
-    // here with a clear message instead of failing every ticket downstream.
-    let mut probed = BTreeSet::new();
-    for model in models.values() {
-        if !probed.insert(model.name.as_str()) {
-            continue;
-        }
-        if let Err(error) = provider.verify(&model.name).await {
-            eprintln!(
-                "cannot reach model '{}': {error}\n\
-                 check the API key and endpoint for the configured provider, \
-                 and the model names in --models.",
-                model.name,
-            );
-            std::process::exit(1);
-        }
-    }
+    verify_models(provider.as_ref(), &models).await;
 
     let scan_dir = fs::canonicalize(&args.dir).unwrap_or_else(|e| {
         eprintln!("cannot resolve directory '{}': {e}", args.dir.display());

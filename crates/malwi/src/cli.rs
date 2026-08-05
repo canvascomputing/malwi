@@ -1,11 +1,15 @@
-//! CLI argument parsing and help text.
+//! CLI argument parsing and help text, and the roster of models the parsed
+//! arguments resolve to, probed for reachability before a command runs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use agentwerk::providers::{model_from_env, Model, ReasoningEffort};
+use agentwerk::providers::{
+    model_from_env, Message, Model, ModelRequest, Provider, ProviderResult, ReasoningEffort,
+};
 use serde_json::Value;
 
 /// What the operator asked malwi to do.
@@ -359,6 +363,71 @@ pub(crate) fn resolve_models(
     })
 }
 
+/// Output-token budget for one reachability probe. agentwerk's own `verify`
+/// allows 16, which a reasoning model spends inside its thinking block before
+/// emitting anything: the gateway then answers with a truncated reply or with
+/// a 500, neither of which says the configuration is wrong.
+const PROBE_TOKENS: u32 = 512;
+
+/// Probes one model gets before its failure is believed.
+const PROBE_ATTEMPTS: u32 = 3;
+
+/// Delay after the first failed probe, multiplied by the attempt number.
+const PROBE_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Confirm every distinct model in the roster answers, and stop the run with
+/// one message if any does not.
+///
+/// Probing before any work means a wrong key, model, or endpoint fails here
+/// with a clear message instead of failing every ticket downstream.
+pub(crate) async fn verify_models(provider: &dyn Provider, models: &BTreeMap<String, Model>) {
+    let mut probed = BTreeSet::new();
+    for model in models.values() {
+        if !probed.insert(model.name.as_str()) {
+            continue;
+        }
+        if let Err(error) = probe(provider, &model.name).await {
+            eprintln!(
+                "cannot reach model '{}': {error}\n\
+                 check the API key and endpoint for the configured provider, \
+                 and the model names in --models.",
+                model.name,
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Ask one model to answer once, retrying while the failure is transient.
+///
+/// A 5xx or a dropped connection says nothing about whether the key, model,
+/// and endpoint are right, so believing the first one turns a hiccup upstream
+/// into a run that never starts. A classified failure is returned on the spot:
+/// a wrong key or an unknown model fails the same way on every attempt.
+async fn probe(provider: &dyn Provider, model: &str) -> ProviderResult<()> {
+    let mut attempt = 1;
+    loop {
+        let request = ModelRequest {
+            model: model.to_string(),
+            system_prompt: String::new(),
+            messages: vec![Message::user("ping")],
+            tools: Vec::new(),
+            max_request_tokens: Some(PROBE_TOKENS),
+            tool_choice: None,
+            reasoning_effort: ReasoningEffort::Off,
+        };
+        let error = match provider.respond(request, Arc::new(|_| {})).await {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        if !error.is_retryable() || attempt == PROBE_ATTEMPTS {
+            return Err(error);
+        }
+        tokio::time::sleep(PROBE_BACKOFF * attempt).await;
+        attempt += 1;
+    }
+}
+
 /// The `--models` file, keyed by ticket label, pool, or single agent.
 #[derive(Debug)]
 pub(crate) struct ModelTable(BTreeMap<String, Model>);
@@ -518,11 +587,123 @@ fn rejected(message: &str) -> CliExit {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+
+    use agentwerk::providers::{
+        ModelResponse, ProviderError, ResponseStatus, StreamEvent, TokenUsage,
+    };
+
     use super::*;
 
     fn parse(line: &str) -> Result<Command, CliExit> {
         let args: Vec<String> = line.split_whitespace().map(String::from).collect();
         parse_args(&args)
+    }
+
+    /// Fails the first `failures` probes with `error`, then answers.
+    struct ProbedProvider {
+        failures: u32,
+        error: fn() -> ProviderError,
+        attempts: AtomicU32,
+        budgets: Mutex<Vec<Option<u32>>>,
+    }
+
+    impl ProbedProvider {
+        fn new(failures: u32, error: fn() -> ProviderError) -> Self {
+            Self {
+                failures,
+                error,
+                attempts: AtomicU32::new(0),
+                budgets: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn attempts(&self) -> u32 {
+            self.attempts.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Provider for ProbedProvider {
+        fn respond(
+            &self,
+            request: ModelRequest,
+            _on_event: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+        ) -> Pin<Box<dyn Future<Output = ProviderResult<ModelResponse>> + Send + '_>> {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            self.budgets
+                .lock()
+                .expect("probe budgets should lock")
+                .push(request.max_request_tokens);
+            Box::pin(async move {
+                if attempt < self.failures {
+                    return Err((self.error)());
+                }
+                Ok(ModelResponse {
+                    content: Vec::new(),
+                    status: ResponseStatus::EndTurn,
+                    usage: TokenUsage::default(),
+                    model: "probe".into(),
+                })
+            })
+        }
+    }
+
+    fn transient() -> ProviderError {
+        ProviderError::StatusUnclassified {
+            status: 500,
+            message: "Response finished before thinking was completed".into(),
+            retryable: true,
+            retry_delay: None,
+        }
+    }
+
+    fn classified() -> ProviderError {
+        ProviderError::AuthenticationFailed {
+            message: "invalid api key".into(),
+        }
+    }
+
+    /// Guards the invariant that a transient upstream failure never decides
+    /// whether the operator's configuration is usable.
+    #[tokio::test(start_paused = true)]
+    async fn a_transient_probe_failure_is_retried_until_the_model_answers() {
+        let provider = ProbedProvider::new(2, transient);
+        assert!(probe(&provider, "any-model").await.is_ok());
+        assert_eq!(provider.attempts(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transient_probe_failure_gives_up_after_the_attempt_budget() {
+        let provider = ProbedProvider::new(u32::MAX, transient);
+        assert!(probe(&provider, "any-model").await.is_err());
+        assert_eq!(provider.attempts(), PROBE_ATTEMPTS);
+    }
+
+    /// A wrong key fails the same way on every attempt, so retrying it only
+    /// delays the message the operator needs.
+    #[tokio::test(start_paused = true)]
+    async fn a_classified_probe_failure_is_not_retried() {
+        let provider = ProbedProvider::new(u32::MAX, classified);
+        assert!(probe(&provider, "any-model").await.is_err());
+        assert_eq!(provider.attempts(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_probe_leaves_room_for_a_thinking_model_to_answer() {
+        let provider = ProbedProvider::new(0, transient);
+        probe(&provider, "any-model").await.expect("probe answers");
+        let budgets = provider.budgets.lock().expect("probe budgets should lock");
+        let [Some(budget)] = budgets.as_slice() else {
+            panic!("one probe carries one output budget");
+        };
+        assert!(
+            *budget >= 512,
+            "a reasoning model spends its whole allowance inside the thinking \
+             block, so {budget} tokens never reaches an answer",
+        );
     }
 
     #[test]
