@@ -39,7 +39,7 @@ Where code lives and the rules that govern placement.
 
 - `explorer.md`, `seeker.md`, `tracer.md`, `analyst.md`, `reporter.md` are the scan roles.
 - `curator.md`, `scout.md`, `editor.md`, `verifier.md` are the research roles.
-- `verdicts.md` and `output_contract.md` are not roles: they are shared fragments bound into whichever roles need them.
+- `verdicts.md`, `output_contract.md`, and `page_format.md` are not roles: they are shared fragments bound into whichever roles need them.
 - New roles earn their own file; never inline a multi-paragraph role string in Rust.
 - `{template}` placeholders in the file are bound at agent-build time through `Agent::template`.
 
