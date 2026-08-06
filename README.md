@@ -5,23 +5,29 @@
 <h1 align="center">malwi</h1>
 
 <p align="center">
-  <strong>Here is malwi, your fleet of agentic security researchers.</strong>
+  <strong>Let's end Supply-Chain Attacks.</strong>
 </p>
 
-<div align="center">Attackers exploit trust and undermine the sovereignty of open-source software. malwi aims to end the threat of supply-chain attacks.</div>
+<div align="center">Attackers exploit trust and undermine the sovereignty of open-source software. malwi aims to end the threat of supply-chain attacks. It spawns a fleet of security research agents evaluating the trustworthiness of software.</div>
 
-## Coming Soon
+## Demo
+
+```
+Coming soon
+```
+
+## Samples
+
+```
+Coming soon
+```
+
+## Commands
 
 ```sh
 malwi scan ./node_modules/left-pad
-malwi scan ./src --fail-fast
-malwi scan ./src --max-time 5m --concurrency 4
-malwi scan ./src --models models.json
 ```
 
 ```sh
-malwi research
-malwi research npm registry attacks 2026 --max-gaps 3
-malwi research pypi typosquatting --knowledge ./attacks
-malwi research --max-gaps 10 --max-time 30m
+malwi osint
 ```

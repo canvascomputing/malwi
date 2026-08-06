@@ -15,12 +15,77 @@ use serde_json::Value;
 /// What the operator asked malwi to do.
 pub(crate) enum Command {
     Scan(ScanArgs),
-    Research(ResearchArgs),
+    Osint(OsintArgs),
 }
 
-/// Options of `malwi scan <DIR>`.
+/// What the operator named as the thing to scan.
+pub(crate) enum ScanTarget {
+    /// A directory, scanned where it lies.
+    Directory(PathBuf),
+    /// A single file, copied into a directory of its own before the scan.
+    File(PathBuf),
+    /// What no local path resolves to: a package name, a URL, or a repository,
+    /// read as a prompt for the agent that will fetch it.
+    Prompt(String),
+}
+
+impl ScanTarget {
+    /// Classify what the operator named. Nothing is fetched here: a name no
+    /// path resolves to is carried as written until the run tries to reach it.
+    pub(crate) fn from_arg(arg: &str) -> Self {
+        let path = Path::new(arg);
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => ScanTarget::Directory(path.to_path_buf()),
+            Ok(meta) if meta.is_file() => ScanTarget::File(path.to_path_buf()),
+            _ => ScanTarget::Prompt(arg.to_string()),
+        }
+    }
+
+    /// The directory the scan walks. A file is copied into `input_dir` first, so
+    /// every phase behind this call sees a tree. `input_dir` is recreated here,
+    /// so the caller must have finished wiping the folder that holds it.
+    pub(crate) fn resolve(&self, input_dir: &Path) -> Result<PathBuf, String> {
+        match self {
+            ScanTarget::Directory(path) => fs::canonicalize(path)
+                .map_err(|e| format!("cannot resolve directory '{}': {e}", path.display())),
+            ScanTarget::File(path) => stage_file(path, input_dir),
+            ScanTarget::Prompt(text) => Err(format!(
+                "nothing to scan at '{text}': malwi scans a directory or a single file"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ScanTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScanTarget::Directory(path) | ScanTarget::File(path) => write!(f, "{}", path.display()),
+            ScanTarget::Prompt(text) => write!(f, "{text}"),
+        }
+    }
+}
+
+/// Copy `file` into an emptied `input_dir` and return that directory.
+fn stage_file(file: &Path, input_dir: &Path) -> Result<PathBuf, String> {
+    let name = file
+        .file_name()
+        .ok_or_else(|| format!("cannot scan '{}': it names no file", file.display()))?;
+    let _ = fs::remove_dir_all(input_dir);
+    fs::create_dir_all(input_dir)
+        .map_err(|e| format!("cannot create {}: {e}", input_dir.display()))?;
+    fs::copy(file, input_dir.join(name)).map_err(|e| {
+        format!(
+            "cannot copy '{}' into {}: {e}",
+            file.display(),
+            input_dir.display()
+        )
+    })?;
+    fs::canonicalize(input_dir).map_err(|e| format!("cannot resolve {}: {e}", input_dir.display()))
+}
+
+/// Options of `malwi scan <TARGET>`.
 pub(crate) struct ScanArgs {
-    pub(crate) dir: PathBuf,
+    pub(crate) target: ScanTarget,
     pub(crate) max_turns: Option<u32>,
     pub(crate) max_time: Option<Duration>,
     pub(crate) concurrency: usize,
@@ -30,17 +95,14 @@ pub(crate) struct ScanArgs {
     pub(crate) models: Option<ModelTable>,
 }
 
-/// Options of `malwi research [TOPIC]`.
-pub(crate) struct ResearchArgs {
+/// Options of `malwi osint [FOCUS]`.
+pub(crate) struct OsintArgs {
     /// What to steer the hunt towards. Without it the run audits the whole
     /// knowledge base and picks its own gaps.
     pub(crate) steer: Option<String>,
-    pub(crate) max_gaps: usize,
-    pub(crate) max_turns: Option<u32>,
     pub(crate) max_time: Option<Duration>,
     pub(crate) concurrency: usize,
     pub(crate) knowledge_dir: Option<PathBuf>,
-    pub(crate) output_file: Option<PathBuf>,
     pub(crate) models: Option<ModelTable>,
 }
 
@@ -71,12 +133,25 @@ impl Command {
     }
 }
 
+/// The one-letter shortcut for each command. A fixed table rather than prefix
+/// matching, so `s` keeps meaning `scan` once a second `s` verb exists.
+const SHORTCUTS: [(&str, &str); 2] = [("s", "scan"), ("o", "osint")];
+
+/// The command an argument names, with a shortcut expanded. Anything else is
+/// returned as written, so a rejection echoes what the operator typed.
+fn command_word(arg: &str) -> &str {
+    SHORTCUTS
+        .iter()
+        .find(|(short, _)| *short == arg)
+        .map_or(arg, |(_, word)| *word)
+}
+
 fn parse_args(args: &[String]) -> Result<Command, CliExit> {
-    match args.first().map(String::as_str) {
+    match args.first().map(String::as_str).map(command_word) {
         None => Err(CliExit::ArgumentRejected(top_help())),
         Some("-h" | "--help") => Err(CliExit::HelpRequested(top_help())),
         Some("scan") => parse_scan(&args[1..]).map(Command::Scan),
-        Some("research") => parse_research(&args[1..]).map(Command::Research),
+        Some("osint") => parse_osint(&args[1..]).map(Command::Osint),
         Some(other) => Err(CliExit::ArgumentRejected(format!(
             "unknown command: {other}\n\n{}",
             top_help()
@@ -85,7 +160,7 @@ fn parse_args(args: &[String]) -> Result<Command, CliExit> {
 }
 
 fn parse_scan(args: &[String]) -> Result<ScanArgs, CliExit> {
-    let mut dir: Option<PathBuf> = None;
+    let mut target: Option<ScanTarget> = None;
     let mut max_turns: Option<u32> = None;
     let mut max_time: Option<Duration> = None;
     let mut concurrency: usize = 2;
@@ -148,13 +223,13 @@ fn parse_scan(args: &[String]) -> Result<ScanArgs, CliExit> {
             }
             "-h" | "--help" => return Err(CliExit::HelpRequested(scan_help())),
             arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
-            _ => dir = Some(PathBuf::from(&args[i])),
+            _ => target = Some(ScanTarget::from_arg(&args[i])),
         }
         i += 1;
     }
 
     Ok(ScanArgs {
-        dir: dir.ok_or_else(|| CliExit::ArgumentRejected(scan_help()))?,
+        target: target.ok_or_else(|| CliExit::ArgumentRejected(scan_help()))?,
         max_turns,
         max_time,
         concurrency,
@@ -165,37 +240,18 @@ fn parse_scan(args: &[String]) -> Result<ScanArgs, CliExit> {
     })
 }
 
-/// Every word outside a flag is part of the topic, so quoting it is optional.
-/// No topic at all is legal: the run then audits the whole knowledge base.
-fn parse_research(args: &[String]) -> Result<ResearchArgs, CliExit> {
+/// Every word outside a flag is part of the focus, so quoting it is optional.
+/// No focus at all is legal: the run then audits the whole knowledge base.
+fn parse_osint(args: &[String]) -> Result<OsintArgs, CliExit> {
     let mut words: Vec<&str> = Vec::new();
-    let mut max_gaps: usize = 5;
-    let mut max_turns: Option<u32> = None;
     let mut max_time: Option<Duration> = None;
     let mut concurrency: usize = 2;
     let mut knowledge_dir: Option<PathBuf> = None;
-    let mut output_file: Option<PathBuf> = None;
     let mut models: Option<ModelTable> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--max-gaps" => {
-                i += 1;
-                max_gaps = args
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .filter(|n| *n > 0)
-                    .ok_or_else(|| rejected("--max-gaps expects a positive number"))?;
-            }
-            "--max-turns" => {
-                i += 1;
-                max_turns = Some(
-                    args.get(i)
-                        .and_then(|s| s.parse().ok())
-                        .ok_or_else(|| rejected("--max-turns expects a positive number"))?,
-                );
-            }
             "--max-time" => {
                 i += 1;
                 max_time = Some(
@@ -218,13 +274,6 @@ fn parse_research(args: &[String]) -> Result<ResearchArgs, CliExit> {
                         .ok_or_else(|| rejected("--knowledge expects a path"))?,
                 ));
             }
-            "--output" => {
-                i += 1;
-                output_file = Some(PathBuf::from(
-                    args.get(i)
-                        .ok_or_else(|| rejected("--output expects a path"))?,
-                ));
-            }
             "--models" => {
                 i += 1;
                 let path = args
@@ -233,21 +282,18 @@ fn parse_research(args: &[String]) -> Result<ResearchArgs, CliExit> {
                     .ok_or_else(|| rejected("--models expects a path"))?;
                 models = Some(ModelTable::load(path).map_err(CliExit::ArgumentRejected)?);
             }
-            "-h" | "--help" => return Err(CliExit::HelpRequested(research_help())),
+            "-h" | "--help" => return Err(CliExit::HelpRequested(osint_help())),
             arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
             word => words.push(word),
         }
         i += 1;
     }
 
-    Ok(ResearchArgs {
+    Ok(OsintArgs {
         steer: (!words.is_empty()).then(|| words.join(" ")),
-        max_gaps,
-        max_turns,
         max_time,
         concurrency,
         knowledge_dir,
-        output_file,
         models,
     })
 }
@@ -258,8 +304,8 @@ fn top_help() -> String {
 Usage: malwi <COMMAND> [OPTIONS]
 
 Commands:
-  scan       Scan a directory and write a JSON verdict
-  research   Find gaps in the attack-pattern knowledge and fill them from public sources
+  scan, s    Scan a file or a directory and write a JSON verdict
+  osint, o   Find gaps in the attack-pattern knowledge and fill them from public sources
 
 Options:
   -h, --help   Show this help
@@ -273,7 +319,12 @@ fn scan_help() -> String {
 (from a curated catalogue or via a Seeker searching the tree for threats),
 and dispatches suspect matches to an Analyst pool for deeper investigation.
 
-Usage: malwi scan <DIR> [OPTIONS]
+Usage: malwi scan <TARGET> [OPTIONS]
+
+Alias: s
+
+A TARGET is a directory, scanned where it lies, or a single file, copied into
+the working folder and scanned there.
 
 Options:
       --concurrency <N>        Agent pool size per phase (default: 2)
@@ -289,29 +340,29 @@ Options:
                                names)
   -h, --help                   Show this help
 
-Example:
-  malwi scan ./src"
+Examples:
+  malwi scan ./src
+  malwi s ./node_modules/left-pad"
         .to_string()
 }
 
-fn research_help() -> String {
-    "malwi research. Audits the attack-pattern knowledge for incidents it does not
+fn osint_help() -> String {
+    "malwi osint. Audits the attack-pattern knowledge for incidents it does not
 cover, hunts each gap through web search and page fetches, drafts a page per
 incident, and installs the ones that survive verification. A source checkout
 takes the new pages directly, so the next build ships them.
 
-Usage: malwi research [TOPIC] [OPTIONS]
+Usage: malwi osint [FOCUS] [OPTIONS]
 
-A TOPIC steers the hunt towards one area. Without one the run picks its own gaps.
+Alias: o
+
+A FOCUS steers the hunt towards one area. Without one the run picks its own gaps.
 
 Options:
-      --max-gaps <N>           Gaps to research in one run (default: 5)
       --concurrency <N>        Agent pool size per phase (default: 2)
-      --max-turns <N>          Per-queue turn limit (default: unlimited)
       --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)
       --knowledge <DIR>        Install new pages here (default: the source tree
                                when run from a checkout, else .malwi/attacks)
-      --output <FILE>          Write the research JSON to FILE (default: .malwi/research/research.json)
       --models <FILE>          One model per agent as JSON, keyed by ticket label,
                                pool name, or agent name. A value is a model name or
                                an object of model, reasoning, and context_window
@@ -323,8 +374,8 @@ Environment:
   BRAVE_API_KEY   Required. Web search runs through the Brave Search API.
 
 Examples:
-  malwi research
-  malwi research npm registry attacks 2026 --max-gaps 3"
+  malwi osint
+  malwi o npm registry attacks 2026 --max-time 20m"
         .to_string()
 }
 
@@ -707,15 +758,42 @@ mod tests {
     }
 
     #[test]
-    fn scan_takes_the_directory_and_its_flags() {
+    fn scan_takes_its_target_and_its_flags() {
         let Ok(Command::Scan(args)) = parse("scan ./src --concurrency 4 --max-time 5m --fail-fast")
         else {
             panic!("scan should parse");
         };
-        assert_eq!(args.dir, PathBuf::from("./src"));
+        assert!(matches!(args.target, ScanTarget::Directory(_)));
+        assert_eq!(args.target.to_string(), "./src");
         assert_eq!(args.concurrency, 4);
         assert_eq!(args.max_time, Some(Duration::from_secs(300)));
         assert!(args.fail_fast);
+    }
+
+    #[test]
+    fn a_one_letter_shortcut_names_the_same_command() {
+        assert!(matches!(parse("s ./src"), Ok(Command::Scan(_))));
+        assert!(matches!(parse("o"), Ok(Command::Osint(_))));
+    }
+
+    /// Guards the fixed shortcut table against being loosened into prefix
+    /// matching, which would make `s` ambiguous once a second `s` verb exists.
+    #[test]
+    fn a_longer_prefix_is_not_a_shortcut() {
+        for line in ["sc ./src", "os"] {
+            let Err(CliExit::ArgumentRejected(message)) = parse(line) else {
+                panic!("{line} names no command");
+            };
+            assert!(message.contains("unknown command"), "{message}");
+        }
+    }
+
+    #[test]
+    fn research_is_no_longer_a_command() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("research") else {
+            panic!("research was replaced by osint");
+        };
+        assert!(message.contains("unknown command: research"), "{message}");
     }
 
     /// Guards the strict-subcommand rule: a path is not an implicit scan.
@@ -728,11 +806,72 @@ mod tests {
     }
 
     #[test]
-    fn scan_without_a_directory_shows_its_help() {
+    fn scan_without_a_target_shows_its_help() {
         let Err(CliExit::ArgumentRejected(message)) = parse("scan") else {
-            panic!("scan needs a directory");
+            panic!("scan needs a target");
         };
-        assert!(message.contains("malwi scan <DIR>"), "{message}");
+        assert!(message.contains("malwi scan <TARGET>"), "{message}");
+    }
+
+    #[test]
+    fn a_file_target_is_kept_apart_from_a_directory_target() {
+        let Ok(Command::Scan(file)) = parse("scan src/main.rs") else {
+            panic!("a file is a target");
+        };
+        assert!(matches!(file.target, ScanTarget::File(_)));
+
+        let Ok(Command::Scan(dir)) = parse("scan ./src") else {
+            panic!("a directory is a target");
+        };
+        assert!(matches!(dir.target, ScanTarget::Directory(_)));
+    }
+
+    #[test]
+    fn a_target_no_path_resolves_to_is_carried_as_a_prompt() {
+        let Ok(Command::Scan(args)) = parse("scan left-pad") else {
+            panic!("a package name is a target");
+        };
+        let ScanTarget::Prompt(text) = args.target else {
+            panic!("no path resolves to left-pad");
+        };
+        assert_eq!(text, "left-pad");
+    }
+
+    fn input_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("malwi_target_{}_{name}", std::process::id()))
+    }
+
+    #[test]
+    fn a_file_target_resolves_to_a_directory_holding_a_copy() {
+        let input = input_dir("file");
+        let staged = ScanTarget::File(PathBuf::from("src/main.rs"))
+            .resolve(&input)
+            .expect("a readable file stages");
+
+        assert!(staged.is_dir(), "{}", staged.display());
+        assert_eq!(
+            fs::read(staged.join("main.rs")).expect("the copy is readable"),
+            fs::read("src/main.rs").expect("the original is readable"),
+        );
+        let _ = fs::remove_dir_all(&input);
+    }
+
+    #[test]
+    fn a_directory_target_resolves_to_itself() {
+        let staged = ScanTarget::Directory(PathBuf::from("./src"))
+            .resolve(&input_dir("dir"))
+            .expect("an existing directory resolves");
+        assert_eq!(staged, fs::canonicalize("./src").expect("./src exists"));
+    }
+
+    /// The seam for targets an agent will fetch: today the run stops here, and
+    /// this test is what changes when it learns to materialize one.
+    #[test]
+    fn a_target_that_is_not_a_path_is_refused_by_name() {
+        let error = ScanTarget::Prompt("left-pad".to_string())
+            .resolve(&input_dir("prompt"))
+            .expect_err("nothing local is named left-pad");
+        assert!(error.contains("left-pad"), "{error}");
     }
 
     #[test]
@@ -744,28 +883,43 @@ mod tests {
     }
 
     #[test]
-    fn research_joins_its_words_into_one_steer() {
-        let Ok(Command::Research(args)) = parse("research npm registry attacks --max-gaps 3")
-        else {
-            panic!("research should parse");
+    fn osint_joins_its_words_into_one_steer() {
+        let Ok(Command::Osint(args)) = parse("osint npm registry attacks --max-time 5m") else {
+            panic!("osint should parse");
         };
         assert_eq!(args.steer.as_deref(), Some("npm registry attacks"));
-        assert_eq!(args.max_gaps, 3);
+        assert_eq!(args.max_time, Some(Duration::from_secs(300)));
     }
 
-    /// Guards the autonomous audit: a bare `research` is a run, not a usage error.
+    /// Guards the autonomous audit: a bare `osint` is a run, not a usage error.
     #[test]
-    fn research_without_words_steers_nowhere() {
-        let Ok(Command::Research(args)) = parse("research") else {
-            panic!("research should parse without a topic");
+    fn osint_without_words_steers_nowhere() {
+        let Ok(Command::Osint(args)) = parse("osint") else {
+            panic!("osint should parse without a focus");
         };
         assert_eq!(args.steer, None);
-        assert_eq!(args.max_gaps, 5);
+        assert_eq!(args.concurrency, 2);
+    }
+
+    /// Guards the trimmed surface: these three are scan's alone, and osint must
+    /// name them rather than swallow one as a word of the focus.
+    #[test]
+    fn a_flag_osint_no_longer_carries_is_named() {
+        for line in [
+            "osint --max-gaps 3",
+            "osint --max-turns 4",
+            "osint --output o.json",
+        ] {
+            let Err(CliExit::ArgumentRejected(message)) = parse(line) else {
+                panic!("{line} names no osint flag");
+            };
+            assert!(message.contains("unknown flag"), "{message}");
+        }
     }
 
     #[test]
-    fn an_unknown_research_flag_is_named() {
-        let Err(CliExit::ArgumentRejected(message)) = parse("research --deep") else {
+    fn an_unknown_osint_flag_is_named() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("osint --deep") else {
             panic!("--deep is not a flag");
         };
         assert!(message.contains("--deep"), "{message}");
@@ -773,7 +927,7 @@ mod tests {
 
     #[test]
     fn help_is_not_an_error() {
-        for line in ["--help", "scan --help", "research --help"] {
+        for line in ["--help", "scan --help", "osint --help"] {
             assert!(
                 matches!(parse(line), Err(CliExit::HelpRequested(_))),
                 "{line}"

@@ -9,7 +9,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - CLI argument parsing, the `--models` table, and help text live in `cli.rs`.
 - The directory walker, the catalogues, and the grep passes live in `discovery.rs`.
 - The JSON assembler, the event renderer, and the terminal summary live in `report.rs`.
-- Role prompts live in `roles/`, indicator catalogues in `threats/`, incident pages in `knowledge/`.
+- Role prompts live in `roles/`, indicator catalogues in `threats/`, incident pages in `attacks/`.
 - A helper called from a single private function is inlined; a helper called from two siblings earns a free function in the same file.
 
 ## Name disambiguation
@@ -133,9 +133,9 @@ Not allowed:
 - A comment is justified only to pin an architectural invariant the test guards.
 - A module-level `//!` describing the test file's scope is acceptable.
 
-## Threats, roles, and knowledge
+## Threats, roles, and attack pages
 
-**Files under `threats/`, `roles/`, and `knowledge/` are model input, not docs. They follow prompting conventions, not Rust conventions.**
+**Files under `threats/`, `roles/`, and `attacks/` are model input, not docs. They follow prompting conventions, not Rust conventions.**
 
 - Each `threats/<lang>.json` entry carries the prose an analyst reads verbatim in its `reason`.
 - Each `roles/*.md` follows the role / strengths / guidelines / output split of the [prompting guide](https://github.com/canvascomputing/prompting).
