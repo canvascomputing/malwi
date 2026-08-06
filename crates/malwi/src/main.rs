@@ -6,7 +6,6 @@ mod cli;
 mod discovery;
 mod osint;
 mod report;
-mod research;
 mod scan;
 
 use cli::Command;
@@ -15,6 +14,6 @@ use cli::Command;
 async fn main() {
     match Command::parse() {
         Command::Scan(args) => scan::run(args).await,
-        Command::Research(args) => research::run(args).await,
+        Command::Osint(args) => osint::run(args).await,
     }
 }

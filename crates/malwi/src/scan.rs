@@ -66,6 +66,11 @@ const SEARCHES_PER_TICKET: u32 = 10;
 /// run so nothing carries over from a prior scan.
 const WORK_DIR: &str = ".malwi";
 
+/// Where a single-file target is copied so the scan still walks a tree. Inside
+/// [`WORK_DIR`], so the next run's wipe takes the copy with it, which is why the
+/// target is staged after that wipe rather than before.
+const INPUT_DIR: &str = ".malwi/input";
+
 pub(crate) async fn run(args: ScanArgs) {
     let concurrency = args.concurrency.max(1);
     let roster = roster(concurrency);
@@ -77,26 +82,29 @@ pub(crate) async fn run(args: ScanArgs) {
 
     verify_models(provider.as_ref(), &models).await;
 
-    let scan_dir = fs::canonicalize(&args.dir).unwrap_or_else(|e| {
-        eprintln!("cannot resolve directory '{}': {e}", args.dir.display());
-        std::process::exit(1);
-    });
+    // Start every run from a clean working folder, and before the target is
+    // staged into it: no tickets, knowledge, or results carried over from a
+    // prior scan, and no copy of a prior scan's file left behind.
+    let _ = fs::remove_dir_all(WORK_DIR);
+
+    let scan_dir = args
+        .target
+        .resolve(Path::new(INPUT_DIR))
+        .unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
 
     let scan = ScanTree::collect(&scan_dir);
     if scan.extensions.is_empty() {
         eprintln!(
             "no files with extensions found under {} ({} file(s) walked)",
-            scan_dir.display(),
-            scan.files,
+            args.target, scan.files,
         );
         std::process::exit(1);
     }
 
     let files_walked = scan.files;
-
-    // Start every run from a clean working folder: no tickets, knowledge, or
-    // results carried over from a prior scan.
-    let _ = fs::remove_dir_all(WORK_DIR);
 
     let analyst_knowledge = Knowledge::load(WORK_DIR).unwrap_or_else(|e| {
         eprintln!("cannot open analyst knowledge: {e}");
@@ -133,7 +141,7 @@ pub(crate) async fn run(args: ScanArgs) {
     crate::discovery::write_file_map(&exploration_knowledge, &scan.files_by_ext);
     crate::discovery::write_file_map(&seeker_knowledge, &scan.files_by_ext);
 
-    eprintln!("malwi scan: {}\n", scan_dir.display());
+    eprintln!("malwi scan: {}\n", args.target);
 
     let tickets = TicketQueue::new();
     tickets.dir(WORK_DIR);

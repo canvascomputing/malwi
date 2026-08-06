@@ -20,26 +20,36 @@ Where code lives and the rules that govern placement.
 - `cli.rs` also probes the resolved roster: every command verifies its models through `verify_models` before doing any work.
 - `discovery.rs` walks the tree, compiles the catalogues, runs the grep passes, and enqueues the tickets they produce.
 - `report.rs` turns finished tickets into the analysis JSON, renders the event stream, and prints the summary.
-- `osint.rs` holds the web-search tool, the page format, and the schemas the research chain is held to.
 - `attacks.rs` seeds the past-incident pages into a `Knowledge` store and installs researched ones.
 
 ## Commands
 
 **Every command is one verb on the binary and one file named for that verb.**
 
-- `scan.rs` is `malwi scan <DIR>`: it builds both `TicketQueue`s and every agent, drives the scan, and writes the report.
-- `research.rs` is `malwi research [TOPIC]`: it fills the gaps in the attack corpus from public sources.
+- `scan.rs` is `malwi scan <TARGET>`: it builds both `TicketQueue`s and every agent, drives the scan, and writes the report.
+- `osint.rs` is `malwi osint [FOCUS]`: it fills the gaps in the attack corpus from public sources.
+- Each verb has one fixed single-letter shortcut (`s`, `o`), expanded by one table in `cli.rs`; a longer prefix is not a shortcut.
+- A TARGET is classified before the walk, and `ScanTarget::resolve` hands every phase behind it a directory: a file is copied into the working folder first.
 - A command file exposes one `run` taking that command's parsed arguments, so `main.rs` stays a dispatch table.
 - A bare path is not a command: `malwi ./src` is rejected, never an implicit scan.
 - IMPORTANT: `scan.rs` is the command, `discovery.rs` the machinery it drives; new scanning mechanics belong in `discovery.rs`.
-- IMPORTANT: `research.rs` is the command, `osint.rs` the machinery it drives; new intelligence-gathering mechanics belong in `osint.rs`.
+- IMPORTANT: `osint.rs` is the command, `osint/web_search.rs` the machinery it drives; new intelligence-gathering mechanics belong in `osint/web_search.rs`.
+
+## The `osint/` directory
+
+**The machinery the `osint` verb drives lives beside the file that is the verb.**
+
+- `web_search.rs` holds the web-search tool, the page format, and the schemas each phase of the chain is held to.
+- Its modules stay private to `osint.rs`, so nothing outside the command reaches the machinery.
+- `include_str!` inside `osint/` reaches the shared prompts one level up, as `../roles/…`.
+- A second subcommand-free helper earns a file here; the verb file stays the command.
 
 ## The `roles/` directory
 
 **Each agent role is one markdown file loaded via `include_str!`.**
 
 - `explorer.md`, `seeker.md`, `tracer.md`, `analyst.md`, `reporter.md` are the scan roles.
-- `curator.md`, `scout.md`, `editor.md`, `verifier.md` are the research roles.
+- `curator.md`, `scout.md`, `editor.md`, `verifier.md` are the osint roles.
 - `verdicts.md`, `output_contract.md`, and `page_format.md` are not roles: they are shared fragments bound into whichever roles need them.
 - New roles earn their own file; never inline a multi-paragraph role string in Rust.
 - `{template}` placeholders in the file are bound at agent-build time through `Agent::template`.
@@ -62,14 +72,14 @@ Where code lives and the rules that govern placement.
 - The three tests in `attacks.rs` enforce that shape, so a hand-written page and a researched one stay readable to the same agent.
 - `build.rs` generates the `PAGES` table from the directory, so adding a page is dropping in a file.
 - Pages are embedded at compile time, so an installed binary carries its own seed.
-- `malwi research` writes here directly, which is why the table is generated rather than hand-kept.
+- `malwi osint` writes here directly, which is why the table is generated rather than hand-kept.
 - The index is rebuilt from the pages by `Knowledge::load`; never check one in.
 
 ## Tests
 
 **Tests live next to the code they cover.**
 
-- Inline `#[cfg(test)] mod tests` for unit coverage of `discovery.rs`, `report.rs`, `cli.rs`, `scan.rs`, `research.rs`, `osint.rs`, `attacks.rs`.
+- Inline `#[cfg(test)] mod tests` for unit coverage of `discovery.rs`, `report.rs`, `cli.rs`, `scan.rs`, `osint.rs`, `osint/web_search.rs`, `attacks.rs`.
 - `cli.rs` parses a `&[String]` into a command, so argument handling is tested without spawning the binary.
 - Sample trees to scan live under `crates/malwi/tests/fixtures/`.
 - `tests/fixtures/python-malware/` is synthetic, and exists so a scan deterministically reaches a `malicious` verdict.

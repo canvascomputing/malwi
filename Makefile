@@ -1,4 +1,4 @@
-.PHONY: build test fmt clean update run research bump doc hooks
+.PHONY: build test fmt clean update run osint bump doc hooks
 
 # Prefix for any recipe that runs the binary, so provider credentials in .env
 # reach it without being exported by hand. Sourced rather than `include`d,
@@ -31,7 +31,7 @@ clean:
 update:
 	cargo update
 
-# Run the scanner against a directory
+# Run the scanner against a directory or a single file
 # Usage: make run dir=./src args="--concurrency 4"
 # Exit 2 is the malicious-verdict signal under --fail-fast, not a build failure,
 # so it is tolerated; every other non-zero code still fails.
@@ -44,10 +44,10 @@ endif
 
 # Research gaps in the attack-pattern knowledge and install the pages that pass
 # verification. Needs BRAVE_API_KEY alongside the provider credentials in .env.
-# Usage: make research
-#        make research topic="npm registry attacks" args="--max-gaps 3"
-research:
-	@$(dotenv); cargo run -p malwi -- research $(topic) $(args)
+# Usage: make osint
+#        make osint focus="npm registry attacks" args="--max-time 20m"
+osint:
+	@$(dotenv); cargo run -p malwi -- osint $(focus) $(args)
 
 # Bump version, test, commit, and tag for release: make bump part=patch (default), minor, or major
 # GitHub Actions handles the crates.io publish via trusted publishing after you push the tag
