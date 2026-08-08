@@ -25,9 +25,13 @@ Coming soon
 ## Commands
 
 ```sh
-malwi scan ./node_modules/left-pad
+malwi analyze ./node_modules/left-pad
 ```
 
 ```sh
 malwi osint
+```
+
+```sh
+malwi download python requests
 ```
