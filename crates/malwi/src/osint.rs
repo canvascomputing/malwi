@@ -8,9 +8,10 @@
 mod web_search;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use agentwerk::providers::provider_from_env;
 use agentwerk::providers::{Model, Provider};
@@ -19,7 +20,10 @@ use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
 use crate::attacks;
-use crate::cli::{agent_name, default_model, resolve_models, verify_models, OsintArgs};
+use crate::cli::{
+    agent_name, default_model, parse_duration, rejected, resolve_models, verify_models, CliExit,
+    ModelTable,
+};
 use crate::report::{headline, is_run_wide_policy_stop, log_event, truncate};
 use web_search::{brave_key_from_env, gap_schema, verdict_schema, web_search_tool, PAGE_FORMAT};
 
@@ -61,7 +65,105 @@ const MAX_GAPS: usize = 5;
 /// Where the run's JSON lands. Inside [`WORK_DIR`], so a rerun replaces it.
 const OSINT_FILE: &str = ".malwi/osint/osint.json";
 
-pub(crate) async fn run(args: OsintArgs) {
+/// Options of `malwi osint [FOCUS]`.
+pub(crate) struct Args {
+    /// What to steer the hunt towards. Without it the run audits the whole
+    /// knowledge base and picks its own gaps.
+    pub(crate) steer: Option<String>,
+    pub(crate) max_time: Option<Duration>,
+    pub(crate) concurrency: usize,
+    pub(crate) knowledge_dir: Option<PathBuf>,
+    pub(crate) models: Option<ModelTable>,
+}
+
+/// Every word outside a flag is part of the focus, so quoting it is optional.
+/// No focus at all is legal: the run then audits the whole knowledge base.
+pub(crate) fn parse(args: &[String]) -> Result<Args, CliExit> {
+    let mut words: Vec<&str> = Vec::new();
+    let mut max_time: Option<Duration> = None;
+    let mut concurrency: usize = 2;
+    let mut knowledge_dir: Option<PathBuf> = None;
+    let mut models: Option<ModelTable> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max-time" => {
+                i += 1;
+                max_time = Some(
+                    args.get(i)
+                        .and_then(|s| parse_duration(s))
+                        .ok_or_else(|| rejected("--max-time expects e.g. 90, 30s, 5m, 1h"))?,
+                );
+            }
+            "--concurrency" => {
+                i += 1;
+                concurrency = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| rejected("--concurrency expects a positive number"))?;
+            }
+            "--knowledge" => {
+                i += 1;
+                knowledge_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| rejected("--knowledge expects a path"))?,
+                ));
+            }
+            "--models" => {
+                i += 1;
+                let path = args
+                    .get(i)
+                    .map(Path::new)
+                    .ok_or_else(|| rejected("--models expects a path"))?;
+                models = Some(ModelTable::load(path).map_err(CliExit::ArgumentRejected)?);
+            }
+            "-h" | "--help" => return Err(CliExit::HelpRequested(help())),
+            arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
+            word => words.push(word),
+        }
+        i += 1;
+    }
+
+    Ok(Args {
+        steer: (!words.is_empty()).then(|| words.join(" ")),
+        max_time,
+        concurrency,
+        knowledge_dir,
+        models,
+    })
+}
+
+pub(crate) fn help() -> String {
+    "malwi osint. Performs deep research about supply-chain attacks for updating
+the knowledge base of research agents.
+
+Usage: malwi osint [FOCUS] [OPTIONS]
+
+Alias: o
+
+Options:
+      --concurrency <N>        Agent pool size per phase (default: 2)
+      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)
+      --knowledge <DIR>        Install new pages here (default: the source tree
+                               when run from a checkout, else .malwi/attacks)
+      --models <FILE>          One model per agent as JSON, keyed by ticket label,
+                               pool name, or agent name. A value is a model name or
+                               an object of model, reasoning, and context_window
+                               (default: every agent runs the model the environment
+                               names)
+  -h, --help                   Show this help
+
+Environment:
+  BRAVE_API_KEY   Required. Web search runs through the Brave Search API.
+
+Examples:
+  malwi osint
+  malwi o npm registry attacks 2026 --max-time 20m"
+        .to_string()
+}
+
+pub(crate) async fn run(args: Args) {
     let concurrency = args.concurrency.max(1);
     let roster = roster(concurrency);
     let models = resolve_models(args.models.as_ref(), &roster, default_model);
@@ -216,7 +318,7 @@ async fn run_curation_phase(
     knowledge: &Arc<Knowledge>,
     brave_key: &str,
     steer: &str,
-    args: &OsintArgs,
+    args: &Args,
 ) -> (Vec<Value>, Value) {
     let curation_tickets = TicketQueue::new();
     curation_tickets.dir(WORK_DIR);
@@ -499,6 +601,50 @@ mod tests {
     use agentwerk::agents::knowledge::Page;
 
     use super::*;
+    use crate::cli::{parse_line as parse, Command};
+
+    #[test]
+    fn osint_joins_its_words_into_one_steer() {
+        let Ok(Command::Osint(args)) = parse("osint npm registry attacks --max-time 5m") else {
+            panic!("osint should parse");
+        };
+        assert_eq!(args.steer.as_deref(), Some("npm registry attacks"));
+        assert_eq!(args.max_time, Some(Duration::from_secs(300)));
+    }
+
+    /// Guards the autonomous audit: a bare `osint` is a run, not a usage error.
+    #[test]
+    fn osint_without_words_steers_nowhere() {
+        let Ok(Command::Osint(args)) = parse("osint") else {
+            panic!("osint should parse without a focus");
+        };
+        assert_eq!(args.steer, None);
+        assert_eq!(args.concurrency, 2);
+    }
+
+    /// Guards the trimmed surface: these three are scan's alone, and osint must
+    /// name them rather than swallow one as a word of the focus.
+    #[test]
+    fn a_flag_osint_no_longer_carries_is_named() {
+        for line in [
+            "osint --max-gaps 3",
+            "osint --max-turns 4",
+            "osint --output o.json",
+        ] {
+            let Err(CliExit::ArgumentRejected(message)) = parse(line) else {
+                panic!("{line} names no osint flag");
+            };
+            assert!(message.contains("unknown flag"), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_osint_flag_is_named() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("osint --deep") else {
+            panic!("--deep is not a flag");
+        };
+        assert!(message.contains("--deep"), "{message}");
+    }
 
     /// The tags a Verifier assigns alongside its verdict.
     fn tags() -> Vec<String> {

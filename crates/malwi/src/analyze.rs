@@ -1,4 +1,4 @@
-//! The `scan` command: finds IoC matches and routes each through reachability
+//! The `analyze` command: finds IoC matches and routes each through reachability
 //! analysis to an Analyst. Curated extensions scan synchronously against their
 //! catalogues and hand their matches to a Tracer. In parallel, Seekers search
 //! the tree continuously with regex `grep` queries; an interesting hit also
@@ -21,7 +21,10 @@ use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFi
 use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
-use crate::cli::{agent_name, default_model, resolve_models, verify_models, ScanArgs};
+use crate::cli::{
+    agent_name, default_model, parse_duration, rejected, resolve_models, verify_models, CliExit,
+    ModelTable,
+};
 use crate::discovery::{
     ScanTree, Scanner, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL,
 };
@@ -71,7 +74,192 @@ const WORK_DIR: &str = ".malwi";
 /// target is staged after that wipe rather than before.
 const INPUT_DIR: &str = ".malwi/input";
 
-pub(crate) async fn run(args: ScanArgs) {
+/// What the operator named as the thing to analyze.
+pub(crate) enum Target {
+    /// A directory, scanned where it lies.
+    Directory(PathBuf),
+    /// A single file, copied into a directory of its own before the scan.
+    File(PathBuf),
+    /// What no local path resolves to: a package name, a URL, or a repository,
+    /// read as a prompt for the agent that will fetch it.
+    Prompt(String),
+}
+
+impl Target {
+    /// Classify what the operator named. Nothing is fetched here: a name no
+    /// path resolves to is carried as written until the run tries to reach it.
+    pub(crate) fn from_arg(arg: &str) -> Self {
+        let path = Path::new(arg);
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => Target::Directory(path.to_path_buf()),
+            Ok(meta) if meta.is_file() => Target::File(path.to_path_buf()),
+            _ => Target::Prompt(arg.to_string()),
+        }
+    }
+
+    /// The directory the scan walks. A file is copied into `input_dir` first, so
+    /// every phase behind this call sees a tree. `input_dir` is recreated here,
+    /// so the caller must have finished wiping the folder that holds it.
+    pub(crate) fn resolve(&self, input_dir: &Path) -> Result<PathBuf, String> {
+        match self {
+            Target::Directory(path) => fs::canonicalize(path)
+                .map_err(|e| format!("cannot resolve directory '{}': {e}", path.display())),
+            Target::File(path) => stage_file(path, input_dir),
+            Target::Prompt(text) => Err(format!(
+                "nothing to analyze at '{text}': malwi takes a directory or a single file"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Target::Directory(path) | Target::File(path) => write!(f, "{}", path.display()),
+            Target::Prompt(text) => write!(f, "{text}"),
+        }
+    }
+}
+
+/// Copy `file` into an emptied `input_dir` and return that directory.
+fn stage_file(file: &Path, input_dir: &Path) -> Result<PathBuf, String> {
+    let name = file
+        .file_name()
+        .ok_or_else(|| format!("cannot analyze '{}': it names no file", file.display()))?;
+    let _ = fs::remove_dir_all(input_dir);
+    fs::create_dir_all(input_dir)
+        .map_err(|e| format!("cannot create {}: {e}", input_dir.display()))?;
+    fs::copy(file, input_dir.join(name)).map_err(|e| {
+        format!(
+            "cannot copy '{}' into {}: {e}",
+            file.display(),
+            input_dir.display()
+        )
+    })?;
+    fs::canonicalize(input_dir).map_err(|e| format!("cannot resolve {}: {e}", input_dir.display()))
+}
+
+/// Options of `malwi analyze <TARGET>`.
+pub(crate) struct Args {
+    pub(crate) target: Target,
+    pub(crate) max_turns: Option<u32>,
+    pub(crate) max_time: Option<Duration>,
+    pub(crate) concurrency: usize,
+    pub(crate) output_file: Option<PathBuf>,
+    pub(crate) fail_fast: bool,
+    pub(crate) instruction: Option<String>,
+    pub(crate) models: Option<ModelTable>,
+}
+
+pub(crate) fn parse(args: &[String]) -> Result<Args, CliExit> {
+    let mut target: Option<Target> = None;
+    let mut max_turns: Option<u32> = None;
+    let mut max_time: Option<Duration> = None;
+    let mut concurrency: usize = 2;
+    let mut output_file: Option<PathBuf> = None;
+    let mut fail_fast: bool = false;
+    let mut instruction: Option<String> = None;
+    let mut models: Option<ModelTable> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max-turns" => {
+                i += 1;
+                max_turns = Some(
+                    args.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| rejected("--max-turns expects a positive number"))?,
+                );
+            }
+            "--max-time" => {
+                i += 1;
+                max_time = Some(
+                    args.get(i)
+                        .and_then(|s| parse_duration(s))
+                        .ok_or_else(|| rejected("--max-time expects e.g. 90, 30s, 5m, 1h"))?,
+                );
+            }
+            "--concurrency" => {
+                i += 1;
+                concurrency = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| rejected("--concurrency expects a positive number"))?;
+            }
+            "--output" => {
+                i += 1;
+                output_file = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| rejected("--output expects a path"))?,
+                ));
+            }
+            "--fail-fast" => {
+                fail_fast = true;
+            }
+            "--instruction" => {
+                i += 1;
+                instruction = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| rejected("--instruction expects text"))?,
+                );
+            }
+            "--models" => {
+                i += 1;
+                let path = args
+                    .get(i)
+                    .map(Path::new)
+                    .ok_or_else(|| rejected("--models expects a path"))?;
+                models = Some(ModelTable::load(path).map_err(CliExit::ArgumentRejected)?);
+            }
+            "-h" | "--help" => return Err(CliExit::HelpRequested(help())),
+            arg if arg.starts_with('-') => return Err(rejected(&format!("unknown flag: {arg}"))),
+            _ => target = Some(Target::from_arg(&args[i])),
+        }
+        i += 1;
+    }
+
+    Ok(Args {
+        target: target.ok_or_else(|| CliExit::ArgumentRejected(help()))?,
+        max_turns,
+        max_time,
+        concurrency,
+        output_file,
+        fail_fast,
+        instruction,
+        models,
+    })
+}
+
+pub(crate) fn help() -> String {
+    "malwi analyze. Perform a deep security evaluation of a given file or directory.
+
+Usage: malwi analyze <TARGET> [OPTIONS]
+
+Alias: a
+
+Options:
+      --concurrency <N>        Agent pool size per phase (default: 2)
+      --max-turns <N>          Per-queue turn limit (default: unlimited)
+      --max-time <DUR>         Time limit. Bare seconds or s/m/h suffix (default: unlimited)
+      --output <FILE>          Write analysis JSON to FILE (default: .malwi/analysis.json)
+      --fail-fast              Stop on the first malicious finding
+      --instruction <TEXT>     Append a custom instruction to every agent's prompt
+      --models <FILE>          One model per agent as JSON, keyed by ticket label,
+                               pool name, or agent name. A value is a model name or
+                               an object of model, reasoning, and context_window
+                               (default: every agent runs the model the environment
+                               names)
+  -h, --help                   Show this help
+
+Examples:
+  malwi analyze ./src
+  malwi a ./node_modules/left-pad"
+        .to_string()
+}
+
+pub(crate) async fn run(args: Args) {
     let concurrency = args.concurrency.max(1);
     let roster = roster(concurrency);
     let models = resolve_models(args.models.as_ref(), &roster, default_model);
@@ -141,7 +329,7 @@ pub(crate) async fn run(args: ScanArgs) {
     crate::discovery::write_file_map(&exploration_knowledge, &scan.files_by_ext);
     crate::discovery::write_file_map(&seeker_knowledge, &scan.files_by_ext);
 
-    eprintln!("malwi scan: {}\n", args.target);
+    eprintln!("malwi analyze: {}\n", args.target);
 
     let tickets = TicketQueue::new();
     tickets.dir(WORK_DIR);
@@ -560,6 +748,107 @@ fn is_finding_verdict(result: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::{parse_line as parse, CliExit, Command};
+
+    #[test]
+    fn scan_takes_its_target_and_its_flags() {
+        let Ok(Command::Analyze(args)) =
+            parse("analyze ./src --concurrency 4 --max-time 5m --fail-fast")
+        else {
+            panic!("analyze should parse");
+        };
+        assert!(matches!(args.target, Target::Directory(_)));
+        assert_eq!(args.target.to_string(), "./src");
+        assert_eq!(args.concurrency, 4);
+        assert_eq!(args.max_time, Some(Duration::from_secs(300)));
+        assert!(args.fail_fast);
+    }
+
+    #[test]
+    fn a_directory_without_a_command_is_rejected() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("./src") else {
+            panic!("a bare path names no command");
+        };
+        assert!(message.contains("unknown command: ./src"), "{message}");
+    }
+
+    #[test]
+    fn scan_without_a_target_shows_its_help() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("analyze") else {
+            panic!("analyze needs a target");
+        };
+        assert!(message.contains("malwi analyze <TARGET>"), "{message}");
+    }
+
+    #[test]
+    fn a_file_target_is_kept_apart_from_a_directory_target() {
+        let Ok(Command::Analyze(file)) = parse("analyze src/main.rs") else {
+            panic!("a file is a target");
+        };
+        assert!(matches!(file.target, Target::File(_)));
+
+        let Ok(Command::Analyze(dir)) = parse("analyze ./src") else {
+            panic!("a directory is a target");
+        };
+        assert!(matches!(dir.target, Target::Directory(_)));
+    }
+
+    #[test]
+    fn a_target_no_path_resolves_to_is_carried_as_a_prompt() {
+        let Ok(Command::Analyze(args)) = parse("analyze left-pad") else {
+            panic!("a package name is a target");
+        };
+        let Target::Prompt(text) = args.target else {
+            panic!("no path resolves to left-pad");
+        };
+        assert_eq!(text, "left-pad");
+    }
+
+    fn input_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("malwi_target_{}_{name}", std::process::id()))
+    }
+
+    #[test]
+    fn a_file_target_resolves_to_a_directory_holding_a_copy() {
+        let input = input_dir("file");
+        let staged = Target::File(PathBuf::from("src/main.rs"))
+            .resolve(&input)
+            .expect("a readable file stages");
+
+        assert!(staged.is_dir(), "{}", staged.display());
+        assert_eq!(
+            fs::read(staged.join("main.rs")).expect("the copy is readable"),
+            fs::read("src/main.rs").expect("the original is readable"),
+        );
+        let _ = fs::remove_dir_all(&input);
+    }
+
+    #[test]
+    fn a_directory_target_resolves_to_itself() {
+        let staged = Target::Directory(PathBuf::from("./src"))
+            .resolve(&input_dir("dir"))
+            .expect("an existing directory resolves");
+        assert_eq!(staged, fs::canonicalize("./src").expect("./src exists"));
+    }
+
+    /// The seam for targets an agent will fetch: today the run stops here, and
+    /// this test is what changes when it learns to materialize one.
+    #[test]
+    fn a_target_that_is_not_a_path_is_refused_by_name() {
+        let error = Target::Prompt("left-pad".to_string())
+            .resolve(&input_dir("prompt"))
+            .expect_err("nothing local is named left-pad");
+        assert!(error.contains("left-pad"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_scan_flag_is_named() {
+        let Err(CliExit::ArgumentRejected(message)) = parse("analyze ./src --deep") else {
+            panic!("--deep is not a flag");
+        };
+        assert!(message.contains("--deep"), "{message}");
+    }
+
     use std::future::Future;
     use std::pin::Pin;
 

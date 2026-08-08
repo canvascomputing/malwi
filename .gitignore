@@ -3,6 +3,9 @@
 # Default scan workspace created by every run.
 **/.malwi
 
+# Packages fetched by `malwi download`, kept out of the tree they are scanned in.
+/downloads
+
 # Per-contributor provider credentials, sourced by `make run`.
 .env
 .env-local

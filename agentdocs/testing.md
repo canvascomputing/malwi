@@ -7,7 +7,7 @@ How tests are organized and written. Commands used to run them live in [workflow
 **One layer: inline tests that run without a network.**
 
 - Inline `#[cfg(test)] mod tests` lives next to the code it covers.
-- A test needing a model implements `Provider` inline, as `FinishMock` in `scan.rs` does.
+- A test needing a model implements `Provider` inline, as `FinishMock` in `analyze.rs` does.
 - Fixtures (sample trees to scan) live under `crates/malwi/tests/fixtures/`.
 
 ## Purpose
