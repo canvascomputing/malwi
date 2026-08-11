@@ -64,14 +64,14 @@ The invariants that shape how code fits together. Layout says where code lives; 
 - `create_ticket_on_result` enqueues a new Seeker ticket whenever one finishes, unless the label is cancelled.
 - The Explorer is bounded to `--concurrency` seed tickets: an overview, not an exhaustive read.
 - The Tracer and the Analyst are demand-driven and never seed themselves.
-- The refill checks `is_label_cancelled` first, since a ticket on a cancelled label would never be claimed.
+- The refill asks `is_cancelled` of the ticket that just finished, since a refill on a called-off pool would never be claimed.
 
 ## Three ways to stop
 
 **A wind-down, a policy stop, and an abort are distinct, and only the abort skips the report.**
 
 - A first ctrl-c cancels the Explorer and Seeker labels; the backlog drains and the report is written.
-- A policy stop (time, turns, tokens) calls `TicketQueue::cancel` through `cancel_on_event`, and is recorded in `policy_stopped` so the driver can tell it from an abort.
+- A policy stop (time, turns, tokens) ends the run inside the queue, and is recorded in `policy_stopped`: by report time the queue has been cancelled and its own finish reason no longer names the limit.
 - A second ctrl-c exits `130` on the spot.
 - `--fail-fast` cancels the Seeker, Tracer, and Analyst labels on the first malicious result, then exits `2` after reporting.
 
@@ -88,7 +88,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 **A result the report cannot use is rejected at `finish` time, not at report time.**
 
-- `schema_for_label(ANALYSIS_LABEL, ...)` makes every analyst ticket validate its verdict object.
+- A `SchemaStore` binds `ANALYSIS_LABEL` to the verdict document, so every analyst ticket validates against it.
 - The Reporter's ticket carries `reporter_result_schema` with length floors, so a skimped summary is retried.
 - `max_schema_retries(20)` raises the default, because a weaker model burns retries on replies with no tool call at all.
 - `OUTPUT_CONTRACT` is bound into every schema-carrying role, so the calling convention is stated once.

@@ -41,7 +41,7 @@ Commands used to build, test, release, and run the scanner.
 - `make run dir=./pkg/index.js` analyzes one file, copied into the working folder first.
 - `make run dir=./src args="--concurrency 4 --max-time 5m"` passes flags through.
 - `make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-fast"` analyzes the synthetic sample.
-- Configure an LLM provider first: see [Environment](../README.md#environment) in the README.
+- Configure an LLM provider first: see [Environment](../DEVELOPMENT.md#environment).
 - The full CLI reference lives in `malwi --help` and in the README.
 
 ## Downloading a package
@@ -60,5 +60,5 @@ Commands used to build, test, release, and run the scanner.
 
 - `make osint` audits the corpus and picks its own gaps.
 - `make osint focus="npm registry attacks" args="--max-time 20m"` scopes the hunt and bounds it.
-- `BRAVE_API_KEY` MUST be set alongside the provider credentials; `.env` carries both.
+- `BRAVE_API_KEY` MUST be set alongside the provider credentials; `.env` carries both, and every `make` target sources it.
 - Accepted pages land in `crates/malwi/src/attacks/`, so review the diff and rebuild before committing.

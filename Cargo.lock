@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentwerk"
-version = "0.1.23"
+version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d47d2e18663a59c6663d2c1cdb4c0cc84174d998abcee023640d1bb9e2823b"
+checksum = "e1c15f9b5de560a0b85a88643b7017bf929e9c94e4d1581578d173f2f8472f6b"
 dependencies = [
  "grep",
  "ignore",

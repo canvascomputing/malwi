@@ -221,7 +221,7 @@ impl dyn Ecosystem {
 pub(crate) fn package_schema() -> Schema {
     let mut ecosystems = names();
     ecosystems.push("unknown");
-    Schema::parse(json!({
+    Schema::new(json!({
         "type": "object",
         "properties": {
             "ecosystem": {"type": "string", "enum": ecosystems},

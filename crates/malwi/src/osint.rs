@@ -9,14 +9,13 @@ mod web_search;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentwerk::providers::provider_from_env;
+use agentwerk::event::FinishReason;
 use agentwerk::providers::{Model, Provider};
 use agentwerk::tools::FetchUrlTool;
-use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
+use agentwerk::{Agent, Knowledge, SchemaStore, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
 use crate::attacks;
@@ -24,8 +23,10 @@ use crate::cli::{
     agent_name, default_model, parse_duration, rejected, resolve_models, verify_models, CliExit,
     ModelTable,
 };
-use crate::report::{headline, is_run_wide_policy_stop, log_event, truncate};
-use web_search::{brave_key_from_env, gap_schema, verdict_schema, web_search_tool, PAGE_FORMAT};
+use crate::report::{headline, log_event, truncate};
+use web_search::{
+    brave_key_from_env, gap_schema, verdict_schema_json, web_search_tool, PAGE_FORMAT,
+};
 
 const CURATOR_AGENT: &str = include_str!("roles/curator.md");
 const SCOUT_AGENT: &str = include_str!("roles/scout.md");
@@ -33,10 +34,10 @@ const EDITOR_AGENT: &str = include_str!("roles/editor.md");
 const VERIFIER_AGENT: &str = include_str!("roles/verifier.md");
 const OUTPUT_CONTRACT: &str = include_str!("roles/output_contract.md");
 
-const CURATION_LABEL: &str = "curation";
-const SCOUTING_LABEL: &str = "scouting";
-const EDITING_LABEL: &str = "editing";
-const VERIFICATION_LABEL: &str = "verification";
+pub(crate) const CURATION_LABEL: &str = "curation";
+pub(crate) const SCOUTING_LABEL: &str = "scouting";
+pub(crate) const EDITING_LABEL: &str = "editing";
+pub(crate) const VERIFICATION_LABEL: &str = "verification";
 const CURATOR_NAME: &str = "Curator";
 
 /// Pool name and the label its tickets carry, shared by the built agents and
@@ -175,12 +176,12 @@ pub(crate) async fn run(args: Args) {
         std::process::exit(1);
     });
 
-    let provider = provider_from_env().unwrap_or_else(|error| {
+    let provider = Provider::from_env().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     });
 
-    verify_models(provider.as_ref(), &models).await;
+    verify_models(&provider, &models).await;
 
     let _ = fs::remove_dir_all(WORK_DIR);
 
@@ -212,7 +213,7 @@ pub(crate) async fn run(args: Args) {
     );
 
     let (gaps, audit_stats) = run_curation_phase(
-        Arc::clone(&provider),
+        provider.clone(),
         models[CURATOR_NAME].clone(),
         &knowledge,
         &brave_key,
@@ -230,23 +231,16 @@ pub(crate) async fn run(args: Args) {
     // The default of 10 is tight for a weaker model that frequently replies with
     // no tool call at all: a ticket can burn its whole retry budget on that alone.
     tickets.max_schema_retries(20);
-    tickets.schema_for_label(VERIFICATION_LABEL, verdict_schema());
+    let schemas = SchemaStore::new();
+    schemas
+        .label(VERIFICATION_LABEL, verdict_schema_json())
+        .expect("verifier verdict schema is a valid document");
+    tickets.schemas(&schemas);
     if let Some(d) = args.max_time {
         tickets.max_time(d);
     }
     let log_tickets = Arc::clone(&tickets);
     tickets.on_event(move |e| log_event(e, &log_tickets));
-
-    // A policy trip alone never flips `is_cancelled()`, so `--max-time` would
-    // otherwise just abandon tickets `InProgress` forever.
-    tickets.cancel_on_event(is_run_wide_policy_stop);
-    let policy_stopped = Arc::new(AtomicBool::new(false));
-    let policy_flag = Arc::clone(&policy_stopped);
-    tickets.on_event(move |e| {
-        if is_run_wide_policy_stop(e) {
-            policy_flag.store(true, Ordering::Relaxed);
-        }
-    });
 
     build_pools(
         &tickets,
@@ -265,7 +259,7 @@ pub(crate) async fn run(args: Args) {
     install_ctrl_c_handler(Arc::clone(&tickets));
 
     headline("OSINT");
-    tickets.finish().await;
+    tickets.finish_all().await;
 
     // A hard second-press ctrl-c already exited; a first press or a policy stop
     // is graceful and falls through, so whatever was verified still installs.
@@ -279,7 +273,8 @@ pub(crate) async fn run(args: Args) {
     let osint = json!({
         "steer": args.steer,
         "install_dir": install_dir.display().to_string(),
-        "partial": policy_stopped.load(Ordering::Relaxed) || tickets.is_cancelled(),
+        // A drained queue is the only whole run: a cap or a ctrl-c leaves gaps.
+        "partial": tickets.get_finish_reason() != Some(FinishReason::Drained),
         "gaps": gaps,
         "pages": pages,
         "input_tokens": stats.input_tokens() + audit_input,
@@ -313,7 +308,7 @@ fn roster(concurrency: usize) -> Vec<(String, &'static str)> {
 /// Separate from the osint queue because the whole chain is shaped by this one
 /// result: there is nothing for the pools to claim until it lands.
 async fn run_curation_phase(
-    provider: Arc<dyn Provider>,
+    provider: Provider,
     model: Model,
     knowledge: &Arc<Knowledge>,
     brave_key: &str,
@@ -328,12 +323,10 @@ async fn run_curation_phase(
     if let Some(d) = args.max_time {
         curation_tickets.max_time(d);
     }
-    curation_tickets.cancel_on_event(is_run_wide_policy_stop);
     let log_tickets = Arc::clone(&curation_tickets);
     curation_tickets.on_event(move |e| log_event(e, &log_tickets));
     curation_tickets.agent(
         Agent::new()
-            .name(CURATOR_NAME)
             .provider(provider)
             .model(model)
             .role(CURATOR_AGENT.trim())
@@ -352,13 +345,13 @@ async fn run_curation_phase(
     );
 
     headline("AUDIT");
-    curation_tickets.finish().await;
+    let mut results = curation_tickets.finish_all().await;
 
     // The queue dies with this function, and `Stats` borrows from it, so the
     // audit's spend is handed back serialized: it is the caller's only chance
     // to count what the audit cost.
     let stats = serde_json::to_value(curation_tickets.stats()).expect("Stats serializes");
-    let Some(result) = curation_tickets.results_for_label(CURATION_LABEL).pop() else {
+    let Some(result) = results.pop() else {
         return (Vec::new(), stats);
     };
     let gaps = result["gaps"]
@@ -375,7 +368,7 @@ async fn run_curation_phase(
 /// by label, so the chain is wired by the roles rather than by a driver step.
 fn build_pools(
     tickets: &TicketQueue,
-    provider: &Arc<dyn Provider>,
+    provider: &Provider,
     models: &std::collections::BTreeMap<String, Model>,
     knowledge: &Arc<Knowledge>,
     brave_key: &str,
@@ -383,12 +376,10 @@ fn build_pools(
     concurrency: usize,
 ) {
     for i in 0..concurrency {
-        let name = agent_name("Scout", i);
         tickets.agent(
             Agent::new()
-                .provider(Arc::clone(provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Scout", i)].clone())
                 .role(SCOUT_AGENT.trim())
                 .template("instruction", steer)
                 .label(SCOUTING_LABEL)
@@ -400,12 +391,10 @@ fn build_pools(
     }
 
     for i in 0..concurrency {
-        let name = agent_name("Editor", i);
         tickets.agent(
             Agent::new()
-                .provider(Arc::clone(provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Editor", i)].clone())
                 .role(EDITOR_AGENT.trim())
                 .template("instruction", steer)
                 .template("page_format", PAGE_FORMAT.trim())
@@ -417,12 +406,10 @@ fn build_pools(
     }
 
     for i in 0..concurrency {
-        let name = agent_name("Verifier", i);
         tickets.agent(
             Agent::new()
-                .provider(Arc::clone(provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Verifier", i)].clone())
                 .role(VERIFIER_AGENT.trim())
                 .template("instruction", steer)
                 .template("page_format", PAGE_FORMAT.trim())
@@ -478,8 +465,9 @@ fn install_verified_pages(
     install_dir: &Path,
 ) -> Vec<Value> {
     tickets
-        .results_for_label(VERIFICATION_LABEL)
+        .find_tickets(|t| t.has_label(VERIFICATION_LABEL) && t.is_finished())
         .into_iter()
+        .filter_map(|t| t.result)
         .map(|verdict| {
             let slug = verdict["slug"].as_str().unwrap_or("").trim().to_string();
             let accepted = verdict["verdict"].as_str() == Some("accepted");
@@ -554,12 +542,12 @@ fn install_ctrl_c_handler(tickets: Arc<TicketQueue>) {
             "\n[ctrl-c] winding down: no new sources, finishing the drafts in flight. \
              Press again to force exit."
         );
-        tickets.cancel_label(SCOUTING_LABEL);
+        tickets.cancel(|t| t.has_label(SCOUTING_LABEL));
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
         eprintln!("\n[ctrl-c] hard exit on second press.");
-        tickets.cancel();
+        tickets.cancel_all();
         std::process::exit(130);
     });
 }
