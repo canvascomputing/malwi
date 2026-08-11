@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 > Keep these files up to date when the project structure or conventions change.
-> Update `README.md` when the CLI surface changes.
+> Update `README.md` when the CLI surface changes, and `DEVELOPMENT.md` when a
+> `make` target or an environment variable changes.
 
 - malwi is an agentic malware scanner for source trees and software packages.
 - It dispatches LLM-driven security analysts at suspect matches and produces a JSON report.

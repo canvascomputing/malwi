@@ -8,18 +8,17 @@ mod ecosystem;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use agentwerk::providers::provider_from_env;
+use agentwerk::providers::Provider;
 use agentwerk::{Agent, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
 use crate::cli::{default_model, rejected, resolve_models, verify_models, CliExit, ModelTable};
-use crate::report::is_run_wide_policy_stop;
 use ecosystem::Package;
 
 const CATEGORIZER_AGENT: &str = include_str!("roles/categorizer.md");
 const OUTPUT_CONTRACT: &str = include_str!("roles/output_contract.md");
 
-const CATEGORIZATION_LABEL: &str = "categorization";
+pub(crate) const CATEGORIZATION_LABEL: &str = "categorization";
 const CATEGORIZER_NAME: &str = "Categorizer";
 
 /// Everything a run writes lives under here, tickets included: the command owns
@@ -180,21 +179,19 @@ async fn categorize(args: &Args) -> Package {
     let roster = vec![(CATEGORIZER_NAME.to_string(), CATEGORIZATION_LABEL)];
     let models = resolve_models(args.models.as_ref(), &roster, default_model);
 
-    let provider = provider_from_env().unwrap_or_else(|error| {
+    let provider = Provider::from_env().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     });
-    verify_models(provider.as_ref(), &models).await;
+    verify_models(&provider, &models).await;
 
     let _ = fs::remove_dir_all(TICKETS_DIR);
 
     let tickets = TicketQueue::new();
     tickets.dir(TICKETS_DIR);
     tickets.max_schema_retries(20);
-    tickets.cancel_on_event(is_run_wide_policy_stop);
     tickets.agent(
         Agent::new()
-            .name(CATEGORIZER_NAME)
             .provider(provider)
             .model(models[CATEGORIZER_NAME].clone())
             .role(CATEGORIZER_AGENT.trim())
@@ -211,9 +208,7 @@ async fn categorize(args: &Args) -> Package {
 
     // No event log: one ticket answering one question is not a pipeline to
     // watch, and its whole result is the line printed once it lands.
-    tickets.finish().await;
-
-    let Some(result) = tickets.results_for_label(CATEGORIZATION_LABEL).pop() else {
+    let Some(result) = tickets.finish_all().await.pop() else {
         eprintln!("the Categorizer named no package for '{}'", args.prompt);
         std::process::exit(1);
     };

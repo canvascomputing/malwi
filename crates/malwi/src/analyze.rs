@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentwerk::agents::Trajectory;
-use agentwerk::providers::{provider_from_env, Model, Provider};
+use agentwerk::providers::{Model, Provider};
 use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
-use agentwerk::{Agent, Knowledge, Ticket, TicketQueue};
+use agentwerk::{Agent, Knowledge, SchemaStore, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
 use crate::cli::{
@@ -29,7 +29,7 @@ use crate::discovery::{
     ScanTree, Scanner, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL,
 };
 use crate::report::{
-    analyst_result_schema, build_analysis, is_run_wide_policy_stop, log_event, print_summary,
+    analyst_result_schema_json, build_analysis, is_run_wide_policy_stop, log_event, print_summary,
     render_findings_table, reporter_result_schema,
 };
 
@@ -39,7 +39,7 @@ const ANALYST_VERDICTS: &str = include_str!("roles/verdicts.md");
 const TRACER_AGENT: &str = include_str!("roles/tracer.md");
 const EXPLORER_AGENT: &str = include_str!("roles/explorer.md");
 const REPORTER_AGENT: &str = include_str!("roles/reporter.md");
-const REPORTER_LABEL: &str = "reporter";
+pub(crate) const REPORTER_LABEL: &str = "reporter";
 const REPORTER_NAME: &str = "Reporter";
 
 /// Pool name and the label its tickets carry, shared by the built agents and
@@ -263,12 +263,12 @@ pub(crate) async fn run(args: Args) {
     let concurrency = args.concurrency.max(1);
     let roster = roster(concurrency);
     let models = resolve_models(args.models.as_ref(), &roster, default_model);
-    let provider = provider_from_env().unwrap_or_else(|error| {
+    let provider = Provider::from_env().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     });
 
-    verify_models(provider.as_ref(), &models).await;
+    verify_models(&provider, &models).await;
 
     // Start every run from a clean working folder, and before the target is
     // staged into it: no tickets, knowledge, or results carried over from a
@@ -337,7 +337,11 @@ pub(crate) async fn run(args: Args) {
     // no tool call at all: a ticket can burn its whole retry budget on that alone,
     // failing via MaxSchemaRetries before it ever reaches a real finding.
     tickets.max_schema_retries(20);
-    tickets.schema_for_label(ANALYSIS_LABEL, analyst_result_schema());
+    let schemas = SchemaStore::new();
+    schemas
+        .label(ANALYSIS_LABEL, analyst_result_schema_json())
+        .expect("analyst result schema is a valid document");
+    tickets.schemas(&schemas);
     if let Some(n) = args.max_turns {
         tickets.max_turns(n);
     }
@@ -347,13 +351,9 @@ pub(crate) async fn run(args: Args) {
     let log_tickets = Arc::clone(&tickets);
     tickets.on_event(move |e| log_event(e, &log_tickets));
 
-    // A policy trip alone never flips `is_cancelled()`, so `--max-time` would
-    // otherwise just abandon tickets `InProgress` forever.
-    tickets.cancel_on_event(is_run_wide_policy_stop);
-
-    // A policy stop (time/turns/tokens) is a graceful end, not an abort: unlike a
-    // ctrl-c cancel it must still produce the report. Record it so the abort check
-    // can tell the two apart, since both flip `is_cancelled()`.
+    // A policy stop (time/turns/tokens) is graceful: unlike a ctrl-c abort it
+    // must still produce the report. Recorded here because by report time the
+    // queue has been cancelled and its finish reason no longer names the limit.
     let policy_stopped = Arc::new(AtomicBool::new(false));
     let policy_flag = Arc::clone(&policy_stopped);
     tickets.on_event(move |e| {
@@ -368,14 +368,20 @@ pub(crate) async fn run(args: Args) {
     let malicious_found = Arc::new(AtomicBool::new(false));
     if args.fail_fast {
         let trip = Arc::clone(&malicious_found);
+        let weak = Arc::downgrade(&tickets);
         tickets.on_result(move |_, result| {
-            if is_malicious_verdict(result) {
-                trip.store(true, Ordering::Relaxed);
+            if !is_malicious_verdict(result) {
+                return;
+            }
+            trip.store(true, Ordering::Relaxed);
+            if let Some(tickets) = weak.upgrade() {
+                tickets.cancel(|t| {
+                    [SEEKER_LABEL, TRACER_LABEL, ANALYSIS_LABEL]
+                        .iter()
+                        .any(|label| t.has_label(label))
+                });
             }
         });
-        for label in [SEEKER_LABEL, TRACER_LABEL, ANALYSIS_LABEL] {
-            tickets.cancel_label_on_result(label, |_, result| is_malicious_verdict(result));
-        }
     }
 
     // Capture the messages of any ticket that lands a malicious or exploitable
@@ -406,12 +412,10 @@ pub(crate) async fn run(args: Args) {
 
     // Every pool shares one queue; labels route each ticket to its agent.
     for i in 0..concurrency {
-        let name = agent_name("Analyst", i);
         tickets.agent(
             Agent::new()
-                .provider(Arc::clone(&provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Analyst", i)].clone())
                 .role(ANALYST_AGENT.trim())
                 .template("instruction", &instruction_section)
                 .template("verdicts", ANALYST_VERDICTS.trim())
@@ -428,13 +432,11 @@ pub(crate) async fn run(args: Args) {
 
     // Continuous discovery, refilled after every ticket.
     for i in 0..concurrency {
-        let name = agent_name("Seeker", i);
         tickets.agent(
             // Every ticket ends in a handover; seeker.md is what enforces it.
             Agent::new()
-                .provider(Arc::clone(&provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Seeker", i)].clone())
                 .role(SEEKER_AGENT.trim())
                 .template("instruction", &instruction_section)
                 .template("searches_per_ticket", SEARCHES_PER_TICKET.to_string())
@@ -449,13 +451,11 @@ pub(crate) async fn run(args: Args) {
     // Demand-driven reachability. Shares exploration_knowledge to read the
     // Explorer's pages and record its own alongside.
     for i in 0..concurrency {
-        let name = agent_name("Tracer", i);
         tickets.agent(
             // Every ticket ends in a handover; tracer.md is what enforces it.
-            Agent::empty()
-                .provider(Arc::clone(&provider))
-                .model(models[&name].clone())
-                .name(name)
+            Agent::new()
+                .provider(provider.clone())
+                .model(models[&agent_name("Tracer", i)].clone())
                 .role(TRACER_AGENT.trim())
                 .template("instruction", &instruction_section)
                 .label(TRACER_LABEL)
@@ -472,12 +472,10 @@ pub(crate) async fn run(args: Args) {
 
     // Bounded overview into exploration_knowledge; no handoff.
     for i in 0..concurrency {
-        let name = agent_name("Explorer", i);
         tickets.agent(
             Agent::new()
-                .provider(Arc::clone(&provider))
-                .model(models[&name].clone())
-                .name(name)
+                .provider(provider.clone())
+                .model(models[&agent_name("Explorer", i)].clone())
                 .role(EXPLORER_AGENT.trim())
                 .template("instruction", &instruction_section)
                 .template("explorer_time_budget", &explorer_time_budget)
@@ -514,15 +512,15 @@ pub(crate) async fn run(args: Args) {
             if !done.has_label(SEEKER_LABEL) {
                 return None;
             }
-            // A ticket carrying a cancelled label is never claimed.
-            if weak.upgrade()?.is_label_cancelled(SEEKER_LABEL) {
+            // The pool was called off, and a refill would never be claimed.
+            if weak.upgrade()?.is_cancelled(done) {
                 return None;
             }
             Some(Ticket::new(search_body.clone()).label(SEEKER_LABEL))
         });
     }
 
-    install_ctrl_c_handler(Arc::clone(&tickets));
+    let aborted = install_ctrl_c_handler(Arc::clone(&tickets));
 
     let scanner = Scanner::new(&scan_dir);
 
@@ -546,17 +544,25 @@ pub(crate) async fn run(args: Args) {
     wait_for_report_inputs(&tickets).await;
     // A hard second-press ctrl-c aborts; a policy stop (time/turns/tokens) and a
     // wind-down are graceful and fall through to write the report below.
-    if tickets.is_cancelled() && !policy_stopped.load(Ordering::Relaxed) {
+    if aborted.load(Ordering::Relaxed) {
         eprintln!("\ncancelled.");
         std::process::exit(130);
     }
 
     let mut analysis = build_analysis(&tickets, &scan_dir, files_walked);
 
-    // Stop every pool, including any Seeker still searching, before the report
-    // phase: the Reporter runs on its own queue, out of the cap's reach.
-    tickets.cancel();
-    tickets.finish().await;
+    // Read BEFORE the cancel below, which calls off every pool and would
+    // otherwise make the answer yes on every run.
+    let partial_coverage =
+        policy_stopped.load(Ordering::Relaxed) || is_pool_called_off(&tickets, SEEKER_LABEL);
+
+    // Stop every pool before the report phase; the Reporter runs on its own
+    // queue, out of the cap's reach. Only a live run is waited on: `finish_all`
+    // restarts a queue whose run is over, and a restart clears the cancel.
+    tickets.cancel_all();
+    if tickets.get_finish_reason().is_none() {
+        tickets.finish_all().await;
+    }
 
     // Report phase: the Explorer pool has finished, so its summaries are on disk,
     // and the findings are already in `analysis`.
@@ -564,14 +570,9 @@ pub(crate) async fn run(args: Args) {
         .as_array()
         .is_some_and(|a| !a.is_empty());
     let has_exploration = !exploration_knowledge.index().is_empty();
-    // Coverage is partial when the pools were called off early (time cap,
-    // ctrl-c, fail-fast) rather than drained; the Reporter scopes an
-    // all-clear accordingly.
-    let partial_coverage =
-        policy_stopped.load(Ordering::Relaxed) || tickets.is_label_cancelled(SEEKER_LABEL);
     let report_tickets = if has_findings || has_exploration {
         let report_tickets = run_report_phase(
-            Arc::clone(&provider),
+            provider.clone(),
             models[REPORTER_NAME].clone(),
             &exploration_knowledge,
             render_findings_table(&analysis, partial_coverage),
@@ -627,34 +628,25 @@ fn roster(concurrency: usize) -> Vec<(String, &'static str)> {
     agents
 }
 
-/// Block until the Reporter's inputs are ready. Polls rather than calling
-/// [`TicketQueue::finish`], which would wait on the entire queue. A called-off
-/// pool's tickets stay pending forever, so they are skipped.
+/// A called-off pool's tickets are already out of the wait.
 async fn wait_for_report_inputs(tickets: &TicketQueue) {
-    loop {
-        if tickets.is_cancelled() {
-            return;
-        }
-        let pending = !tickets
-            .find_tickets(|t| {
-                t.is_pending()
-                    && REPORT_INPUT_LABELS
-                        .iter()
-                        .any(|label| t.has_label(label) && !tickets.is_label_cancelled(label))
-            })
-            .is_empty();
-        if !pending {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tickets
+        .finish(|t| REPORT_INPUT_LABELS.iter().any(|label| t.has_label(label)))
+        .await;
+}
+
+/// Cancellation is answered per ticket, so it is asked of one the label owns.
+fn is_pool_called_off(tickets: &TicketQueue, label: &str) -> bool {
+    tickets
+        .find_ticket(|t| t.has_label(label))
+        .is_some_and(|t| tickets.is_cancelled(&t))
 }
 
 /// Run the Reporter on its own `TicketQueue`, so nothing that stopped the scan
 /// (time limit, cancel) can stop the report. No max time: the schema-retry budget
 /// bounds a Reporter that never finishes its ticket.
 async fn run_report_phase(
-    provider: Arc<dyn Provider>,
+    provider: Provider,
     model: Model,
     knowledge: &Arc<Knowledge>,
     findings_table: String,
@@ -671,7 +663,6 @@ async fn run_report_phase(
     report_tickets.on_event(move |e| log_event(e, &log_tickets));
     report_tickets.agent(
         Agent::new()
-            .name(REPORTER_NAME)
             .provider(provider)
             .model(model)
             .role(REPORTER_AGENT.trim())
@@ -691,14 +682,17 @@ async fn run_report_phase(
             .label(REPORTER_LABEL)
             .schema(reporter_result_schema()),
     );
-    report_tickets.finish().await;
+    report_tickets.finish_all().await;
     report_tickets
 }
 
 /// Call off the Explorer and Seeker pools on the first ctrl-c, letting the
 /// in-flight backlog drain into a report. A second press forces an exit in case
-/// the drain itself wedges.
-fn install_ctrl_c_handler(tickets: Arc<TicketQueue>) {
+/// the drain itself wedges, and raises the returned flag so the report phase
+/// never starts on the way out.
+fn install_ctrl_c_handler(tickets: Arc<TicketQueue>) -> Arc<AtomicBool> {
+    let aborted = Arc::new(AtomicBool::new(false));
+    let raised = Arc::clone(&aborted);
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_err() {
             return;
@@ -707,21 +701,23 @@ fn install_ctrl_c_handler(tickets: Arc<TicketQueue>) {
             "\n[ctrl-c] winding down: no new work, finishing in-flight analysis then reporting. \
              Press again to force exit."
         );
-        tickets.cancel_label(EXPLORER_LABEL);
-        tickets.cancel_label(SEEKER_LABEL);
+        tickets.cancel(|t| t.has_label(EXPLORER_LABEL) || t.has_label(SEEKER_LABEL));
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
         eprintln!("\n[ctrl-c] hard exit on second press.");
-        tickets.cancel();
+        raised.store(true, Ordering::Relaxed);
+        tickets.cancel_all();
         std::process::exit(130);
     });
+    aborted
 }
 
-/// Read the Reporter's `{summary, details}` off its finished ticket and fold it
-/// into the analysis. Missing fields leave the `build_analysis` tally in place.
+/// Read the Reporter's `{summary, details}` off the report queue, which holds
+/// its ticket alone, and fold it into the analysis. Missing fields leave the
+/// `build_analysis` tally in place.
 fn merge_reporter_verdict(tickets: &TicketQueue, analysis: &mut Value) {
-    let Some(result) = tickets.results_for_label(REPORTER_LABEL).pop() else {
+    let Some(result) = tickets.results().pop() else {
         return;
     };
     if let Some(s) = result.get("summary") {
@@ -855,7 +851,7 @@ mod tests {
     use agentwerk::providers::types::{
         ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage,
     };
-    use agentwerk::providers::{ModelRequest, Provider, ProviderResult};
+    use agentwerk::providers::{ModelRequest, ProviderLike, ProviderResult};
 
     use super::*;
 
@@ -914,7 +910,7 @@ mod tests {
     /// Finishes whatever ticket it is given by echoing a fixed `result`.
     struct FinishMock(Value);
 
-    impl Provider for FinishMock {
+    impl ProviderLike for FinishMock {
         fn respond(
             &self,
             _request: ModelRequest,
@@ -947,7 +943,7 @@ mod tests {
         // Long enough to clear the schema length floors.
         let summary = "acme-widget hides a credential-stealing loader. ".repeat(5);
         let details = "lib/telemetry.js decodes and executes a shell payload. ".repeat(25);
-        let provider: Arc<dyn Provider> = Arc::new(FinishMock(json!({
+        let provider = Provider::new(FinishMock(json!({
             "summary": summary,
             "details": details,
         })));

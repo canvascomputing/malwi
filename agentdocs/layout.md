@@ -22,6 +22,7 @@ Where code lives and the rules that govern placement.
 - Every command verifies its models through `verify_models` before doing any work.
 - `discovery.rs` walks the tree, compiles the catalogues, runs the grep passes, and enqueues the tickets they produce.
 - `report.rs` turns finished tickets into the analysis JSON, renders the event stream, and prints the summary.
+- `report.rs` also holds `POOL_NAMES`, the one table mapping every command's ticket labels to the pool names the operator reads: agentwerk names an agent `<label>-<n>`.
 - `attacks.rs` seeds the past-incident pages into a `Knowledge` store and installs researched ones.
 
 ## Commands

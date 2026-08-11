@@ -10,7 +10,10 @@ use agentwerk::schemas::Schema;
 use agentwerk::{Stats, TicketQueue};
 use serde_json::{json, Value};
 
+use crate::analyze::REPORTER_LABEL;
 use crate::discovery::{ScanTree, ANALYSIS_LABEL, EXPLORER_LABEL, SEEKER_LABEL, TRACER_LABEL};
+use crate::download::CATEGORIZATION_LABEL;
+use crate::osint::{CURATION_LABEL, EDITING_LABEL, SCOUTING_LABEL, VERIFICATION_LABEL};
 
 /// Build the analysis JSON from completed analyst tickets. Top-level
 /// `status` is the worst across findings (`malicious` > `exploitable`
@@ -20,7 +23,7 @@ pub(crate) fn build_analysis(tickets: &TicketQueue, scan_dir: &Path, total_files
     let mut index: HashMap<(String, Option<u64>, Option<u64>), usize> = HashMap::new();
     let mut unparsed: usize = 0;
 
-    for ticket in tickets.tickets_for_label(ANALYSIS_LABEL) {
+    for ticket in tickets.find_tickets(|t| t.has_label(ANALYSIS_LABEL)) {
         let Some(attached) = ticket.result.as_ref() else {
             unparsed += 1;
             continue;
@@ -182,12 +185,11 @@ pub(crate) fn analyst_result_schema_json() -> Value {
     })
 }
 
-/// Result schema for an Analyst ticket: the verdict object the
-/// analyst must emit. Attaching it makes `finish` reject a
-/// stringified or shapeless result at finish time, forcing a retry,
-/// instead of letting it through to be counted as `unparsed` here.
-pub(crate) fn analyst_result_schema() -> Schema {
-    Schema::parse(analyst_result_schema_json()).expect("analyst result schema is a valid document")
+/// The verdict document above, compiled. The run binds the document itself to
+/// the analysis label, so only the test that guards the shape needs a `Schema`.
+#[cfg(test)]
+fn analyst_result_schema() -> Schema {
+    Schema::new(analyst_result_schema_json()).expect("analyst result schema is a valid document")
 }
 
 /// Result schema for the Reporter ticket: an object carrying the lay-reader
@@ -197,7 +199,7 @@ pub(crate) fn analyst_result_schema() -> Schema {
 /// sit outside the targets the prompt states, so a compliant result is never
 /// rejected while a skimped or runaway one is.
 pub(crate) fn reporter_result_schema() -> Schema {
-    Schema::parse(json!({
+    Schema::new(json!({
         "type": "object",
         "properties": {
             "summary": {"type": "string", "minLength": 150, "maxLength": 650},
@@ -219,8 +221,8 @@ fn severity(status: &str) -> u8 {
 
 /// Strip `scan_dir` prefix from a source path to produce a relative display path.
 fn relative_path(source: &str, scan_dir: &Path) -> String {
-    let p = Path::new(source);
-    p.strip_prefix(scan_dir)
+    let path = Path::new(source);
+    path.strip_prefix(scan_dir)
         .map(|rel| rel.display().to_string())
         .unwrap_or_else(|_| source.to_string())
 }
@@ -235,18 +237,23 @@ pub(crate) fn print_summary(
 ) {
     let status = analysis["status"].as_str().unwrap_or("unknown");
     let findings = analysis["summary"].as_str().unwrap_or("");
-    let s = tickets.stats();
+    let scan_stats = tickets.stats();
     // The Reporter runs on its own queue after the scan; fold its counters
     // into the totals so the tally covers the whole run.
     let report_stats = report_tickets.map(|queue| queue.stats());
-    let with_report =
-        |count: &dyn Fn(&Stats) -> u64| count(&s) + report_stats.as_ref().map_or(0, |r| count(r));
+    let with_report = |count: &dyn Fn(&Stats) -> u64| {
+        count(&scan_stats) + report_stats.as_ref().map_or(0, |report| count(report))
+    };
     let report_secs = report_stats
         .as_ref()
-        .and_then(|r| r.execution_duration())
-        .map(|d| d.as_secs())
+        .and_then(|report| report.execution_duration())
+        .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let secs = s.execution_duration().map(|d| d.as_secs()).unwrap_or(0) + report_secs;
+    let secs = scan_stats
+        .execution_duration()
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+        + report_secs;
     let time = if secs >= 60 {
         format!("{} min {} sec", secs / 60, secs % 60)
     } else {
@@ -267,7 +274,7 @@ pub(crate) fn print_summary(
     }
     // Debug view of the Reporter's three-paragraph details, normally read
     // from the report file.
-    if let Some(details) = analysis["details"].as_str().filter(|d| !d.is_empty()) {
+    if let Some(details) = analysis["details"].as_str().filter(|text| !text.is_empty()) {
         eprintln!();
         eprintln!("{details}");
     }
@@ -283,7 +290,7 @@ pub(crate) fn print_summary(
         (ANALYSIS_LABEL, "analysis"),
     ];
     for (label, display) in display_labels {
-        let slice = s.stats_for_label(label);
+        let slice = scan_stats.stats_for_label(label);
         if slice.event_count(EventName::TicketCreated) == 0 {
             continue;
         }
@@ -299,11 +306,11 @@ pub(crate) fn print_summary(
     eprintln!("  {}", rule("run"));
     eprintln!(
         "  {}/{} tickets · {} failed · {} req · {} tools · {}k↑ {}k↓",
-        with_report(&|s: &Stats| s.event_count(EventName::TicketFinished)),
-        with_report(&|s: &Stats| s.event_count(EventName::TicketCreated)),
-        with_report(&|s: &Stats| s.event_count(EventName::TicketFailed)),
-        with_report(&|s: &Stats| s.event_count(EventName::RequestFinished)),
-        with_report(&|s: &Stats| s.event_count(EventName::ToolCallStarted)),
+        with_report(&|stats: &Stats| stats.event_count(EventName::TicketFinished)),
+        with_report(&|stats: &Stats| stats.event_count(EventName::TicketCreated)),
+        with_report(&|stats: &Stats| stats.event_count(EventName::TicketFailed)),
+        with_report(&|stats: &Stats| stats.event_count(EventName::RequestFinished)),
+        with_report(&|stats: &Stats| stats.event_count(EventName::ToolCallStarted)),
         with_report(&Stats::input_tokens) / 1000,
         with_report(&Stats::output_tokens) / 1000,
     );
@@ -311,7 +318,7 @@ pub(crate) fn print_summary(
     // I/O: coverage plus the per-tool failure rollup on one line. A tool failing
     // often points at its prompt or input schema, not the model. Coverage folds
     // the Reporter's opens in the way `with_report` folds its counters.
-    let mut opened_paths: Vec<String> = s.file_stats().into_keys().collect();
+    let mut opened_paths: Vec<String> = scan_stats.file_stats().into_keys().collect();
     if let Some(report) = report_stats.as_ref() {
         opened_paths.extend(report.file_stats().into_keys());
     }
@@ -325,12 +332,13 @@ pub(crate) fn print_summary(
     if scannable > 0 {
         io_parts.push(format!("{opened}/{scannable} files"));
     }
-    for (name, t) in s.tool_stats().iter().filter(|(_, t)| t.errors() > 0) {
-        let rate = t
+    let failing_tools = scan_stats.tool_stats();
+    for (name, tool) in failing_tools.iter().filter(|(_, tool)| tool.errors() > 0) {
+        let rate = tool
             .error_rate()
-            .map(|r| (r * 100.0).round() as u64)
+            .map(|share| (share * 100.0).round() as u64)
             .unwrap_or(0);
-        io_parts.push(format!("{name} {}/{} ({rate}%)", t.errors(), t.calls));
+        io_parts.push(format!("{name} {}/{} ({rate}%)", tool.errors(), tool.calls));
     }
     if !io_parts.is_empty() {
         eprintln!("  {}", rule("i/o"));
@@ -339,7 +347,7 @@ pub(crate) fn print_summary(
 
     let display_path = std::env::current_dir()
         .ok()
-        .and_then(|cwd| report_file.strip_prefix(&cwd).ok().map(|p| p.to_path_buf()))
+        .and_then(|cwd| report_file.strip_prefix(&cwd).ok().map(Path::to_path_buf))
         .unwrap_or_else(|| report_file.to_path_buf());
     eprintln!();
     eprintln!("  report → {}", display_path.display());
@@ -414,39 +422,32 @@ pub(crate) fn is_run_wide_policy_stop(event: &Event) -> bool {
 }
 
 pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
-    let agent = &event.agent_name;
-    let c = agent_color(agent);
-    let r = "\x1b[0m";
+    let agent = agent_display(&event.agent_id);
+    let color = agent_color(&event.agent_id);
+    let reset = "\x1b[0m";
     match &event.kind {
         EventKind::TicketStarted => {
-            let verb = if agent.starts_with("Seeker") {
-                "searching for threats..."
-            } else if agent.starts_with("Tracer") {
-                "tracing callers..."
-            } else if agent.starts_with("Explorer") {
-                "exploring project..."
-            } else if agent.starts_with("Curator") {
-                "auditing the knowledge base..."
-            } else if agent.starts_with("Scout") {
-                "hunting public sources..."
-            } else if agent.starts_with("Editor") {
-                "drafting a page..."
-            } else if agent.starts_with("Verifier") {
-                "checking a page against its sources..."
-            } else {
-                "investigating..."
+            let verb = match label_of(&event.agent_id) {
+                SEEKER_LABEL => "searching for threats...",
+                TRACER_LABEL => "tracing callers...",
+                EXPLORER_LABEL => "exploring project...",
+                CURATION_LABEL => "auditing the knowledge base...",
+                SCOUTING_LABEL => "hunting public sources...",
+                EDITING_LABEL => "drafting a page...",
+                VERIFICATION_LABEL => "checking a page against its sources...",
+                _ => "investigating...",
             };
-            eprintln!("{c}[{agent}]{r} {verb}");
+            eprintln!("{color}[{agent}]{reset} {verb}");
         }
         // The completion line reads the schema-validated stored result, not the
         // raw finish input the analyst may have JSON-encoded as a string.
         EventKind::TicketFinished => {
             if let Some(result) = tickets.get_ticket(&event.ticket_key).and_then(|t| t.result) {
-                eprintln!("{c}[{agent}]{r} {}", finish_summary(&result));
+                eprintln!("{color}[{agent}]{reset} {}", finish_summary(&result));
             }
         }
         EventKind::TicketFailed => {
-            eprintln!("{c}[{agent}]{r} ✗ failed {}", event.ticket_key)
+            eprintln!("{color}[{agent}]{reset} ✗ failed {}", event.ticket_key)
         }
         // Suppress "thinking...": the tool-call lines show activity.
         EventKind::RequestStarted { .. } => {}
@@ -456,7 +457,10 @@ pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
             // A plain finish is reported at TicketFinished from the stored
             // result; a handover still prints, since it names who picks it up.
             if tool_name != "finish" || handover_label(input).is_some() {
-                eprintln!("{c}[{agent}]{r} {}", tool_call_summary(tool_name, input));
+                eprintln!(
+                    "{color}[{agent}]{reset} {}",
+                    tool_call_summary(tool_name, input)
+                );
             }
         }
         EventKind::ToolCallFailed {
@@ -465,13 +469,13 @@ pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
             reason,
             ..
         } => eprintln!(
-            "{c}[{agent}]{r} ✗ {tool_name} ({reason:?}): {}",
+            "{color}[{agent}]{reset} ✗ {tool_name} ({reason:?}): {}",
             truncate(message, 200)
         ),
         EventKind::RequestFailed {
             reason, message, ..
         } => eprintln!(
-            "{c}[{agent}]{r} ✗ request failed ({reason:?}): {}",
+            "{color}[{agent}]{reset} ✗ request failed ({reason:?}): {}",
             truncate(message, 200)
         ),
         EventKind::RequestRetried {
@@ -481,7 +485,7 @@ pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
             message,
             ..
         } => eprintln!(
-            "{c}[{agent}]{r} ⟳ retry {attempt}/{max_attempts} ({reason:?}): {}",
+            "{color}[{agent}]{reset} ⟳ retry {attempt}/{max_attempts} ({reason:?}): {}",
             truncate(message, 200)
         ),
         EventKind::SchemaRetried {
@@ -489,11 +493,11 @@ pub(crate) fn log_event(event: &Event, tickets: &TicketQueue) {
             max_attempts,
             message,
         } => eprintln!(
-            "{c}[{agent}]{r} ⟳ retry {attempt}/{max_attempts}: {}",
+            "{color}[{agent}]{reset} ⟳ retry {attempt}/{max_attempts}: {}",
             truncate(message, 200)
         ),
         EventKind::PolicyViolated { policy, limit } => {
-            eprintln!("{c}[{agent}]{r} ✗ policy violated: {policy:?} limit={limit}")
+            eprintln!("{color}[{agent}]{reset} ✗ policy violated: {policy:?} limit={limit}")
         }
         _ => {}
     }
@@ -682,19 +686,52 @@ fn finish_summary(result: &Value) -> String {
     format!("→ {}", truncate(&preview, 80))
 }
 
-/// ANSI color code for an agent name. Each pool gets its own color so
-/// interleaved output from concurrent agents is easy to follow, keyed on what
-/// the pool does rather than on its name: the pool that hunts is one color in
-/// both commands, the pool that writes another.
-fn agent_color(name: &str) -> &'static str {
-    if name.starts_with("Seeker") || name.starts_with("Scout") {
-        "\x1b[35m" // magenta (hunting)
-    } else if name.starts_with("Tracer") || name.starts_with("Editor") {
-        "\x1b[36m" // cyan (following a thread, writing it up)
-    } else if name.starts_with("Explorer") || name.starts_with("Curator") {
-        "\x1b[34m" // blue (surveying)
-    } else {
-        "\x1b[32m" // green (Analyst / Verifier / default: judging)
+/// The pool each ticket label routes to. agentwerk names an agent after the
+/// label it serves, and the labels are what the roles hand over by; the run is
+/// read in pool names, so the two are mapped here rather than renaming either.
+const POOL_NAMES: [(&str, &str); 10] = [
+    (EXPLORER_LABEL, "Explorer"),
+    (SEEKER_LABEL, "Seeker"),
+    (TRACER_LABEL, "Tracer"),
+    (ANALYSIS_LABEL, "Analyst"),
+    (REPORTER_LABEL, "Reporter"),
+    (CURATION_LABEL, "Curator"),
+    (SCOUTING_LABEL, "Scout"),
+    (EDITING_LABEL, "Editor"),
+    (VERIFICATION_LABEL, "Verifier"),
+    (CATEGORIZATION_LABEL, "Categorizer"),
+];
+
+/// The label an agent id was built from. agentwerk numbers each label's agents
+/// `<label>-<n>`, and no label carries a `-`, so the last one splits the two.
+fn label_of(agent_id: &str) -> &str {
+    agent_id
+        .rsplit_once('-')
+        .map_or(agent_id, |(label, _)| label)
+}
+
+/// The pool and member number an agent id names: `security_analysis-2` reads as
+/// `Analyst 2`. An id from a label no pool covers is shown as it stands, so a
+/// new agent is still attributed.
+fn agent_display(agent_id: &str) -> String {
+    let Some((label, number)) = agent_id.rsplit_once('-') else {
+        return agent_id.to_string();
+    };
+    POOL_NAMES.iter().find(|(l, _)| *l == label).map_or_else(
+        || agent_id.to_string(),
+        |(_, pool)| format!("{pool} {number}"),
+    )
+}
+
+/// ANSI color code for an agent. Each pool gets its own color so interleaved
+/// output is easy to follow, keyed on what the pool does: the pool that hunts is
+/// one color in both commands, the pool that writes another.
+fn agent_color(agent_id: &str) -> &'static str {
+    match label_of(agent_id) {
+        SEEKER_LABEL | SCOUTING_LABEL => "\x1b[35m", // magenta (hunting)
+        TRACER_LABEL | EDITING_LABEL => "\x1b[36m",  // cyan (following a thread, writing it up)
+        EXPLORER_LABEL | CURATION_LABEL => "\x1b[34m", // blue (surveying)
+        _ => "\x1b[32m", // green (Analyst / Verifier / default: judging)
     }
 }
 
@@ -899,6 +936,26 @@ mod tests {
             (2, 3),
             "relative + absolute opens match; c.py untouched"
         );
+    }
+
+    #[test]
+    fn an_agent_id_reads_as_the_pool_and_the_member_it_names() {
+        assert_eq!(agent_display("security_analysis-2"), "Analyst 2");
+        assert_eq!(agent_display("seeking-1"), "Seeker 1");
+        assert_eq!(agent_display("verification-3"), "Verifier 3");
+    }
+
+    #[test]
+    fn an_agent_id_of_no_known_pool_is_shown_as_it_stands() {
+        assert_eq!(agent_display("triage-1"), "triage-1");
+        assert_eq!(agent_display("unnumbered"), "unnumbered");
+    }
+
+    #[test]
+    fn a_pool_is_colored_by_what_it_does_not_by_the_command_it_runs_in() {
+        assert_eq!(agent_color("seeking-1"), agent_color("scouting-1"));
+        assert_ne!(agent_color("seeking-1"), agent_color("tracing-1"));
+        assert_ne!(agent_color("tracing-1"), agent_color("security_analysis-1"));
     }
 
     #[test]

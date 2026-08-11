@@ -122,7 +122,7 @@ pub(crate) fn render_results(body: &Value) -> String {
 /// search that would confirm it. Attaching it makes `finish` reject a prose
 /// answer, which the host cannot fan out into tickets.
 pub(crate) fn gap_schema() -> Schema {
-    Schema::parse(json!({
+    Schema::new(json!({
         "type": "object",
         "properties": {
             "gaps": {
@@ -144,16 +144,17 @@ pub(crate) fn gap_schema() -> Schema {
     .expect("gap schema is a valid document")
 }
 
-/// Result schema for a Verifier ticket: which drafted page was judged, whether
-/// it may be installed, and why. A page is installed only on `accepted`, so a
-/// shapeless verdict must be retried rather than read as approval.
+/// Result shape for a Verifier ticket, as a plain JSON document bound to the
+/// verification label: which drafted page was judged, whether it may be
+/// installed, and why. A page is installed only on `accepted`, so a shapeless
+/// verdict must be retried rather than read as approval.
 ///
 /// `tags` rides on the verdict because `manage_knowledge` has no field for
 /// them, so the Editor cannot set them when it saves the draft. The Verifier
 /// has read both the page and the index by the time it answers, which is what
 /// it takes to pick a tag the corpus already uses.
-pub(crate) fn verdict_schema() -> Schema {
-    Schema::parse(json!({
+pub(crate) fn verdict_schema_json() -> Value {
+    json!({
         "type": "object",
         "properties": {
             "slug": {"type": "string", "minLength": 3, "maxLength": 80},
@@ -167,8 +168,7 @@ pub(crate) fn verdict_schema() -> Schema {
             },
         },
         "required": ["slug", "verdict", "reason", "tags"],
-    }))
-    .expect("verdict schema is a valid document")
+    })
 }
 
 #[cfg(test)]

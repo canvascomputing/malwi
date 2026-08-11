@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentwerk::providers::{
-    model_from_env, Message, Model, ModelRequest, Provider, ProviderResult, ReasoningEffort,
+    Message, Model, ModelRequest, Provider, ProviderResult, ReasoningEffort,
 };
 use serde_json::Value;
 
@@ -109,11 +109,10 @@ pub(crate) fn agent_name(pool: &str, index: usize) -> String {
 /// What every agent runs without `--models`: the model the environment names,
 /// resolved the same way the provider itself is.
 pub(crate) fn default_model() -> Model {
-    let name = model_from_env().unwrap_or_else(|error| {
+    Model::from_env().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
-    });
-    Model::from_name(&name)
+    })
 }
 
 /// One model per agent name. A `--models` file covers the whole roster or the
@@ -136,10 +135,9 @@ pub(crate) fn resolve_models(
     })
 }
 
-/// Output-token budget for one reachability probe. agentwerk's own `verify`
-/// allows 16, which a reasoning model spends inside its thinking block before
-/// emitting anything: the gateway then answers with a truncated reply or with
-/// a 500, neither of which says the configuration is wrong.
+/// Output-token budget for one reachability probe. Generous because a reasoning
+/// model spends a tight one inside its thinking block and never answers, and the
+/// truncated reply or 500 that follows says nothing about the configuration.
 const PROBE_TOKENS: u32 = 512;
 
 /// Probes one model gets before its failure is believed.
@@ -153,7 +151,7 @@ const PROBE_BACKOFF: Duration = Duration::from_millis(500);
 ///
 /// Probing before any work means a wrong key, model, or endpoint fails here
 /// with a clear message instead of failing every ticket downstream.
-pub(crate) async fn verify_models(provider: &dyn Provider, models: &BTreeMap<String, Model>) {
+pub(crate) async fn verify_models(provider: &Provider, models: &BTreeMap<String, Model>) {
     let mut probed = BTreeSet::new();
     for model in models.values() {
         if !probed.insert(model.name.as_str()) {
@@ -177,7 +175,7 @@ pub(crate) async fn verify_models(provider: &dyn Provider, models: &BTreeMap<Str
 /// and endpoint are right, so believing the first one turns a hiccup upstream
 /// into a run that never starts. A classified failure is returned on the spot:
 /// a wrong key or an unknown model fails the same way on every attempt.
-async fn probe(provider: &dyn Provider, model: &str) -> ProviderResult<()> {
+async fn probe(provider: &Provider, model: &str) -> ProviderResult<()> {
     let mut attempt = 1;
     loop {
         let request = ModelRequest {
@@ -366,7 +364,7 @@ mod tests {
     use std::sync::Mutex;
 
     use agentwerk::providers::{
-        ModelResponse, ProviderError, ResponseStatus, StreamEvent, TokenUsage,
+        ModelResponse, ProviderError, ProviderLike, ResponseStatus, StreamEvent, TokenUsage,
     };
 
     use super::*;
@@ -382,13 +380,14 @@ mod tests {
     }
 
     impl ProbedProvider {
-        fn new(failures: u32, error: fn() -> ProviderError) -> Self {
-            Self {
+        /// Behind an `Arc` so the test keeps the counters `Provider` hides.
+        fn new(failures: u32, error: fn() -> ProviderError) -> Arc<Self> {
+            Arc::new(Self {
                 failures,
                 error,
                 attempts: AtomicU32::new(0),
                 budgets: Mutex::new(Vec::new()),
-            }
+            })
         }
 
         fn attempts(&self) -> u32 {
@@ -396,7 +395,7 @@ mod tests {
         }
     }
 
-    impl Provider for ProbedProvider {
+    impl ProviderLike for ProbedProvider {
         fn respond(
             &self,
             request: ModelRequest,
@@ -440,32 +439,40 @@ mod tests {
     /// whether the operator's configuration is usable.
     #[tokio::test(start_paused = true)]
     async fn a_transient_probe_failure_is_retried_until_the_model_answers() {
-        let provider = ProbedProvider::new(2, transient);
-        assert!(probe(&provider, "any-model").await.is_ok());
-        assert_eq!(provider.attempts(), 3);
+        let probed = ProbedProvider::new(2, transient);
+        assert!(probe(&Provider::new(Arc::clone(&probed)), "any-model")
+            .await
+            .is_ok());
+        assert_eq!(probed.attempts(), 3);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_transient_probe_failure_gives_up_after_the_attempt_budget() {
-        let provider = ProbedProvider::new(u32::MAX, transient);
-        assert!(probe(&provider, "any-model").await.is_err());
-        assert_eq!(provider.attempts(), PROBE_ATTEMPTS);
+        let probed = ProbedProvider::new(u32::MAX, transient);
+        assert!(probe(&Provider::new(Arc::clone(&probed)), "any-model")
+            .await
+            .is_err());
+        assert_eq!(probed.attempts(), PROBE_ATTEMPTS);
     }
 
     /// A wrong key fails the same way on every attempt, so retrying it only
     /// delays the message the operator needs.
     #[tokio::test(start_paused = true)]
     async fn a_classified_probe_failure_is_not_retried() {
-        let provider = ProbedProvider::new(u32::MAX, classified);
-        assert!(probe(&provider, "any-model").await.is_err());
-        assert_eq!(provider.attempts(), 1);
+        let probed = ProbedProvider::new(u32::MAX, classified);
+        assert!(probe(&Provider::new(Arc::clone(&probed)), "any-model")
+            .await
+            .is_err());
+        assert_eq!(probed.attempts(), 1);
     }
 
     #[tokio::test(start_paused = true)]
     async fn the_probe_leaves_room_for_a_thinking_model_to_answer() {
-        let provider = ProbedProvider::new(0, transient);
-        probe(&provider, "any-model").await.expect("probe answers");
-        let budgets = provider.budgets.lock().expect("probe budgets should lock");
+        let probed = ProbedProvider::new(0, transient);
+        probe(&Provider::new(Arc::clone(&probed)), "any-model")
+            .await
+            .expect("probe answers");
+        let budgets = probed.budgets.lock().expect("probe budgets should lock");
         let [Some(budget)] = budgets.as_slice() else {
             panic!("one probe carries one output budget");
         };

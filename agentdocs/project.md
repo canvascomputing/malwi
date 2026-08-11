@@ -44,7 +44,7 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 
 - Anthropic, OpenAI, Mistral, and LiteLLM are selected from environment variables.
 - Switching providers changes only the environment; the binary does not change.
-- `provider_from_env()` and `model_from_env()` (in `agentwerk::providers`) drive the default choice.
+- `Provider::from_env()` and `Model::from_env()` (in `agentwerk::providers`) drive the default choice.
 - `--models` overrides the default per agent, per pool, or per label.
 
 ## Correctness over convenience

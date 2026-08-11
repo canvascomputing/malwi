@@ -35,3 +35,7 @@ malwi osint
 ```sh
 malwi download python requests
 ```
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md).
