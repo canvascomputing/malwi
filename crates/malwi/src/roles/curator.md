@@ -65,7 +65,7 @@ Guidelines:
 
 Tools:
 - `brave_search`: search the web for campaigns the corpus does not describe.
-- `manage_knowledge`: list the index, and read the pages closest to a gap you intend to name.
+- `knowledge`: list the index, and read the pages closest to a gap you intend to name.
 - `finish`: end the ticket.
 
 These three are your only tools. Any other name fails and wastes the turn.

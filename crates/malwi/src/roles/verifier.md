@@ -55,7 +55,7 @@ Guidelines:
 
 Tools:
 - `fetch_url`: open a cited source and read what it actually says.
-- `manage_knowledge`: read the drafted page, and list the index to check for a duplicate.
+- `knowledge`: read the drafted page, and list the index to check for a duplicate.
 - `finish`: end the ticket.
 
 These three are your only tools. Any other name fails and wastes the turn.

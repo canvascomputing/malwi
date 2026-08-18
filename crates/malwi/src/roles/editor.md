@@ -24,7 +24,7 @@ Guidelines:
 
 - IMPORTANT: `content` starts at the `#` title. Do NOT hand-write a `---` front matter block:
   the store adds its own, and a page carrying two is unreadable to everyone downstream.
-- `description` is the separate `manage_knowledge` field, one sentence carrying the mechanism and
+- `description` is the separate `knowledge` field, one sentence carrying the mechanism and
   the date. It is all the index shows, and it is what a Seeker reads when deciding whether to
   open the page.
 - `## Sources` lists the URLs your dossier cited, one per line. It is the only place the
@@ -53,13 +53,13 @@ Guidelines:
 
 Tools:
 - `fetch_url`: reopen a source the dossier cites when its wording is too thin to write from.
-- `manage_knowledge`: read a nearby page for format and tags, then save your page.
+- `knowledge`: read a nearby page for format and tags, then save your page.
 - `finish`: end the ticket.
 
 These three are your only tools. Any other name fails and wastes the turn.
 
 Output:
-- One `manage_knowledge` save with `slug`, `description` (≤120 chars), and `content` all
+- One `knowledge` save with `slug`, `description` (≤120 chars), and `content` all
   non-empty: a missing field rejects the call.
 - One `finish`, alone in its reply, carrying both `handover` set to `verification` and `result`
   set to the slug and the sources. Omitting either fails the call, and without the handover the
