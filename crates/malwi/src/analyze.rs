@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use agentwerk::agents::Trajectory;
 use agentwerk::providers::{Model, Provider};
-use agentwerk::tools::{FinishTool, GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
+use agentwerk::tools::{GlobTool, GrepTool, ListDirectoryTool, ReadFileTool};
 use agentwerk::{Agent, Knowledge, SchemaStore, Ticket, TicketQueue};
 use serde_json::{json, Value};
 
@@ -30,7 +30,7 @@ use crate::discovery::{
 };
 use crate::report::{
     analyst_result_schema_json, build_analysis, is_run_wide_policy_stop, log_event, print_summary,
-    render_findings_table, reporter_result_schema,
+    render_findings_table, reporter_result_schema, RunStats,
 };
 
 const SEEKER_AGENT: &str = include_str!("roles/seeker.md");
@@ -465,7 +465,6 @@ pub(crate) async fn run(args: Args) {
                 .tool(ListDirectoryTool)
                 .tool(GlobTool)
                 .tool(GrepTool)
-                .tool(FinishTool)
                 .build(),
         );
     }
@@ -488,7 +487,7 @@ pub(crate) async fn run(args: Args) {
                 .build(),
         );
     }
-    let exploration_body = "Open file-map-01 with manage_knowledge to see the layout, then read \
+    let exploration_body = "Open file-map-01 with knowledge to see the layout, then read \
          at most three high-level files (a README or the main entry point) to sketch what the \
          project is and does, and write one short overview page. Overview only, not an exhaustive read.";
     for _ in 0..concurrency {
@@ -560,7 +559,7 @@ pub(crate) async fn run(args: Args) {
     // queue, out of the cap's reach. Only a live run is waited on: `finish_all`
     // restarts a queue whose run is over, and a restart clears the cancel.
     tickets.cancel_all();
-    if tickets.get_finish_reason().is_none() {
+    if tickets.finish_reason().is_none() {
         tickets.finish_all().await;
     }
 
@@ -570,7 +569,7 @@ pub(crate) async fn run(args: Args) {
         .as_array()
         .is_some_and(|a| !a.is_empty());
     let has_exploration = !exploration_knowledge.index().is_empty();
-    let report_tickets = if has_findings || has_exploration {
+    if has_findings || has_exploration {
         let report_tickets = run_report_phase(
             provider.clone(),
             models[REPORTER_NAME].clone(),
@@ -582,18 +581,14 @@ pub(crate) async fn run(args: Args) {
         )
         .await;
         merge_reporter_verdict(&report_tickets, &mut analysis);
-        Some(report_tickets)
-    } else {
-        None
-    };
+    }
 
-    let stats = tickets.stats();
-    let report_stats = report_tickets.as_ref().map(|r| r.stats());
-    let report_input = report_stats.as_ref().map_or(0, |s| s.input_tokens());
-    let report_output = report_stats.as_ref().map_or(0, |s| s.output_tokens());
-    analysis["input_tokens"] = json!(stats.input_tokens() + report_input);
-    analysis["output_tokens"] = json!(stats.output_tokens() + report_output);
-    analysis["stats"] = serde_json::to_value(stats).expect("Stats serializes");
+    // The Reporter ran on its own queue in the scan's directory, so both queues
+    // logged to one file and this fold is the whole run.
+    let stats = RunStats::fold(&tickets);
+    analysis["input_tokens"] = json!(stats.input_tokens);
+    analysis["output_tokens"] = json!(stats.output_tokens);
+    analysis["stats"] = serde_json::to_value(&stats).expect("RunStats serializes");
 
     let analysis_file = args
         .output_file
@@ -602,14 +597,7 @@ pub(crate) async fn run(args: Args) {
     let json_str = serde_json::to_string_pretty(&analysis).expect("serializable");
     fs::write(&analysis_file, json_str).expect("write analysis.json");
 
-    print_summary(
-        &tickets,
-        report_tickets.as_deref(),
-        &analysis,
-        &analysis_file,
-        &scan,
-        &scan_dir,
-    );
+    print_summary(&stats, &analysis, &analysis_file, &scan, &scan_dir);
 
     // Surface a malicious verdict through the exit status for `--fail-fast` callers.
     if args.fail_fast && malicious_found.load(Ordering::Relaxed) {
@@ -848,6 +836,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
+    use agentwerk::event::EventName;
     use agentwerk::providers::types::{
         ContentBlock, ModelResponse, ResponseStatus, StreamEvent, TokenUsage,
     };
@@ -889,7 +878,7 @@ mod tests {
     #[test]
     fn without_a_models_file_every_agent_runs_the_environment_model() {
         let roster = roster(2);
-        let models = resolve_models(None, &roster, || Model::from_name("model-from-env"));
+        let models = resolve_models(None, &roster, || Model::new("model-from-env"));
         assert_eq!(models.len(), roster.len());
         assert!(models.values().all(|m| m.name == "model-from-env"));
     }
@@ -906,6 +895,11 @@ mod tests {
         assert!(!is_finding_verdict(&json!({"path": "a.py"})));
         assert!(!is_finding_verdict(&json!("a plain summary")));
     }
+
+    /// What every mocked reply charges, so a fold over the run's events has a
+    /// figure to land on.
+    const MOCK_INPUT_TOKENS: u64 = 1200;
+    const MOCK_OUTPUT_TOKENS: u64 = 340;
 
     /// Finishes whatever ticket it is given by echoing a fixed `result`.
     struct FinishMock(Value);
@@ -925,7 +919,10 @@ mod tests {
                         input: json!({ "result": result }),
                     }],
                     status: ResponseStatus::ToolUse,
-                    usage: TokenUsage::default(),
+                    usage: TokenUsage {
+                        input_tokens: MOCK_INPUT_TOKENS,
+                        output_tokens: MOCK_OUTPUT_TOKENS,
+                    },
                     model: "mock".into(),
                 })
             })
@@ -950,7 +947,7 @@ mod tests {
         let knowledge = Knowledge::load(&dir).expect("knowledge opens");
         let report_tickets = run_report_phase(
             provider,
-            Model::from_name("mock"),
+            Model::new("mock"),
             &knowledge,
             "worst_status: malicious\nfindings: 1\n".to_string(),
             "",
@@ -972,6 +969,52 @@ mod tests {
             "reporter summary should replace the build_analysis tally",
         );
         assert_eq!(analysis["details"], json!(details));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // agentwerk keeps its counters internal, so every figure `analysis.json` and
+    // the summary line carry is folded from the event log the queue wrote. The
+    // fold must find the finished ticket under the label that claimed it, and
+    // what the request that finished it spent.
+    #[tokio::test]
+    async fn folded_stats_report_the_run_the_queue_logged() {
+        let dir = std::env::temp_dir().join(format!("run_stats_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let summary = "acme-widget hides a credential-stealing loader. ".repeat(5);
+        let details = "lib/telemetry.js decodes and executes a shell payload. ".repeat(25);
+        let provider = Provider::new(FinishMock(json!({
+            "summary": summary,
+            "details": details,
+        })));
+        let knowledge = Knowledge::load(&dir).expect("knowledge opens");
+        let report_tickets = run_report_phase(
+            provider,
+            Model::new("mock"),
+            &knowledge,
+            "worst_status: malicious\nfindings: 1\n".to_string(),
+            "",
+            &dir,
+            &dir,
+        )
+        .await;
+
+        let stats = RunStats::fold(&report_tickets);
+
+        assert_eq!(stats.count(EventName::TicketFinished), 1);
+        // Both halves of a pipeline bar: the label's created tickets are its
+        // denominator, and a bar with none is left off the summary entirely.
+        assert_eq!(
+            stats.label_count(REPORTER_LABEL, EventName::TicketCreated),
+            1,
+        );
+        assert_eq!(
+            stats.label_count(REPORTER_LABEL, EventName::TicketFinished),
+            1,
+        );
+        assert_eq!(stats.input_tokens, MOCK_INPUT_TOKENS);
+        assert_eq!(stats.output_tokens, MOCK_OUTPUT_TOKENS);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -2,7 +2,6 @@
 //! with, the page format they write to, and the schemas each phase of the chain
 //! is held to.
 
-use agentwerk::providers::ProviderResult;
 use agentwerk::schemas::Schema;
 use agentwerk::tools::{Tool, ToolResult};
 use serde_json::{json, Value};
@@ -34,35 +33,33 @@ pub(crate) fn brave_key_from_env() -> Result<String, String> {
     }
 }
 
-/// Web search for the osint agents. One tool instance per agent, since a
-/// `Tool` is not `Clone`.
+/// Web search for the osint agents. One tool instance per agent, so each pool
+/// member searches under its own key clone.
 pub(crate) fn web_search_tool(api_key: String) -> Tool {
-    Tool::new(
-        "brave_search",
-        "Search the web. Returns titles, URLs, and descriptions.",
-    )
-    .schema(json!({
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Search query"},
-            "count": {"type": "integer", "description": "Results count (1-20, default: 5)"},
-        },
-        "required": ["query"],
-    }))
-    .read_only(true)
-    .handler(move |input, _ctx| {
-        let api_key = api_key.clone();
-        async move { search(&api_key, &input).await }
-    })
-    .build()
+    Tool::new("brave_search")
+        .description("Search the web. Returns titles, URLs, and descriptions.")
+        .schema(json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "count": {"type": "integer", "description": "Results count (1-20, default: 5)"},
+            },
+            "required": ["query"],
+        }))
+        .concurrent(true)
+        .handler(move |input: Value, _ctx| {
+            let api_key = api_key.clone();
+            async move { search(&api_key, &input).await }
+        })
+        .build()
 }
 
 /// A reachable-but-unhelpful endpoint is the model's problem to route around,
 /// so every failure comes back as a tool error rather than killing the ticket.
-async fn search(api_key: &str, input: &Value) -> ProviderResult<ToolResult> {
+async fn search(api_key: &str, input: &Value) -> ToolResult {
     let query = input["query"].as_str().unwrap_or("").trim();
     if query.is_empty() {
-        return Ok(ToolResult::error("query must not be empty"));
+        return ToolResult::error("query must not be empty");
     }
     let count = input["count"]
         .as_u64()
@@ -79,19 +76,17 @@ async fn search(api_key: &str, input: &Value) -> ProviderResult<ToolResult> {
         .await;
     let response = match response {
         Ok(response) => response,
-        Err(e) => return Ok(ToolResult::error(format!("brave search failed: {e}"))),
+        Err(e) => return ToolResult::error(format!("brave search failed: {e}")),
     };
     let status = response.status();
     if !status.is_success() {
-        return Ok(ToolResult::error(format!(
+        return ToolResult::error(format!(
             "brave search returned {status}: check BRAVE_API_KEY and the plan's rate limit"
-        )));
+        ));
     }
     match response.json::<Value>().await {
-        Ok(body) => Ok(ToolResult::success(render_results(&body))),
-        Err(e) => Ok(ToolResult::error(format!(
-            "brave search returned unreadable JSON: {e}"
-        ))),
+        Ok(body) => ToolResult::success(render_results(&body)),
+        Err(e) => ToolResult::error(format!("brave search returned unreadable JSON: {e}")),
     }
 }
 
@@ -149,7 +144,7 @@ pub(crate) fn gap_schema() -> Schema {
 /// installed, and why. A page is installed only on `accepted`, so a shapeless
 /// verdict must be retried rather than read as approval.
 ///
-/// `tags` rides on the verdict because `manage_knowledge` has no field for
+/// `tags` rides on the verdict because `knowledge` has no field for
 /// them, so the Editor cannot set them when it saves the draft. The Verifier
 /// has read both the page and the index by the time it answers, which is what
 /// it takes to pick a tag the corpus already uses.

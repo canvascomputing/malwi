@@ -184,7 +184,6 @@ async fn probe(provider: &Provider, model: &str) -> ProviderResult<()> {
             messages: vec![Message::user("ping")],
             tools: Vec::new(),
             max_request_tokens: Some(PROBE_TOKENS),
-            tool_choice: None,
             reasoning_effort: ReasoningEffort::Off,
         };
         let error = match provider.respond(request, Arc::new(|_| {})).await {
@@ -270,7 +269,7 @@ impl ModelTable {
 
 fn model_from(key: &str, value: &Value) -> Result<Model, String> {
     if let Some(name) = value.as_str() {
-        return Ok(Model::from_name(name));
+        return Ok(Model::new(name));
     }
     let Some(fields) = value.as_object() else {
         return Err(format!(
@@ -289,7 +288,7 @@ fn model_from(key: &str, value: &Value) -> Result<Model, String> {
         .get("model")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("--models: {key} needs a \"model\" field naming the model"))?;
-    let mut model = Model::from_name(name);
+    let mut model = Model::new(name);
     if let Some(value) = fields.get("reasoning") {
         model = model.reasoning_effort(reasoning_from(key, value)?);
     }

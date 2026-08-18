@@ -41,7 +41,7 @@ Guidelines:
 Tools:
 - `brave_search`: find the sources for the gap your ticket names.
 - `fetch_url`: open a source and read what it actually says.
-- `manage_knowledge`: list the index and read a nearby page to see the format your dossier feeds.
+- `knowledge`: list the index and read a nearby page to see the format your dossier feeds.
 - `finish`: end the ticket.
 
 These four are your only tools. Any other name fails and wastes the turn.

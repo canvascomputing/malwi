@@ -1,13 +1,15 @@
 //! Turns finished tickets into the analysis JSON, renders the agents' work as
 //! it streams, and prints the run summary.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use agentwerk::event::{Event, EventKind, EventName, PolicyKind};
 use agentwerk::schemas::Schema;
-use agentwerk::{Stats, TicketQueue};
+use agentwerk::TicketQueue;
+use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 
 use crate::analyze::REPORTER_LABEL;
@@ -227,9 +229,115 @@ fn relative_path(source: &str, scan_dir: &Path) -> String {
         .unwrap_or_else(|_| source.to_string())
 }
 
+/// What a run spent, folded from the events its queue logged.
+///
+/// agentwerk keeps its own counters to itself, so every figure the summary line
+/// and `analysis.json` carry is folded here. The log is one file per queue
+/// directory, so a second queue working in the same directory, as the report
+/// phase does in the scan's, is covered by the same fold.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct RunStats {
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    /// From the first logged event to the last, so it spans every queue that
+    /// wrote to the log.
+    #[serde(rename = "execution_duration_secs", serialize_with = "as_secs")]
+    pub(crate) execution_duration: Duration,
+    /// One count per event name.
+    pub(crate) events: BTreeMap<EventName, u64>,
+    /// Calls and failures per tool.
+    pub(crate) tools: BTreeMap<String, ToolCalls>,
+    /// The same counts again, split by the label of the ticket the event
+    /// concerns. They draw the pipeline bars.
+    pub(crate) labels: BTreeMap<String, BTreeMap<EventName, u64>>,
+    /// Every file path a tool opened, which the coverage figure intersects with
+    /// the scannable tree. Kept out of the JSON: it is one entry per file read.
+    #[serde(skip)]
+    opened_paths: HashSet<String>,
+}
+
+/// One tool's calls and how many of them failed.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct ToolCalls {
+    pub(crate) calls: u64,
+    pub(crate) errors: u64,
+}
+
+impl ToolCalls {
+    /// The share of calls that failed, in whole percent. Zero when the tool was
+    /// never called.
+    fn error_rate(&self) -> u64 {
+        match self.calls {
+            0 => 0,
+            calls => (self.errors * 100 + calls / 2) / calls,
+        }
+    }
+}
+
+impl RunStats {
+    /// Fold everything the queue's log holds. Reads the log from disk, so it
+    /// answers for a finished run as readily as one still working.
+    pub(crate) fn fold(tickets: &TicketQueue) -> Self {
+        let mut stats = RunStats::default();
+        let mut earliest: Option<u64> = None;
+        let mut latest: u64 = 0;
+        for event in tickets.find_events(|_| true) {
+            let name = event.kind.event_name();
+            *stats.events.entry(name).or_default() += 1;
+            if let Some(label) = &event.label {
+                *stats
+                    .labels
+                    .entry(label.clone())
+                    .or_default()
+                    .entry(name)
+                    .or_default() += 1;
+            }
+            earliest = Some(earliest.map_or(event.created_at, |first| first.min(event.created_at)));
+            latest = latest.max(event.created_at);
+            match &event.kind {
+                EventKind::RequestFinished { usage, .. } => {
+                    stats.input_tokens += usage.input_tokens;
+                    stats.output_tokens += usage.output_tokens;
+                }
+                EventKind::ToolCallStarted { tool_name, .. } => {
+                    stats.tools.entry(tool_name.clone()).or_default().calls += 1;
+                }
+                EventKind::ToolCallFailed { tool_name, .. } => {
+                    stats.tools.entry(tool_name.clone()).or_default().errors += 1;
+                }
+                EventKind::FileOpenFinished { path } | EventKind::FileOpenFailed { path, .. } => {
+                    stats.opened_paths.insert(path.clone());
+                }
+                _ => {}
+            }
+        }
+        stats.execution_duration =
+            Duration::from_millis(latest.saturating_sub(earliest.unwrap_or(latest)));
+        stats
+    }
+
+    /// How often an event happened across the run.
+    pub(crate) fn count(&self, event: EventName) -> u64 {
+        self.events.get(&event).copied().unwrap_or(0)
+    }
+
+    /// How often an event happened on the tickets one label owns.
+    pub(crate) fn label_count(&self, label: &str, event: EventName) -> u64 {
+        self.labels
+            .get(label)
+            .and_then(|counts| counts.get(&event))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Durations reach the JSON as whole seconds; `Duration` is the in-memory type.
+fn as_secs<S: Serializer>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u64(duration.as_secs())
+}
+
 pub(crate) fn print_summary(
-    tickets: &TicketQueue,
-    report_tickets: Option<&TicketQueue>,
+    stats: &RunStats,
     analysis: &Value,
     report_file: &Path,
     scan: &ScanTree,
@@ -237,23 +345,7 @@ pub(crate) fn print_summary(
 ) {
     let status = analysis["status"].as_str().unwrap_or("unknown");
     let findings = analysis["summary"].as_str().unwrap_or("");
-    let scan_stats = tickets.stats();
-    // The Reporter runs on its own queue after the scan; fold its counters
-    // into the totals so the tally covers the whole run.
-    let report_stats = report_tickets.map(|queue| queue.stats());
-    let with_report = |count: &dyn Fn(&Stats) -> u64| {
-        count(&scan_stats) + report_stats.as_ref().map_or(0, |report| count(report))
-    };
-    let report_secs = report_stats
-        .as_ref()
-        .and_then(|report| report.execution_duration())
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
-    let secs = scan_stats
-        .execution_duration()
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
-        + report_secs;
+    let secs = stats.execution_duration.as_secs();
     let time = if secs >= 60 {
         format!("{} min {} sec", secs / 60, secs % 60)
     } else {
@@ -290,55 +382,49 @@ pub(crate) fn print_summary(
         (ANALYSIS_LABEL, "analysis"),
     ];
     for (label, display) in display_labels {
-        let slice = scan_stats.stats_for_label(label);
-        if slice.event_count(EventName::TicketCreated) == 0 {
+        let total = stats.label_count(label, EventName::TicketCreated);
+        if total == 0 {
             continue;
         }
-        let done = slice.event_count(EventName::TicketFinished);
-        let total = slice.event_count(EventName::TicketCreated);
+        let done = stats.label_count(label, EventName::TicketFinished);
         eprintln!(
             "  {display:<11}{}  {done}/{total} · {:>2} req",
             progress_bar(done, total),
-            slice.event_count(EventName::RequestFinished),
+            stats.label_count(label, EventName::RequestFinished),
         );
     }
 
     eprintln!("  {}", rule("run"));
     eprintln!(
         "  {}/{} tickets · {} failed · {} req · {} tools · {}k↑ {}k↓",
-        with_report(&|stats: &Stats| stats.event_count(EventName::TicketFinished)),
-        with_report(&|stats: &Stats| stats.event_count(EventName::TicketCreated)),
-        with_report(&|stats: &Stats| stats.event_count(EventName::TicketFailed)),
-        with_report(&|stats: &Stats| stats.event_count(EventName::RequestFinished)),
-        with_report(&|stats: &Stats| stats.event_count(EventName::ToolCallStarted)),
-        with_report(&Stats::input_tokens) / 1000,
-        with_report(&Stats::output_tokens) / 1000,
+        stats.count(EventName::TicketFinished),
+        stats.count(EventName::TicketCreated),
+        stats.count(EventName::TicketFailed),
+        stats.count(EventName::RequestFinished),
+        stats.count(EventName::ToolCallStarted),
+        stats.input_tokens / 1000,
+        stats.output_tokens / 1000,
     );
 
     // I/O: coverage plus the per-tool failure rollup on one line. A tool failing
-    // often points at its prompt or input schema, not the model. Coverage folds
-    // the Reporter's opens in the way `with_report` folds its counters.
-    let mut opened_paths: Vec<String> = scan_stats.file_stats().into_keys().collect();
-    if let Some(report) = report_stats.as_ref() {
-        opened_paths.extend(report.file_stats().into_keys());
-    }
+    // often points at its prompt or input schema, not the model.
     let candidate_paths = scan.files_by_ext.values().flatten().map(String::as_str);
     let (opened, scannable) = file_coverage(
         scan_dir,
         candidate_paths,
-        opened_paths.iter().map(String::as_str),
+        stats.opened_paths.iter().map(String::as_str),
     );
     let mut io_parts: Vec<String> = Vec::new();
     if scannable > 0 {
         io_parts.push(format!("{opened}/{scannable} files"));
     }
-    let failing_tools = scan_stats.tool_stats();
-    for (name, tool) in failing_tools.iter().filter(|(_, tool)| tool.errors() > 0) {
-        let rate = tool
-            .error_rate()
-            .map(|share| (share * 100.0).round() as u64)
-            .unwrap_or(0);
-        io_parts.push(format!("{name} {}/{} ({rate}%)", tool.errors(), tool.calls));
+    for (name, tool) in stats.tools.iter().filter(|(_, tool)| tool.errors > 0) {
+        io_parts.push(format!(
+            "{name} {}/{} ({}%)",
+            tool.errors,
+            tool.calls,
+            tool.error_rate()
+        ));
     }
     if !io_parts.is_empty() {
         eprintln!("  {}", rule("i/o"));
@@ -533,10 +619,10 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
             }
             out
         }
-        "read_tickets" => {
+        "tickets" => {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("?");
             match action {
-                "get" => {
+                "ticket" | "result" => {
                     let key = input
                         .get("key")
                         .and_then(|v| v.as_str())
@@ -554,6 +640,16 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
                 "search" => {
                     let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
                     format!("searching tickets for {}", truncate(query, 60))
+                }
+                "create" => {
+                    let task_preview = input
+                        .get("task")
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .unwrap_or_default();
+                    format!("flagging: {}", truncate(&task_preview, 80))
                 }
                 other => other.into(),
             }
@@ -582,22 +678,6 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
                 .unwrap_or_default();
             format!("write_file {path}")
         }
-        "manage_tickets" => {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("?");
-            match action {
-                "create" => {
-                    let task_preview = input
-                        .get("task")
-                        .map(|v| match v {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
-                    format!("flagging: {}", truncate(&task_preview, 80))
-                }
-                other => other.into(),
-            }
-        }
         "finish" => {
             let to = handover_label(input).unwrap_or("?");
             let result = match input.get("result") {
@@ -615,7 +695,7 @@ fn tool_call_summary(tool_name: &str, input: &Value) -> String {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
             format!("opening {}", truncate(url, 90))
         }
-        "manage_knowledge" => {
+        "knowledge" => {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("?");
             let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("");
             match action {

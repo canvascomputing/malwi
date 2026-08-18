@@ -23,7 +23,7 @@ use crate::cli::{
     agent_name, default_model, parse_duration, rejected, resolve_models, verify_models, CliExit,
     ModelTable,
 };
-use crate::report::{headline, log_event, truncate};
+use crate::report::{headline, log_event, truncate, RunStats};
 use web_search::{
     brave_key_from_env, gap_schema, verdict_schema_json, web_search_tool, PAGE_FORMAT,
 };
@@ -212,7 +212,7 @@ pub(crate) async fn run(args: Args) {
         install_dir.display(),
     );
 
-    let (gaps, audit_stats) = run_curation_phase(
+    let gaps = run_curation_phase(
         provider.clone(),
         models[CURATOR_NAME].clone(),
         &knowledge,
@@ -265,22 +265,19 @@ pub(crate) async fn run(args: Args) {
     // is graceful and falls through, so whatever was verified still installs.
     let pages = install_verified_pages(&tickets, &knowledge, &install_dir);
 
-    // The audit ran on its own queue, so its spend is added back here: a total
-    // that counted only the pools would report a fraction of what the run cost.
-    let stats = tickets.stats();
-    let audit_input = audit_stats["input_tokens"].as_u64().unwrap_or(0);
-    let audit_output = audit_stats["output_tokens"].as_u64().unwrap_or(0);
+    // The audit ran on its own queue in this directory, so both queues logged to
+    // one file and the fold covers the audit's spend as well as the pools'.
+    let stats = RunStats::fold(&tickets);
     let osint = json!({
         "steer": args.steer,
         "install_dir": install_dir.display().to_string(),
         // A drained queue is the only whole run: a cap or a ctrl-c leaves gaps.
-        "partial": tickets.get_finish_reason() != Some(FinishReason::Drained),
+        "partial": tickets.finish_reason() != Some(FinishReason::Drained),
         "gaps": gaps,
         "pages": pages,
-        "input_tokens": stats.input_tokens() + audit_input,
-        "output_tokens": stats.output_tokens() + audit_output,
-        "stats": serde_json::to_value(stats).expect("Stats serializes"),
-        "audit_stats": audit_stats,
+        "input_tokens": stats.input_tokens,
+        "output_tokens": stats.output_tokens,
+        "stats": serde_json::to_value(&stats).expect("RunStats serializes"),
     });
 
     let osint_file = Path::new(OSINT_FILE);
@@ -314,7 +311,7 @@ async fn run_curation_phase(
     brave_key: &str,
     steer: &str,
     args: &Args,
-) -> (Vec<Value>, Value) {
+) -> Vec<Value> {
     let curation_tickets = TicketQueue::new();
     curation_tickets.dir(WORK_DIR);
     curation_tickets.max_schema_retries(20);
@@ -347,21 +344,18 @@ async fn run_curation_phase(
     headline("AUDIT");
     let mut results = curation_tickets.finish_all().await;
 
-    // The queue dies with this function, and `Stats` borrows from it, so the
-    // audit's spend is handed back serialized: it is the caller's only chance
-    // to count what the audit cost.
-    let stats = serde_json::to_value(curation_tickets.stats()).expect("Stats serializes");
+    // What the audit spent stays in the queue's event log, which the osint queue
+    // shares, so the caller folds it in without anything handed back here.
     let Some(result) = results.pop() else {
-        return (Vec::new(), stats);
+        return Vec::new();
     };
-    let gaps = result["gaps"]
+    result["gaps"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .take(MAX_GAPS)
-        .collect();
-    (gaps, stats)
+        .collect()
 }
 
 /// Register the Scout, Editor, and Verifier pools. Each hands over to the next
@@ -385,7 +379,7 @@ fn build_pools(
                 .label(SCOUTING_LABEL)
                 .knowledge(knowledge)
                 .tool(web_search_tool(brave_key.to_string()))
-                .tool(FetchUrlTool)
+                .tool(FetchUrlTool::new())
                 .build(),
         );
     }
@@ -400,7 +394,7 @@ fn build_pools(
                 .template("page_format", PAGE_FORMAT.trim())
                 .label(EDITING_LABEL)
                 .knowledge(knowledge)
-                .tool(FetchUrlTool)
+                .tool(FetchUrlTool::new())
                 .build(),
         );
     }
@@ -416,7 +410,7 @@ fn build_pools(
                 .template("output_contract", OUTPUT_CONTRACT.trim())
                 .label(VERIFICATION_LABEL)
                 .knowledge(knowledge)
-                .tool(FetchUrlTool)
+                .tool(FetchUrlTool::new())
                 .build(),
         );
     }

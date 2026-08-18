@@ -71,8 +71,8 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 - Report and struct fields: `findings`, `files`, `extensions`, `patterns`, `substrings`.
 - Event payloads follow suit: `usage` carries token counts, not a `token_count`.
-- Accessor methods mirror the field form: `Stats::input_tokens()` returns the count.
-- The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type.
+- Accessor methods mirror the field form: `RunStats::input_tokens` carries the count under that name.
+- The `_count` suffix is reserved for the rare case where the plural would clash with a sibling collection field on the same type, as `RunStats::label_count()` does beside the `labels` map.
 
 ## Builders
 
