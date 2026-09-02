@@ -1,0 +1,1 @@
+Call `finish` exactly once and pass every requested field as top-level arguments. Emit each field as its native JSON type and NEVER as a JSON-encoded string, because encoded arrays and objects fail schema validation. NEVER wrap the fields in `result`, because the task schema is the `finish` argument shape.

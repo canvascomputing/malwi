@@ -14,7 +14,8 @@ include!(concat!(env!("OUT_DIR"), "/attacks.rs"));
 const SOURCE_DIR: &str = "crates/malwi/src/attacks";
 
 /// Write every attack-pattern page into `<dir>/knowledge/pages/`, so a
-/// subsequent `Knowledge::load(dir)` indexes them like any other seeded bundle.
+/// subsequent `Knowledge::load(dir.join("knowledge"))` indexes them like any
+/// other seeded bundle.
 /// Both the Tracer's and the Seeker's stores are wiped and rebuilt from these
 /// pages each run.
 pub(crate) fn copy_seed_into(dir: &Path) -> io::Result<()> {
@@ -78,8 +79,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         copy_seed_into(&dir).unwrap();
-        let knowledge = Knowledge::load(&dir).unwrap();
-        let index = knowledge.index();
+        let knowledge = Knowledge::load(dir.join("knowledge")).unwrap();
+        let index = knowledge.get_index();
 
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!PAGES.is_empty(), "the generated table should list pages");

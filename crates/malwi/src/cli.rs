@@ -106,6 +106,152 @@ pub(crate) fn agent_name(pool: &str, index: usize) -> String {
     format!("{pool} {}", index + 1)
 }
 
+/// Render operator-supplied prompt guidance as the final optional section.
+pub(crate) fn additional_focus(text: Option<&str>) -> String {
+    text.map_or_else(String::new, |text| format!("## Additional Focus\n\n{text}"))
+}
+
+/// Assert every `{name}` a role references is one something substitutes:
+/// `passed` is what its own builder gives it, agentwerk fills the rest in. A
+/// placeholder nobody passes reaches the model as literal text, and nothing at
+/// run time says so.
+#[cfg(test)]
+pub(crate) fn assert_placeholders_are_passed(role_name: &str, role: &str, passed: &[&str]) {
+    /// What agentwerk substitutes on its own, whatever the run passes.
+    const BUILT_IN: [&str; 10] = [
+        "context",
+        "task_id",
+        "date",
+        "dir",
+        "platform",
+        "os_version",
+        "turns_remaining",
+        "input_tokens_remaining",
+        "output_tokens_remaining",
+        "time_remaining",
+    ];
+    // A `{` that opens no lowercase word is a JSON example, not a placeholder.
+    let named = role
+        .split('{')
+        .skip(1)
+        .filter_map(|rest| rest.split_once('}'))
+        .map(|(name, _)| name)
+        .filter(|name| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        });
+    for placeholder in named {
+        assert!(
+            BUILT_IN.contains(&placeholder) || passed.contains(&placeholder),
+            "{role_name} names {{{placeholder}}}, which nothing passes",
+        );
+    }
+}
+
+/// Assert the fixed section order shared by every autonomous role prompt.
+#[cfg(test)]
+pub(crate) fn assert_role_prompt_shape(role_name: &str, role: &str) {
+    let markers = [
+        "Your strengths:",
+        "Guidelines:",
+        "Available tools:",
+        "Output:",
+        "Example outputs:",
+        "NOTE:",
+    ];
+    assert!(role.starts_with("# "), "{role_name} has no role title");
+    let mut previous = 0;
+    for marker in markers {
+        let position = role
+            .find(marker)
+            .unwrap_or_else(|| panic!("{role_name} has no `{marker}` section"));
+        assert!(
+            position >= previous,
+            "{role_name} places `{marker}` out of order"
+        );
+        previous = position;
+    }
+    let examples = role
+        .split_once("Example outputs:")
+        .map(|(_, examples)| examples.split("NOTE:").next().unwrap_or_default())
+        .unwrap_or_default();
+    let examples: Vec<&str> = examples
+        .split("<example>")
+        .skip(1)
+        .filter_map(|example| example.split_once("</example>").map(|(body, _)| body))
+        .collect();
+    assert_eq!(examples.len(), 2, "{role_name} needs two example outputs");
+    for example in examples {
+        assert!(
+            example.trim_start().starts_with("Input:"),
+            "{role_name} example must show its input first: {example}"
+        );
+    }
+    assert!(
+        !role.contains("\nTools:\n"),
+        "{role_name} uses the retired top-level `Tools:` section"
+    );
+}
+
+/// Assert the five-line orientation a fresh agent reads before any protocol.
+#[cfg(test)]
+pub(crate) fn assert_role_orientation(role_name: &str, role: &str) {
+    let opening = role
+        .split("\n\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{role_name} has no opening"));
+    let labels = ["Identity", "Place", "Tools", "Job", "Stop"];
+    let lines: Vec<&str> = opening.lines().collect();
+    assert_eq!(lines.len(), labels.len(), "{role_name} opening: {opening}");
+    for (line, label) in lines.iter().zip(labels) {
+        let prefix = format!("- **{label}:** ");
+        let text = line
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{role_name} needs `{prefix}`: {line}"));
+        assert!(
+            text.split_whitespace().count() <= 16,
+            "{role_name} {label} exceeds 16 words: {text}"
+        );
+        assert!(
+            !text.contains(';'),
+            "{role_name} {label} nests clauses: {text}"
+        );
+        assert!(
+            text.ends_with('.') && !text.trim_end_matches('.').contains(". "),
+            "{role_name} {label} must be one sentence: {text}"
+        );
+    }
+    assert!(
+        lines[0].starts_with("- **Identity:** You are "),
+        "{role_name} must identify itself first: {opening}"
+    );
+    for obscure in [
+        "The task",
+        "bounded pass",
+        "carried finding",
+        "cited dossier",
+        "schema-valid finding",
+    ] {
+        assert!(
+            !opening.contains(obscure),
+            "{role_name} opening assumes `{obscure}`: {opening}"
+        );
+    }
+}
+
+/// Tool names declared in a role's `Available tools:` protocol.
+#[cfg(test)]
+pub(crate) fn declared_prompt_tools(role: &str) -> Vec<String> {
+    role.split_once("Available tools:")
+        .map(|(_, tools)| tools)
+        .unwrap_or_default()
+        .lines()
+        .take_while(|line| !line.starts_with("Output:"))
+        .filter_map(|line| line.trim_start().strip_prefix("- `"))
+        .filter_map(|rest| rest.split_once('`'))
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
 /// What every agent runs without `--models`: the model the environment names,
 /// resolved the same way the provider itself is.
 pub(crate) fn default_model() -> Model {
@@ -150,19 +296,19 @@ const PROBE_BACKOFF: Duration = Duration::from_millis(500);
 /// one message if any does not.
 ///
 /// Probing before any work means a wrong key, model, or endpoint fails here
-/// with a clear message instead of failing every ticket downstream.
+/// with a clear message instead of failing every task downstream.
 pub(crate) async fn verify_models(provider: &Provider, models: &BTreeMap<String, Model>) {
     let mut probed = BTreeSet::new();
     for model in models.values() {
-        if !probed.insert(model.name.as_str()) {
+        if !probed.insert(model.get_name()) {
             continue;
         }
-        if let Err(error) = probe(provider, &model.name).await {
+        if let Err(error) = probe(provider, model.get_name()).await {
             eprintln!(
                 "cannot reach model '{}': {error}\n\
                  check the API key and endpoint for the configured provider, \
                  and the model names in --models.",
-                model.name,
+                model.get_name(),
             );
             std::process::exit(1);
         }
@@ -198,7 +344,7 @@ async fn probe(provider: &Provider, model: &str) -> ProviderResult<()> {
     }
 }
 
-/// The `--models` file, keyed by ticket label, pool, or single agent.
+/// The `--models` file, keyed by task label, pool, or single agent.
 #[derive(Debug)]
 pub(crate) struct ModelTable(BTreeMap<String, Model>);
 
@@ -369,6 +515,15 @@ mod tests {
     use super::*;
 
     use super::parse_line as parse;
+
+    #[test]
+    fn additional_focus_is_an_optional_trailing_prompt_section() {
+        assert_eq!(additional_focus(None), "");
+        assert_eq!(
+            additional_focus(Some("prioritize install hooks")),
+            "## Additional Focus\n\nprioritize install hooks"
+        );
+    }
 
     /// Fails the first `failures` probes with `error`, then answers.
     struct ProbedProvider {
@@ -557,8 +712,8 @@ mod tests {
     #[test]
     fn a_bare_string_entry_is_the_model_name() {
         let models = resolve(r#"{"Analyst": "gpt-5", "reporter": "gpt-4o"}"#).unwrap();
-        assert_eq!(models["Analyst 1"].name, "gpt-5");
-        assert_eq!(models["Reporter"].name, "gpt-4o");
+        assert_eq!(models["Analyst 1"].get_name(), "gpt-5");
+        assert_eq!(models["Reporter"].get_name(), "gpt-4o");
     }
 
     #[test]
@@ -588,8 +743,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(models["Analyst 2"].name, "gpt-4o");
-        assert_eq!(models["Analyst 1"].name, "gpt-5");
+        assert_eq!(models["Analyst 2"].get_name(), "gpt-4o");
+        assert_eq!(models["Analyst 1"].get_name(), "gpt-5");
     }
 
     #[test]

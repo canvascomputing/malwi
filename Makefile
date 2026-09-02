@@ -1,4 +1,4 @@
-.PHONY: build test fmt clean update run osint download bump doc hooks
+.PHONY: build test test-unit test-integration fmt clean update run osint download bump doc hooks
 
 # Sourced rather than `include`d: .env is shell, not make.
 dotenv = if [ -f .env ]; then set -a; . ./.env; set +a; fi
@@ -6,8 +6,14 @@ dotenv = if [ -f .env ]; then set -a; . ./.env; set +a; fi
 build: fmt
 	RUSTFLAGS="-D warnings" cargo build
 
-test:
+test: test-unit
+	@$(dotenv); RUSTFLAGS="-D warnings" cargo test -p malwi --test integration -- --test-threads=1
+
+test-unit:
 	RUSTFLAGS="-D warnings" cargo test --workspace --bins
+
+test-integration:
+	@$(dotenv); RUSTFLAGS="-D warnings" cargo test -p malwi --test integration -- --test-threads=1
 
 doc:
 	RUSTDOCFLAGS="-D warnings -D rustdoc::broken-intra-doc-links -D rustdoc::private-intra-doc-links" \
@@ -22,7 +28,7 @@ clean:
 update:
 	cargo update
 
-# Exit 2 is the malicious-verdict signal under --fail-fast, not a failure.
+# Exit 2 is the selected verdict threshold's signal, not a command failure.
 run:
 ifdef dir
 	@$(dotenv); cargo run -p malwi -- analyze $(dir) $(args) || [ $$? -eq 2 ]

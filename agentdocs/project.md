@@ -16,8 +16,8 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 **A cheap deterministic pass runs before the model is asked anything.**
 
 - Curated catalogues per language carry the static indicators, ranked strongest first.
-- Files with a known extension grep synchronously; only matches become tickets.
-- A Seeker pool covers everything the catalogues miss, one search at a time.
+- Files with known extensions are grouped by catalogue; one worker reads each file once and only matches become tasks.
+- A Seeker pool covers what the catalogues miss in at most 20 passes.
 - The model is invoked on suspect lines and their callers, never on whole trees.
 
 ## Reachability decides
@@ -31,11 +31,11 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 
 ## Agentic by construction
 
-**Every model call is one ticket on an [agentwerk](https://crates.io/crates/agentwerk) `TicketQueue`.**
+**Every model call is one task on an [agentwerk](https://crates.io/crates/agentwerk) `Werk`.**
 
 - Five roles, each a markdown file: Explorer, Seeker, Tracer, Analyst, Reporter.
-- Tickets carry labels for routing; agents never call each other directly.
-- Agents share state through `Knowledge` pages, not through function calls.
+- Tasks carry labels for routing; agents never call each other directly.
+- Explorer, Tracer, Analyst, and Reporter share project state through `Knowledge` pages; the Seeker keeps an isolated search ledger.
 - The whole scan is one cooperative loop with shared cancellation.
 
 ## Provider-agnostic
@@ -52,6 +52,6 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 **Zero warnings, typed errors, no silent fallbacks.**
 
 - The build MUST pass with `RUSTFLAGS="-D warnings"`: any warning fails it.
-- A verdict without a status, a path, or a description is rejected by its schema and retried.
+- A finding without a verdict, a path, or a description is rejected by its schema and retried.
 - IMPORTANT: no blanket `From<io::Error>` or `From<serde_json::Error>`. Every conversion is an explicit mapping into a typed variant.
 - Misconfigured arguments, an unreachable model, and an unreadable directory each fail fast with a one-line message.

@@ -9,7 +9,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - CLI argument parsing, the `--models` table, and help text live in `cli.rs`.
 - The directory walker, the catalogues, and the grep passes live in `discovery.rs`.
 - The JSON assembler, the event renderer, and the terminal summary live in `report.rs`.
-- Role prompts live in `roles/`, indicator catalogues in `threats/`, incident pages in `attacks/`.
+- Role prompts live in each command's `agents/` directory, indicator catalogues in `threats/`, incident pages in `attacks/`.
 - A helper called from a single private function is inlined; a helper called from two siblings earns a free function in the same file.
 
 ## Name disambiguation
@@ -20,6 +20,17 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 - Acronyms follow Rust API guidelines: `IocEntry`, not `IOCEntry`.
 - Two structs may not share a bare name within one module; both stay qualified.
 - The binary is `malwi`; never `malwi-cli`, never `malwi_scanner`.
+
+## Finding vocabulary
+
+**Four terms describe the report.**
+
+- A `finding` is one reviewed report entry, including a benign entry.
+- A `verdict` is exactly `malicious`, `exploitable`, or `benign`.
+- A `type` is an optional registered behavior such as `obfuscation`, `side-loading`, or `telemetry`.
+- A `status` is operational state, such as a task or verification state; it is never a security verdict.
+- A finding omits `type` when no registered type applies. `none` is not a type.
+- `classification`, `shape`, and `pattern` are never synonyms for a finding type. `pattern` remains valid for matcher syntax and the external `AttackPattern` protocol value.
 
 ## Failure variants
 
@@ -61,7 +72,7 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 **A directory path uses `_dir`. A file path uses `_file`. The bare suffix `_path` is used only when the value can be either.**
 
 - Directories: `scan_dir`, `workspace_dir`, `output_dir`. Matches `std::fs::read_dir`, `std::env::current_dir`.
-- Files: `analysis_file`, `tickets_file`. The value is always a concrete file on disk.
+- Files: `analysis_file`, `tasks_file`. The value is always a concrete file on disk.
 - `_path` is for genuinely ambiguous cases: input that could name either, or a value passed through as opaque.
 - IMPORTANT: `folder` is never used; it has no std analog.
 
@@ -112,8 +123,8 @@ Naming and comment rules, plus README structure. Skim the section matching what 
 
 Allowed:
 
-- Order-dependency or crash-safety, such as `Register analysts BEFORE discovery so tickets drain live.`
-- API quirk or workaround, such as `template_variable binds per agent, not per ticket.`
+- Order-dependency or crash-safety, such as `Register analysts BEFORE discovery so tasks drain live.`
+- API quirk or workaround, such as `template_variable binds per agent, not per task.`
 - Non-obvious constraint, such as `Clear knowledge so each scan starts fresh.`
 - Plain section label in a long function, on its own line above the block it introduces.
 
@@ -135,11 +146,15 @@ Not allowed:
 
 ## Threats, roles, and attack pages
 
-**Files under `threats/`, `roles/`, and `attacks/` are model input, not docs. They follow prompting conventions, not Rust conventions.**
+**Prompt files and knowledge pages are model input, not docs. They follow prompting conventions, not Rust conventions.**
 
 - Each `threats/<lang>.json` entry carries the prose an analyst reads verbatim in its `reason`.
-- Each `roles/*.md` follows the role / strengths / guidelines / output split of the [prompting guide](https://github.com/canvascomputing/prompting).
+- Each role under `analyze/agents/`, `osint/agents/`, or `download/agents/` uses this fixed order: title, mission, `Your strengths:`, `Guidelines:`, `Available tools:`, `Output:`, `Example outputs:`, `NOTE:`.
+- A role names who consumes its output and explains non-obvious rules and prohibitions. Optional CLI focus is the final `## Additional Focus\n\n<text>` section; omit the whole section when no focus was supplied.
+- Each `types/**/*.md` task uses Context, a named protocol, `Your Task`, and a critical trailer. It states what to establish and what rules the evidence out, never the Analyst policy again.
+- Shared policy and format fragments stay clearly delimited inside the role section that consumes them.
 - `{placeholder}` markers are bound through `Agent::template(...)`; never inline a Rust format string.
+- Files under `threats/` and `attacks/` are knowledge, not prompts. Do not force a role or task skeleton onto them.
 - Adding an indicator or an incident page does not require a Rust code change, apart from listing a new page in `PAGES`.
 
 ## README structure
@@ -175,6 +190,6 @@ Not allowed:
 
 - The reader may be new to the agentic concept: write for them.
 - The README is an abstraction: internal type names, private field names, and enum variant names do not belong there. The reference lives in the API docs.
-- Accepted: "Cap the scan duration.", "A ticket finished successfully."
+- Accepted: "Cap the scan duration.", "A task finished successfully."
 - Rejected: "(carries typed `PolicyKind`)", "drives the loop", "one-shot".
 - Jargon and internal terms are cut even when they are shorter.
