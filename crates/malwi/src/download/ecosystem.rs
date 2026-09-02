@@ -215,7 +215,7 @@ impl dyn Ecosystem {
     }
 }
 
-/// Result schema for the Categorizer ticket. `unknown` is a legal answer: a
+/// Result schema for the Categorizer task. `unknown` is a legal answer: a
 /// prompt naming a registry malwi cannot reach must fail by name rather than be
 /// forced into one of the three.
 pub(crate) fn package_schema() -> Schema {

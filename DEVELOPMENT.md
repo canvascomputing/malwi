@@ -8,7 +8,9 @@
 
 ```bash
 make                # build (warnings are errors)
-make test           # unit tests (cargo test --workspace --bins)
+make test           # offline unit tests, then the model-backed integration suite
+make test-unit      # deterministic offline tests only
+make test-integration # sequential model-backed integration tests only
 make fmt            # format code
 make doc            # cargo doc --no-deps -p malwi (strict rustdoc)
 make clean          # remove build artifacts
@@ -29,13 +31,20 @@ make osint focus="npm registry attacks" args="--max-time 20m" # scope the hunt
 make download prompt="py stanza 1.14.0"                       # fetch a package's artefacts
 ```
 
-A scan against the synthetic sample is the end-to-end check: it deterministically reaches a `malicious` verdict.
+The default test command includes six integration scans covering positive and benign cases for
+obfuscation, side-loading, and telemetry. It requires the provider and model variables below, uses
+network access and model quota, and may cost money. Integration fixtures are scanned as source
+text and must never be executed.
+
+A manual scan against the original synthetic sample remains available:
 
 ```bash
-make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-fast --concurrency 1"
+make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-malicious --concurrency 1"
 ```
 
-`--fail-fast` exits `2` on the first malicious finding; `make run` treats that as success. The report lands in `.malwi/analysis.json`.
+`--fail-malicious` exits `2` on the first confirmed malicious finding. `--fail-exploitable` does
+the same for any exploitable or malicious finding. `make run` treats that signal as success.
+The report lands in `.malwi/analysis.json`.
 
 `malwi osint` writes accepted pages into `crates/malwi/src/attacks/`, so review the diff and rebuild before committing.
 

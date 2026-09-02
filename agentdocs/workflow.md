@@ -15,7 +15,9 @@ Commands used to build, test, release, and run the scanner.
 
 **Test layout and writing rules live in [testing.md](testing.md).**
 
-- `make test` runs `cargo test --workspace --bins` (the binary's inline `#[cfg(test)] mod tests`).
+- `make test-unit` runs the deterministic inline tests without network access.
+- `make test-integration` sources `.env` and runs the model-backed integration tests sequentially.
+- `make test` runs the offline suite first and then the integration suite. Integration tests require provider and model variables, use model quota, and may cost money; missing configuration is an error, never a skip.
 
 ## Release
 
@@ -40,7 +42,7 @@ Commands used to build, test, release, and run the scanner.
 - `make run dir=./src` analyzes `./src` with default settings.
 - `make run dir=./pkg/index.js` analyzes one file, copied into the working folder first.
 - `make run dir=./src args="--concurrency 4 --max-time 5m"` passes flags through.
-- `make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-fast"` analyzes the synthetic sample.
+- `make run dir=crates/malwi/tests/fixtures/python-malware args="--fail-malicious"` analyzes the synthetic sample and stops on its confirmed malicious finding.
 - Configure an LLM provider first: see [Environment](../DEVELOPMENT.md#environment).
 - The full CLI reference lives in `malwi --help` and in the README.
 

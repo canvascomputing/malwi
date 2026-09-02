@@ -9,23 +9,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use agentwerk::providers::Provider;
-use agentwerk::{Agent, Ticket, TicketQueue};
+use agentwerk::{Agent, Policy, Task, Werk};
 use serde_json::{json, Value};
 
 use crate::cli::{default_model, rejected, resolve_models, verify_models, CliExit, ModelTable};
 use ecosystem::Package;
 
-const CATEGORIZER_AGENT: &str = include_str!("roles/categorizer.md");
-const OUTPUT_CONTRACT: &str = include_str!("roles/output_contract.md");
+const CATEGORIZER_AGENT: &str = include_str!("download/agents/categorizer.md");
+const OUTPUT_CONTRACT: &str = include_str!("output_contract.md");
 
 pub(crate) const CATEGORIZATION_LABEL: &str = "categorization";
 const CATEGORIZER_NAME: &str = "Categorizer";
 
-/// Everything a run writes lives under here, tickets included: the command owns
+/// Everything a run writes lives under here, Werk state included: the command owns
 /// one folder and leaves nothing elsewhere.
 const DOWNLOADS_DIR: &str = "downloads";
 
-const TICKETS_DIR: &str = "downloads/.tickets";
+const WERK_DIR: &str = "downloads/.werk";
 
 const MANIFEST_FILE: &str = "download.json";
 
@@ -91,7 +91,7 @@ Files land in downloads/<ECOSYSTEM>/<NAME>/<VERSION>/, with a download.json
 listing what was fetched.
 
 Options:
-      --models <FILE>          One model per agent as JSON, keyed by ticket label,
+      --models <FILE>          One model per agent as JSON, keyed by task label,
                                pool name, or agent name. A value is a model name or
                                an object of model, reasoning, and context_window
                                (default: every agent runs the model the environment
@@ -185,39 +185,41 @@ async fn categorize(args: &Args) -> Package {
     });
     verify_models(&provider, &models).await;
 
-    let _ = fs::remove_dir_all(TICKETS_DIR);
+    let _ = fs::remove_dir_all(WERK_DIR);
 
-    let tickets = TicketQueue::new();
-    tickets.dir(TICKETS_DIR);
-    tickets.max_schema_retries(20);
-    tickets.agent(
+    let werk = Werk::new();
+    werk.set_dir(WERK_DIR);
+    werk.set_policy(Policy {
+        max_schema_retries: Some(20),
+        ..Policy::default()
+    });
+    werk.add_agent(
         Agent::new()
             .provider(provider)
             .model(models[CATEGORIZER_NAME].clone())
             .role(CATEGORIZER_AGENT.trim())
             .template("ecosystems", ecosystem::names().join(", "))
             .template("output_contract", OUTPUT_CONTRACT.trim())
-            .label(CATEGORIZATION_LABEL)
-            .build(),
+            .label(CATEGORIZATION_LABEL),
     );
-    tickets.ticket(
-        Ticket::new(categorization_body(&args.prompt))
+    let categorization = werk.add_task(
+        Task::new(categorization_body(&args.prompt))
             .label(CATEGORIZATION_LABEL)
             .schema(ecosystem::package_schema()),
     );
 
-    // No event log: one ticket answering one question is not a pipeline to
+    // No event log: one task answering one question is not a pipeline to
     // watch, and its whole result is the line printed once it lands.
-    let Some(result) = tickets.finish_all().await.pop() else {
+    let Some(result) = werk.finish_task(categorization).await else {
         eprintln!("the Categorizer named no package for '{}'", args.prompt);
         std::process::exit(1);
     };
     package_from(&result, &args.prompt)
 }
 
-/// The ticket body the Categorizer claims: the operator's words, unedited.
+/// The task body the Categorizer claims: the operator's words, unedited.
 fn categorization_body(prompt: &str) -> String {
-    format!("Name the package this asks for:\n\n{prompt}")
+    format!("<package_request>\n{prompt}\n</package_request>")
 }
 
 /// Read the Categorizer's answer into the package to ask for, or stop the run.
@@ -357,6 +359,27 @@ fn size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::cli::{parse_line as parse, Command};
+
+    #[test]
+    fn categorizer_prompt_matches_its_runtime_contract() {
+        crate::cli::assert_role_prompt_shape("categorizer", CATEGORIZER_AGENT);
+        crate::cli::assert_role_orientation("categorizer", CATEGORIZER_AGENT);
+        crate::cli::assert_placeholders_are_passed(
+            "categorizer",
+            CATEGORIZER_AGENT,
+            &["ecosystems", "output_contract"],
+        );
+        assert_eq!(
+            crate::cli::declared_prompt_tools(CATEGORIZER_AGENT),
+            ["finish"]
+        );
+        assert_eq!(
+            categorization_body("PyPI id stanza, display name Stanza"),
+            "<package_request>\nPyPI id stanza, display name Stanza\n</package_request>"
+        );
+        assert!(CATEGORIZER_AGENT.contains("Set `name` to `id` unless the request explicitly"));
+        assert!(CATEGORIZER_AGENT.contains("arbitrary URL without a supported registry"));
+    }
 
     #[test]
     fn download_joins_its_words_into_one_prompt() {

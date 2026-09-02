@@ -4,10 +4,10 @@
 mod analyze;
 mod attacks;
 mod cli;
-mod discovery;
 mod download;
 mod osint;
-mod report;
+mod run;
+mod types;
 
 use cli::Command;
 

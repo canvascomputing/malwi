@@ -1,0 +1,7 @@
+{
+  "name": "side-loading-benign",
+  "private": true,
+  "scripts": {
+    "postinstall": "node install.js"
+  }
+}

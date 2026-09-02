@@ -4,11 +4,14 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 ## Layers
 
-**One layer: inline tests that run without a network.**
+**Two layers: deterministic inline tests and model-backed CLI integration tests.**
 
 - Inline `#[cfg(test)] mod tests` lives next to the code it covers.
 - A test needing a model implements `ProviderLike` inline, as `FinishMock` in `analyze.rs` does.
 - Fixtures (sample trees to scan) live under `crates/malwi/tests/fixtures/`.
+- `tests/integration.rs` invokes the compiled CLI against synthetic fixtures with the configured provider. Its six tests pair positive and benign cases for obfuscation, side-loading, and telemetry.
+- Integration cases run with one test thread, isolated working directories, bounded scan time and turns, and an outer process deadline. They inspect source only; fixture code is never executed.
+- Integration tests are part of `make test`, use network access and model quota, and may cost money. Use `make test-unit` for the offline layer alone.
 
 ## Purpose
 
@@ -23,7 +26,7 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 **The name states the behavior, not the method called.**
 
-- Accepted: `cluster_hits_splits_distant_lines`, `reporter_verdict_is_claimed_by_label_and_merged`.
+- Accepted: `cluster_hits_splits_distant_lines`, `reporter_output_is_claimed_by_label_and_merged`.
 - Rejected: `test_scan`, `test_report`, `test_extension`.
 - The body verifies what the name claims, with no surprise assertions.
 - The name is the first line of the documentation the test provides.
@@ -39,7 +42,7 @@ How tests are organized and written. Commands used to run them live in [workflow
 
 ## State transitions
 
-**Ticket and report state MUST be visible through the public API.**
+**Task and report state MUST be visible through the public API.**
 
 - Build starting state by calling real actions, not by field assignment that bypasses invariants.
 - Read resulting state back through a public query, not by peeking at private fields.
