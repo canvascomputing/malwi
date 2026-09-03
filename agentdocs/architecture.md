@@ -17,7 +17,7 @@ The invariants that shape how code fits together. Layout says where code lives; 
 
 - Discovery and the Seeker both produce evidence, and both put it on `TRACER_LABEL` carrying the same `path`, `line`, `column` triple: discovery renders a task body, while the host routes the Seeker's schema-checked hit.
 - The Tracer establishes how the flagged code is reached and hands its trace to `ANALYSIS_LABEL`.
-- The Analyst reads the real code behind the trace and returns a finding, copying the location the Tracer handed it rather than re-deriving it.
+- For an initial verdict, the Analyst treats the Tracer's cited trace as established evidence and returns a finding without reopening files or re-deriving callers; a focused type investigation may inspect only the extra facts its protocol requires.
 - The handover is atomic: `FinishTool` closes the Tracer's task and opens the Analyst's in one call.
 - A malicious or exploitable finding with a registered type owned by its verdict opens one investigation. It carries the analysis label, so an Analyst claims it, and the type's schema on the task itself. A type costs a task, not a role and not a model.
 - What marks a task an investigation is its parent: a plain analysis task is handed over by a Tracer, an investigation by an Analyst. `is_investigation` is the one place that asks, and `investigated_type` reads the type from the finding that opened it. An investigation that rules the type out omits `type`.
