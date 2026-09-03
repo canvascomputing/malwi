@@ -10,6 +10,11 @@
 
 <div align="center">Attackers exploit trust and undermine the sovereignty of open-source software. malwi aims to end the threat of supply-chain attacks. It spawns a fleet of security research agents evaluating the trustworthiness of software.</div>
 
+## Introduction
+
+malwi is an agentic malware scanner for source trees and software packages. It finds suspicious
+code, traces how it is reached, and classifies each finding as malicious, exploitable, or benign.
+
 ## Demo
 
 ```
@@ -164,6 +169,19 @@ malwi osint
 ```sh
 malwi download python requests
 ```
+
+## Model Recommendations
+
+This project avoids closed-source models. Recommended models:
+
+| Model | Total Parameters | Active Parameters |
+|---|---:|---:|
+| `qwen3.6-27b` | 27B | 27B |
+| `qwen3.8-27b` | 27B | 27B |
+| `qwen3.6-35b-a3b` | 35B | 3B |
+| `qwen3.8-flash-next` | 125B + 51B N-gram embeddings | 6B |
+| `deepseek-v4-flash-0731` | 284B | 13B |
+| `glm-5.3-flash` | 320B | 18B |
 
 ## Development
 
