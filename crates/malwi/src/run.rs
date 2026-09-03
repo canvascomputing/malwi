@@ -264,8 +264,8 @@ fn progress_bar(done: u64, total: u64) -> String {
 }
 
 /// Count scannable files the run opened, as `(opened, scannable)`. Candidate
-/// paths are relative to `scan_dir`; opened paths arrive in mixed forms
-/// (relative from the Tracer's file map, absolute from the analyst task), so
+/// paths are relative to `scan_dir`; opened paths arrive in mixed forms from
+/// task bodies and agent calls, so
 /// both sides are canonicalized to one absolute key before intersecting.
 fn file_coverage<'a>(
     scan_dir: &Path,
@@ -850,9 +850,8 @@ mod tests {
 
     #[test]
     fn coverage_counts_files_opened_by_relative_or_absolute_path() {
-        // The Tracer opens files by relative path; the analyst opens the same
-        // tree by absolute path. Both forms must count against the relative
-        // candidate list. Absolute-only matching regressed this to 0.
+        // Agent calls use both forms. Both must count against the relative
+        // candidate list because absolute-only matching regressed this to 0.
         let dir = std::env::temp_dir().join(format!("coverage_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("pkg")).unwrap();

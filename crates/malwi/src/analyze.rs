@@ -1034,6 +1034,19 @@ mod tests {
     }
 
     #[test]
+    fn analyst_separates_trace_decisions_from_focused_investigations() {
+        assert!(ANALYST_AGENT.contains("NEVER reconstruct the trace"));
+        assert!(ANALYST_AGENT.contains(
+            "| Reachability trace | Apply the verdict protocol and call `finish` | The Tracer established the data flow |"
+        ));
+        assert!(ANALYST_AGENT.contains(
+            "| Previous conclusion with focused protocol | Use code tools only for its named behavior | Its typed fields remain unresolved |"
+        ));
+        assert!(!ANALYST_AGENT.contains("Read every cited location"));
+        assert!(!ANALYST_AGENT.contains("Trace a parameter to the caller"));
+    }
+
+    #[test]
     fn rendered_analyze_assignments_use_descriptive_xml_blocks() {
         assert!(EXPLORATION_BODY.starts_with("<overview_assignment>\n"));
         assert!(EXPLORATION_BODY.ends_with("\n</overview_assignment>"));

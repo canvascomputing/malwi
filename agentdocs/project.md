@@ -25,7 +25,7 @@ malwi is a CLI that scans a directory for indicators of compromise, works out ho
 **A grep hit is evidence, not a verdict.**
 
 - The Tracer establishes how the flagged code is reached before an Analyst judges it.
-- The Analyst reads the real code, names the actor and the boundary, and returns `malicious`, `exploitable`, or `benign`.
+- The Analyst judges the Tracer's cited operation, actor, and boundary and returns `malicious`, `exploitable`, or `benign`.
 - A `benign` finding is kept: it records that a flagged line was examined and cleared.
 - The Explorer's overview of the project is available to every judgement, so intent is weighed alongside the code.
 
