@@ -22,18 +22,25 @@ Coming soon
 Coming soon
 ```
 
+## Verdicts
+
+malwi classifies each finding with one of three verdicts.
+
+| Verdict | Description |
+|---|---|
+| Malicious | Implements harmful behavior with evidence of deliberate design. |
+| Exploitable | Lets a lower-trust actor or compromised source trigger unintended behavior. |
+| Benign | Establishes neither malicious nor exploitable behavior. |
+
 ## Types
 
-malwi analyzes suspicious code and classifies each finding as malicious, exploitable, or benign.
-Malicious findings identify harmful behavior, exploitable findings expose dangerous trust
-boundaries, and benign findings rule out both. Each verdict is backed by a focused evidence trail.
+Malicious and exploitable findings may also name the behavior they identify.
 
-| Verdict | Type | Evidence trail |
+| Verdict | Type | Description |
 |---|---|---|
-| Malicious | Obfuscation | Payload → transform → execution sink → trigger |
-| Exploitable | Side-loading | Remote source → control → consent → installation trigger |
-| Exploitable | Telemetry | Provider → destination → collected data → consent and cadence |
-| Benign | None detected | No evidence of malicious or exploitable behavior |
+| Malicious | Obfuscation | Concealed data is transformed and executed at runtime. |
+| Exploitable | Side-loading | External bytes are loaded or executed by the package. |
+| Exploitable | Telemetry | Data is transmitted externally without affirmative opt-in. |
 
 Exploitable means a compromised third party could turn the package's existing code against its
 users.
